@@ -706,25 +706,61 @@ are **read-through** via `mirror_upsert(source='passthrough')` (never regresses 
 newer webhook write); non-mirrorable results (stats/reports/search) go to a
 short-TTL `passthrough_cache`.
 
-### 8.4 Writes — write-through
+### 8.4 Writes — synchronous write-through (PCO-first, fail-if-it-fails)
 
-**Write-through is enabled** (the decided mode). Local apps `POST`/`PATCH`/`DELETE`
-against the mirror's JSON:API routes; the mirror is *not* the source of truth, so
-every write is proxied to PCO and the mirror is updated from PCO's response:
+**The mirror is never the authority for a write.** A local `POST`/`PATCH`/`DELETE`
+is a **synchronous proxy to PCO**: we make the equivalent PCO call *first*, and
+**the caller's write succeeds only if PCO's does**. The mirror is touched **only
+after** PCO returns success, using PCO's own returned resource. There is no local
+write buffer and no "accept now, sync later" — if PCO is unreachable or rejects
+the write, the local write fails and the mirror is left exactly as it was.
 
 ```
-def write_through(req, ctx):                      # requires the caller's key to hold the `write` scope
+def write_through(req, ctx):                        # caller's api-key must hold the `write` scope
   require_scope(ctx.key, 'write')
-  permit = limiter.acquire(priority='passthrough')  # writes spend the shared budget too
-  resp   = pco.request(req.method, pco_path, body=req.body, auth=PCO_PAT)
-  if resp.status in (409, 422): return relay(resp)  # PCO owns validation + optimistic concurrency — surface verbatim
+  limiter.acquire(priority='passthrough')           # writes spend the shared PCO budget too
+
+  # 1) The equivalent PCO RPC — same method + path + JSON:API body, host-swapped.
+  try:
+      resp = pco.request(req.method, pco_path, body=req.body, auth=PCO_PAT)
+  except (Timeout, ConnError):                      # PCO unreachable
+      return 504, mirror_error("upstream_unreachable")     # nothing written locally
+
+  # 2) FAIL IF IT FAILS — any non-2xx is the caller's failure; the mirror is untouched.
+  if not resp.ok:                                   # 400/401/403/404/409/422/429/5xx…
+      return relay(resp)                            # PCO's status + JSON:API errors, verbatim
+
+  # 3) Success only: apply PCO's canonical resource so the write is read-your-writes.
   if req.method == 'DELETE':
-      mirror_tombstone(table, pco_id, now, 'destroyed')   # confirmed by PCO
+      mirror_tombstone(table, pco_id, now, 'destroyed')             # PCO confirmed the delete
   else:
       for r in [resp.data] + resp.get('included', []):
-          mirror_upsert(table_of(r), r.id, r, source='passthrough')   # apply PCO's canonical resource now
-  return relay(resp)                              # 201/200 with the new/updated resource + Location
+          mirror_upsert(table_of(r), r.id, r, source='passthrough') # POST → new pco_id inserted
+  return relay(resp)                                # 200/201 + Location, exactly what PCO returned
 ```
+
+**Guarantees this gives you:**
+
+- **PCO-first, mirror-second.** The mirror can never hold a write PCO rejected,
+  and the caller is never told "success" unless PCO accepted it. Ordering is
+  strict: PCO call → (on 2xx) mirror update → response.
+- **Fail-closed on every failure.** Validation (`422`), optimistic-concurrency
+  conflict (`409`), auth (`401/403`), not-found (`404`), rate-limit (`429`), PCO
+  `5xx`, or a network timeout (`504`) all abort the write and relay PCO's status;
+  the mirror is not modified. Reads keep working from the mirror throughout.
+- **No split-brain.** Applying PCO's *returned* resource (not the request body)
+  means the mirror matches what PCO actually stored. PCO **also** fires a
+  `created`/`updated`/`destroyed` webhook for the same change; because it carries
+  the same-or-newer `updated_at`, the canonical monotonic writer makes it an
+  idempotent no-op — belt-and-suspenders, never a double-apply.
+- **Read-your-writes.** A `POST` inserts the new `pco_id` immediately, so the very
+  next local read (even before the webhook lands) sees the change.
+
+*(This deliberately couples writes to PCO availability: if PCO is down, writes
+fail — which is what "always call PCO and fail if it fails" requires. If you ever
+want writes to survive a PCO outage, that would need an explicit outbox/retry
+queue and a documented weaker guarantee; it is intentionally **not** in this
+design.)*
 
 - **PCO is authoritative for validation and conflicts.** A rejected write (`409`
   stale update, `422` invalid) is relayed verbatim; the mirror is untouched.
