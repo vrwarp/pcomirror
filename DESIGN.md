@@ -10,13 +10,52 @@ refresh (safety net) that repairs anything a missed/late/lost webhook left stale
 > subsystem designs, then adversarially reviewing the combined design for
 > sync-correctness, rate-limit/scale math, and data-model/security. The result
 > was unified into the canonical decisions in [§3](#3-the-canonical-write-path)
-> and [§10](#10-canonical-decisions--resolved-review-ledger). Concrete DDL and
-> the four canonical writer functions live in [`docs/schema.sql`](docs/schema.sql).
+> and [§10](#10-canonical-decisions--resolved-review-ledger).
+
+## 0. Deployment profile (decided)
+
+pcomirror serves **one Planning Center organization** — a single church of a few
+hundred people. The confirmed choices:
+
+| Decision | Choice | Consequence |
+|---|---|---|
+| **Tenancy** | **Single org** | No `org_id`, no RLS, no multi-tenant machinery. |
+| **Store** | **SQLite** ([`docs/schema.sqlite.sql`](docs/schema.sqlite.sql)) | One file, WAL mode, no DB server, no Redis. Backup = copy the file. |
+| **Writes** | **Write-through** ([§8.4](#84-writes--write-through)) | Local apps can create/update/delete; the mirror proxies to PCO, then applies the returned resource. |
+| **Auth** | **Personal Access Token** (HTTP Basic) | No OAuth refresh loop. |
+| **Rate limiter** | **In-process** token bucket | One process → correct without Redis. |
+| **Process model** | **One service** (or a few) sharing the SQLite file via WAT | Webhook receiver + fetch/reconcile workers + api-server. |
+
+**Why SQLite is the right call here.** At ~300 people the entire dataset is a few
+thousand rows across all tables; a full backfill is ~3–5 requests. The design was
+built on portable primitives — **raw JSON as the system of record, generated
+columns, and one monotonic UPSERT with a `WHERE` guard** — all of which SQLite
+3.45 supports natively. ISO-8601 UTC timestamps even compare correctly as TEXT,
+so the monotonic guard needs no date parsing. The schema and all four writer
+semantics are **verified on SQLite 3.45** by
+[`docs/schema_test_sqlite.py`](docs/schema_test_sqlite.py) (11/11 assertions).
+
+**What the single-file / single-org profile lets us drop** vs. the general design
+in the sections below: Redis and the GCRA limiter (→ in-process token bucket),
+row-level security and `org_id` (→ single tenant), KMS envelope encryption (→ the
+PAT and webhook secret live in an OS keyring or a `0600` file, decrypted by the
+app), leader election (→ one process), and PL/pgSQL writer functions (→ one
+application-level writer module issuing the canonical SQL). The **sync logic is
+unchanged** — it's storage-agnostic.
+
+**The rest of this document is the reference architecture.** Where it describes
+PostgreSQL, Redis, RLS, OAuth, KMS, or multi-tenancy, read that as the
+**scale-up path** ([§12](#12-scaling-up-postgres--multi-org)) — the machinery you
+adopt if this ever grows to many churches or a large org. The Postgres schema
+([`docs/schema.sql`](docs/schema.sql)) is kept as that target. Everything about
+the data model, the canonical writer, ingestion, webhooks, and reconciliation
+applies verbatim to both.
 
 ---
 
 ## Contents
 
+0. [Deployment profile (decided)](#0-deployment-profile-decided)
 1. [Ground truth: the PCO People API constraints](#1-ground-truth-the-pco-people-api-constraints)
 2. [Architecture at a glance](#2-architecture-at-a-glance)
 3. [The canonical write path](#3-the-canonical-write-path) — *the correctness core*
@@ -27,7 +66,8 @@ refresh (safety net) that repairs anything a missed/late/lost webhook left stale
 8. [Serving API & live pass-through](#8-serving-api--live-pass-through)
 9. [Auth, versioning, multi-tenancy & operations](#9-auth-versioning-multi-tenancy--operations)
 10. [Canonical decisions & resolved review ledger](#10-canonical-decisions--resolved-review-ledger)
-11. [Open questions for you](#11-open-questions-for-you)
+11. [Decisions & the one calibration step](#11-decisions--the-one-calibration-step)
+12. [Scaling up (Postgres / multi-org)](#12-scaling-up-postgres--multi-org)
 - [Appendix A — Entity tiers](#appendix-a--entity-tiers-what-we-mirror)
 - [Appendix B — Sync policy seed](#appendix-b--per-resource-sync-policy-seed)
 
@@ -95,43 +135,49 @@ subscription gap), which is exactly why reconciliation must exist.
 
 ## 2. Architecture at a glance
 
+The single-org SQLite profile: **one process** holding one SQLite file, with three
+internal roles. Everything that calls PCO funnels through **one in-process rate
+limiter**; everything that writes goes through **one canonical writer**.
+
 ```
-                         PCO People API  (people/v2)        PCO Webhooks (/webhooks/v2)
-                              ▲     ▲                                │  signed deliveries
-              GET (keyset,    │     │  GET (hydrate,                 ▼
-              includes)       │     │  audit, pass-through)   ┌──────────────┐
-                              │     │                         │ webhook-     │ verify HMAC(raw)
-   ┌───────────┐   ┌──────────┴─────┴────────┐               │ receiver     │ → durable insert
-   │ scheduler │──▶│  fetch-workers          │◀──────────────│ (ack < 500ms)│ → 2xx fast
-   │ (leader)  │   │  backfill / reconcile / │  hydration    └──────┬───────┘
-   └───────────┘   │  hydrate / pass-through │  queue               │ enqueue
-        │          └───────────┬─────────────┘                      ▼
-        │ enqueues             │  ALL calls go through        webhook_event (per-event inbox)
-        │ sweeps               ▼                                     │ async worker
-        │            ┌───────────────────────┐                      │
-        └───────────▶│  SHARED RATE LIMITER   │  Redis GCRA          │
-                     │  keyed by org_id       │  (per-token budget)  │
-                     └───────────────────────┘                      │
-                              │ every writer calls the ONE canonical writer (§3)
-                              ▼                                      ▼
-                     ┌──────────────────────────────────────────────────────┐
-                     │   PostgreSQL  (raw JSONB system-of-record +           │
-                     │   generated projections + mirror_sync_state)         │
-                     └───────────────────────┬──────────────────────────────┘
-                                             │ RLS-scoped reads
-                                             ▼
-                                   ┌────────────────────┐   passthrough (opt-in,
-        local apps ──JSON:API────▶ │  api-server        │──▶ through shared limiter,
-        (host + key swap)          │  (pcomirror-serve) │    read-through upsert)
-                                   └────────────────────┘
+                     PCO People API (people/v2)          PCO Webhooks (/webhooks/v2)
+                          ▲     ▲                                 │ signed deliveries
+          GET (keyset,    │     │  GET (hydrate,                  ▼
+          includes,       │     │  audit,               ┌───────────────────┐
+          write-through)  │     │  pass-through)        │ webhook-receiver  │ verify HMAC(raw)
+   ┌───────────┐  ┌───────┴─────┴───────────┐           │ (ack < 500 ms)    │ → durable insert
+   │ scheduler │─▶│  fetch + reconcile      │◀──────────│                   │ → 2xx fast
+   │  (thread) │  │  workers                │ hydration └─────────┬─────────┘
+   └───────────┘  │  backfill / reconcile / │ queue               │ enqueue
+        │ sweeps  │  hydrate / pass-through │                     ▼
+        │ merger  └───────────┬─────────────┘            webhook_event (per-event inbox)
+        │ drift               │  ALL PCO calls →                  │ async
+        │           ┌─────────────────────────┐                  │
+        └──────────▶│ IN-PROCESS RATE LIMITER  │ token bucket,    │
+                    │ (header-adaptive, 80%)   │ single token     │
+                    └─────────────────────────┘                  │
+                              │  every writer → the ONE canonical writer (§3)
+                              ▼                                   ▼
+                    ┌──────────────────────────────────────────────────┐
+                    │   SQLite  (raw JSON system-of-record + generated  │
+                    │   columns + mirror_sync_state · WAL mode)         │
+                    └───────────────────────┬──────────────────────────┘
+                                            ▼
+                                  ┌────────────────────┐   pass-through / write-through
+        local apps ──JSON:API───▶ │  api-server        │──▶ (opt-in, scope-gated,
+        (host + key swap)         │  (pcomirror-serve) │    through the shared limiter)
+                                  └────────────────────┘
 ```
 
-Five stateless component classes over Postgres (+ Redis): **webhook-receiver**,
-**fetch-workers**, **scheduler** (leader-elected singleton), **api-server**, and
-the **stores**. Everything that calls PCO — backfill, reconcile, webhook
-hydration, and pass-through — funnels through **one shared per-org rate limiter**
-and writes through **one canonical writer**. Those two "one" statements are what
-make the system correct and rate-safe; the rest is detail.
+**One service, one file.** The receiver, the fetch/reconcile workers, the
+scheduler, and the api-server are roles inside one process sharing the SQLite file
+in WAL mode (they can be split into separate processes later — WAL allows one
+writer + many readers). Everything that calls PCO — backfill, reconcile, webhook
+hydration, pass-through, and write-through — funnels through **one shared rate
+limiter**, and every mutation goes through **one canonical writer**. Those two
+"one" statements are what make the system rate-safe and correct; the rest is
+detail. *(At scale this same shape fans into five independent services over
+Postgres + Redis — see [§12](#12-scaling-up-postgres--multi-org).)*
 
 ---
 
@@ -139,17 +185,22 @@ make the system correct and rate-safe; the rest is detail.
 
 > This is the heart of the design and the single most important section. Every
 > ingestion path — backfill, reconcile, webhook, pass-through read-through —
-> mutates the mirror **only** through the four functions in
-> [`docs/schema.sql`](docs/schema.sql). The adversarial review found the original
-> per-subsystem drafts specified the writer *four incompatible ways*; the rules
-> below are the reconciled, single specification.
+> mutates the mirror **only** through four canonical operations. On SQLite these
+> are an **application-level writer module** issuing the statements in
+> [`docs/schema.sqlite.sql`](docs/schema.sqlite.sql) §7; on Postgres they are the
+> SQL functions in [`docs/schema.sql`](docs/schema.sql). The adversarial review
+> found the original per-subsystem drafts specified the writer *four incompatible
+> ways*; the rules below are the reconciled, single specification — identical on
+> both engines and verified on each.
 
 ### 3.1 Storage invariant
 
-`raw jsonb` is the **system of record** — the resource stored verbatim. Every
-queryable column is a **`GENERATED ALWAYS AS (…) STORED`** projection of `raw`
-(including `pco_created_at` / `pco_updated_at`, via the `IMMUTABLE` `pco_ts()` /
-`pco_date()` parsers). Consequences:
+`raw` is the **system of record** — the resource stored verbatim (SQLite `TEXT`;
+Postgres `jsonb`). Every queryable column is a **generated projection** of `raw`
+(SQLite: `raw ->> '$.attributes.first_name'`; Postgres: `GENERATED ALWAYS AS (…)
+STORED` via the `IMMUTABLE` `pco_ts()`/`pco_date()` parsers). Timestamps are
+ISO-8601 UTC — on SQLite they stay `TEXT` and compare chronologically as-is, so
+`pco_updated_at` needs no parsing at all. Consequences:
 
 - Writers only ever set `raw` + a fixed bookkeeping set; projections recompute
   themselves. The upsert is therefore **table-agnostic** (one function, dynamic
@@ -166,12 +217,12 @@ queryable column is a **`GENERATED ALWAYS AS (…) STORED`** projection of `raw`
 | `mirror_tombstone` | webhook `destroyed`, merge, audit-absent | Sets `deleted_at`, records `tombstone_uat` + `tombstone_reason` (+ `merged_into_pco_id`). Merges are authoritative; `destroyed`/`absent` apply unless superseded by strictly-newer stored live data. |
 | `mirror_confirm_live` | audit confirmation GET→200, survivor-hydration reassigning a moved child, list-and-replace re-observation | An **authoritative live GET is ground truth**: force-clears any tombstone (including merges) and applies fresh `raw`. |
 
-> The four functions and these exact semantics are implemented in
-> [`docs/schema.sql`](docs/schema.sql) and verified by
-> [`docs/schema_test.sql`](docs/schema_test.sql) (11 assertions, all passing on
-> PostgreSQL 16) — monotonic guard, same-second `≥` correction, sticky/merge
-> tombstones, authoritative resurrection, polymorphic `field_datum`, and
-> untimed-tombstone terminality.
+> These exact semantics are verified on **both** engines: SQLite 3.45 via
+> [`docs/schema_test_sqlite.py`](docs/schema_test_sqlite.py) and PostgreSQL 16 via
+> [`docs/schema_test.sql`](docs/schema_test.sql) — 11 assertions each covering the
+> monotonic guard, same-second `≥` correction, sticky/merge tombstones,
+> authoritative resurrection, polymorphic `field_datum`, and untimed-tombstone
+> terminality.
 
 **Why this exact shape (each clause fixes a concrete failure the review found):**
 
@@ -204,7 +255,9 @@ queryable column is a **`GENERATED ALWAYS AS (…) STORED`** projection of `raw`
 
 ## 4. Data model & storage
 
-Full DDL in [`docs/schema.sql`](docs/schema.sql). Highlights:
+Full DDL in [`docs/schema.sqlite.sql`](docs/schema.sqlite.sql) (the chosen store;
+[`docs/schema.sql`](docs/schema.sql) is the Postgres equivalent for scale-up).
+Highlights:
 
 ### 4.1 Three mirror tiers
 
@@ -274,11 +327,13 @@ merged id can transparently follow `merged_into_pco_id` to the survivor.
 
 ### 4.5 Indexing
 
-`PRIMARY KEY (org_id, pco_id)`; `(org_id, pco_updated_at)` for keyset/sweep on
-every FULL table; live-row **partial** indexes (`WHERE deleted_at IS NULL`);
-`GIN (raw jsonb_path_ops)` for ad-hoc containment; denormalized-FK btrees on join
-keys; projected-column indexes mirroring `can_query_by`/`can_order_by`; `pg_trgm`
-on `search_name` for local fuzzy search. Don't over-index tiny LITE tables.
+`PRIMARY KEY (pco_id)`; `(pco_updated_at)` for keyset/sweep on every FULL table;
+live-row **partial** indexes (`WHERE deleted_at IS NULL`); denormalized-FK indexes
+on join keys; projected-column indexes mirroring `can_query_by`/`can_order_by`; and
+for fuzzy local search either SQLite **FTS5** over `search_name` or just `LIKE` (a
+scan of a few hundred rows is instant). *(Scale-up adds `org_id` to every key, a
+`GIN (raw jsonb_path_ops)` for ad-hoc JSONB containment, and a `pg_trgm` index on
+`search_name`.)* Don't over-index tiny LITE tables.
 
 ### 4.6 Version evolution
 
@@ -305,13 +360,15 @@ them to the shared limiter *before* returning.
 
 ### 5.2 The shared rate limiter (canonical)
 
-**One limiter per org token, shared by all consumers.** Because PCO enforces
-limits per token and the standard deployment runs multiple processes
-(autoscaled fetch-workers **plus** the api-server doing pass-through), the
-sanctioned limiter is a **Redis GCRA keyed `ratelimit:{org_id}`**, executed as an
-atomic Lua script. *(An in-process token bucket is dev/single-process only — with
-N processes each enforcing its own 5 req/s you get N×5 and a 429 storm; a startup
-assertion checks all PCO-calling processes point at the same key.)*
+**One limiter, shared by all consumers** (backfill, reconcile, webhook hydration,
+pass-through). PCO enforces limits per token, so for our **single org / single
+process** this is a plain **in-process token bucket** — correct by construction,
+no Redis. *(The scale-up path, where multiple processes share one token, replaces
+this with a Redis GCRA keyed `ratelimit:{org_id}`; see [§12](#12-scaling-up-postgres--multi-org).
+An in-process bucket across N processes would let each enforce its own 5 req/s and
+cause a 429 storm — which is exactly why the multi-process profile needs Redis.)*
+At ~300 people the limiter is barely load-bearing — a full backfill is a handful
+of requests — but it stays correct for webhook-hydration bursts and mass imports.
 
 - **Adaptive, not hard-coded.** `target = floor(TARGET_UTIL · observed_Limit)` per
   observed `Period`, seeded and continuously corrected from response headers so it
@@ -463,7 +520,7 @@ via a static registry that maps to **singular physical table names** (`person`,
   also **enqueue a hydration task**.
 
 **Thin-payload hydration is coalesced and burst-guarded.** Tasks key on
-`(org_id, resource_type, pco_id)` so a burst of child events for one person folds
+`(resource_type, pco_id)` so a burst of child events for one person folds
 into a single follow-up GET (debounced ~2–5 s), fetched **through the shared
 limiter** (webhooks aren't rate-limited but our GETs are). **Critically**, a mass
 import (say 50k new people, each firing a thin `created`) would otherwise fan out
@@ -573,18 +630,40 @@ count and record both into `mirror_sync_state.{total_count_last, mirror_count_la
 — **the columns the ops `mirror_drift_ratio` alarm actually reads** (the drafts
 had the alarm reading a column no job wrote). `mirror_live > total_count` ⇒ ghosts
 (missed delete/merge) → schedule an audit; `mirror_live < total_count` ⇒ missing
-rows → force a sweep. *(Contract: the mirror's `WHERE` must count exactly the
-population `total_count` reflects — e.g. does `/people` count inactive people by
-default? One empirical check against the target org, see §11.)*
+rows → force a sweep.
+
+**`total_count` population parity (resolved).** The alarm compares two counts, so
+they must count the *same* population. PCO's docs don't state whether an
+unfiltered `GET /people` (and thus `meta.total_count`) includes inactive/pending
+people — and long-standing API behavior is that the list endpoint returns **all
+statuses** by default (unlike the web UI, which hides inactive), with
+`total_count` reflecting whatever `where[...]` filter is applied. Rather than
+depend on that undocumented default, the design **pins the population in both
+places and calibrates once**:
+
+1. The probe issues a fixed query shape (default: **no `status` filter**), and the
+   mirror counts the identical predicate (default: all live rows, any status —
+   we mirror every status).
+2. **Onboarding calibration:** right after the first full backfill, assert
+   `total_count` (unfiltered probe) equals the mirror's full live count. If they
+   differ, the delta *is* PCO's default population for this org — pin the matching
+   `where[status]=…` on the probe and the same `status=…` on the mirror count.
+   For a single org this is a one-time measured constant, not a guess.
+
+(`status` is tri-state — `active`/`inactive`/`pending` — and we mirror all three,
+so `where[status]` is fully serveable locally.)
 
 ---
 
 ## 8. Serving API & live pass-through
 
-`pcomirror-serve` is a stateless HTTP service in front of Postgres whose prime
-directive is to be a **drop-in for `…/people/v2` read paths** — an existing PCO
-client works after only a base-URL + credential swap. The mirror *is* the cache;
-there's no second cache to invalidate for mirrored types.
+`pcomirror-serve` is an HTTP service in front of the mirror whose prime directive
+is to be a **drop-in for `…/people/v2`** — an existing PCO client works after only
+a base-URL + credential swap. **Reads** are served from SQLite; **writes** are
+proxied to PCO and applied back ([§8.4](#84-writes--write-through)); anything not
+mirrorable, or a caller demanding live freshness, is proxied through the shared
+limiter. The mirror *is* the cache; there's no second cache to invalidate for
+mirrored types.
 
 ### 8.1 Read surface
 
@@ -627,31 +706,58 @@ are **read-through** via `mirror_upsert(source='passthrough')` (never regresses 
 newer webhook write); non-mirrorable results (stats/reports/search) go to a
 short-TTL `passthrough_cache`.
 
-### 8.4 Writes & auth
+### 8.4 Writes — write-through
 
-**Read-only by default** (`405` on writes; PCO is the system of record — local
-writes would split-brain). Optional opt-in **write-through** proxies to PCO then
-applies the returned resource via `mirror_upsert` (the follow-up webhook dedups
-idempotently). **Two strictly separated credential planes:** local `api_key`
-(hashed, scoped, per-key local rate + pass-through quota, `org_id`-stamped on
-every query) vs. server-only PCO creds never exposed to callers.
+**Write-through is enabled** (the decided mode). Local apps `POST`/`PATCH`/`DELETE`
+against the mirror's JSON:API routes; the mirror is *not* the source of truth, so
+every write is proxied to PCO and the mirror is updated from PCO's response:
+
+```
+def write_through(req, ctx):                      # requires the caller's key to hold the `write` scope
+  require_scope(ctx.key, 'write')
+  permit = limiter.acquire(priority='passthrough')  # writes spend the shared budget too
+  resp   = pco.request(req.method, pco_path, body=req.body, auth=PCO_PAT)
+  if resp.status in (409, 422): return relay(resp)  # PCO owns validation + optimistic concurrency — surface verbatim
+  if req.method == 'DELETE':
+      mirror_tombstone(table, pco_id, now, 'destroyed')   # confirmed by PCO
+  else:
+      for r in [resp.data] + resp.get('included', []):
+          mirror_upsert(table_of(r), r.id, r, source='passthrough')   # apply PCO's canonical resource now
+  return relay(resp)                              # 201/200 with the new/updated resource + Location
+```
+
+- **PCO is authoritative for validation and conflicts.** A rejected write (`409`
+  stale update, `422` invalid) is relayed verbatim; the mirror is untouched.
+- **No split-brain.** The write applies PCO's *returned* resource through the same
+  monotonic `mirror_upsert`, and the follow-up `created`/`updated` webhook that
+  PCO also fires is an idempotent no-op (same or older `updated_at`). A `POST`
+  yields the new `pco_id`, inserted immediately so the very next local read sees it.
+- **Failure = safe.** If the PCO call errors, nothing is written locally and the
+  caller gets PCO's status (or a `502`); the mirror never diverges from PCO.
+
+**Two strictly separated credential planes:** local `api_key` (hashed, scoped —
+`read:*` / `passthrough` / `write` — with a per-key local rate + pass-through
+quota) authenticates apps to pcomirror; the upstream **PCO PAT** lives only
+server-side and is never exposed to or selectable by callers.
 
 ---
 
-## 9. Auth, versioning, multi-tenancy & operations
+## 9. Auth, versioning & operations
+
+> This section covers the general architecture. For our **single-org SQLite
+> profile** ([§0](#0-deployment-profile-decided)): auth is the **PAT** (no OAuth,
+> no refresh loop); there is no multi-tenancy (skip §9.2); and secrets are stored
+> as noted below. The OAuth/KMS/RLS machinery here is the
+> [scale-up path](#12-scaling-up-postgres--multi-org).
 
 ### 9.1 Auth to PCO
 
-Behind one `resolve_auth(org_id)` seam. **PAT (HTTP Basic) is the single-org
-default** — zero refresh machinery. **OAuth 2.0 + PKCE** (scope `people`) is the
-multi-org path: a **leader-elected, single-flight** refresh loop (per-org advisory
-lock, refresh at T-10 min, persist the **rotated** refresh token in the success
-transaction — two concurrent refreshes race and one loses its token). Lapse
-(`invalid_grant`, >90 d idle) → `status='reauth_required'`, **writes stop, reads
-never stop**, page on-call; a human re-runs consent, then a catch-up reconcile.
-All secrets (PAT, client secret, tokens, webhook `authenticity_secret`) are
-**envelope-encrypted** (AES-256-GCM under a KMS-wrapped per-org DEK), versioned in
-`org_secret` for zero-downtime rotation — **not** pgcrypto.
+**PAT (HTTP Basic `app_id:secret`) is the chosen auth** — zero refresh machinery,
+no expiry, no consent flow. The two secrets we hold (the **PAT** and each
+subscription's webhook **`authenticity_secret`**) live encrypted at rest: an OS
+keyring, or a `0600` secrets file decrypted with a key from the environment — no
+KMS needed at this scale. (Scale-up swaps this for **OAuth 2.0 + PKCE** with a
+leader-elected single-flight refresh loop and KMS envelope encryption; see §12.)
 
 ### 9.2 Multi-tenancy
 
@@ -712,12 +818,20 @@ Health endpoints: `/healthz`, `/readyz` (DB + KMS + Redis + migrations at head),
 
 ### 9.6 Deployment
 
-**webhook-receiver** (autoscaled, public TLS), **fetch-workers** (scale on queue
-depth, throughput-capped by per-org limit), **scheduler** (leader singleton:
-sweeps, OAuth refresh, rotation, drift), **api-server** (RLS-scoped serving +
-pass-through), **Postgres** (primary + read replicas) + **Redis** (limiter GCRA +
-optional job queue; at small N, Postgres `SKIP LOCKED` + `LISTEN/NOTIFY` avoids a
-second datastore). Only the receiver and api-server are internet-facing.
+**Single-org SQLite profile (chosen):** **one service process** holding the SQLite
+file in WAL mode, with three concerns as internal loops/threads — the
+**webhook-receiver** (the only internet-facing part, behind TLS), the **fetch +
+reconcile workers**, and the **api-server** for local apps. A single scheduler
+thread drives the reconcile sweeps, merger poll, and drift probe. No Redis, no DB
+server, no leader election. Backups are a periodic `VACUUM INTO` / file copy (WAL
+checkpoint first). If you ever want the receiver isolated (public exposure), split
+it into its own process — WAL lets both share the one file (single writer, many
+readers); coordinate the writer with `busy_timeout`.
+
+*(Scale-up deployment — many orgs or a large org — fans this into autoscaled
+receivers, queue-scaled fetch-workers, a leader-elected scheduler, an RLS-scoped
+api-server, Postgres + read replicas, and Redis for the shared limiter/queue; see
+§12.)*
 
 ---
 
@@ -726,8 +840,11 @@ second datastore). Only the receiver and api-server are internet-facing.
 The six subsystems were designed in parallel, then adversarially reviewed. The
 review's central finding was **cross-section divergence** — the "shared" writer,
 state table, inbox, and limiter were each specified several incompatible ways.
-This section is the reconciliation; each row is a settled decision baked into
-[`docs/schema.sql`](docs/schema.sql) and the sections above.
+This section is the reconciliation; each row is a settled decision baked into the
+schema files ([`docs/schema.sqlite.sql`](docs/schema.sqlite.sql) /
+[`docs/schema.sql`](docs/schema.sql)) and the sections above. Rows 4/5/18 (Redis
+GCRA, KMS) describe the multi-process/scale-up resolution; the single-org profile
+uses the simpler equivalents from [§0](#0-deployment-profile-decided).
 
 | # | Divergence / bug found | Canonical decision |
 |---|---|---|
@@ -754,27 +871,50 @@ This section is the reconciliation; each row is a settled decision baked into
 
 ---
 
-## 11. Open questions for you
+## 11. Decisions & the one calibration step
 
-A few decisions genuinely need your input or an empirical check before build:
+The four open decisions are now settled ([§0](#0-deployment-profile-decided)):
+**single org**, **SQLite**, **write-through**, **PAT**. That leaves exactly one
+thing that must be *measured* rather than decided, plus two minor knobs:
 
-1. **Tenancy scope.** The design defaults to **single-org (PAT)** with an
-   OAuth/multi-org path fully seamed in (every table already has `org_id`). If
-   this mirror will ever serve multiple churches, confirm now so we finalize
-   OAuth onboarding and RLS wiring. *(Recommended: single-org PAT to start.)*
-2. **Read-only vs write-through.** Recommended **read-only** (PCO is the system of
-   record). Enable opt-in write-through only if local apps must mutate PCO data.
-3. **`total_count` population parity.** Does `/people`'s `meta.total_count` include
-   inactive people (and any token-visibility filter) by default? The drift probe's
-   `WHERE` must match exactly or it false-alarms — one empirical check against the
-   real org.
-4. **Audit cadence.** Weekly full id-audit is the default; orgs with heavy
-   hard-delete usage or a compliance-driven deletion-latency SLA may want nightly.
-5. **`search_*`.** Pass-through only (faithful), or invest in a local
-   `pg_trgm`/FTS approximation (flagged `X-Mirror-Approximate`, semantics differ)?
-6. **Language/stack.** The design is stack-agnostic; the store is fixed
-   (PostgreSQL 15+, optional Redis). Confirm the service language so the reference
-   pseudocode becomes real code. *(No blocker — any async-capable stack fits.)*
+1. **`total_count` calibration (one-time, at onboarding).** As in [§7.4](#74-drift-probe):
+   after the first full backfill, assert the unfiltered `total_count` equals the
+   mirror's full live count. If they differ, pin the matching `where[status]` on
+   the probe. No decision needed — the org tells us the answer once.
+2. **Audit cadence** (minor). At ~300 people the full id-audit is ~3 requests, so
+   run it **nightly** — it's effectively free. (Default in Appendix B is weekly;
+   nightly is the better fit here.)
+3. **`search_*`** (minor). Default is pass-through (faithful to PCO's server-side
+   search). At this size, a local `LIKE`/FTS5 over `search_name` is also viable if
+   you'd rather avoid the round trip — flagged so callers know semantics differ.
+
+**Still useful to confirm:** the **service language** (the store is fixed —
+SQLite; the writer/pseudocode is language-agnostic). Any language with an HTTP
+client, an HMAC library, and SQLite bindings fits — including a single-binary Go
+or a small Python/Node service.
+
+---
+
+## 12. Scaling up (Postgres / multi-org)
+
+The single-org SQLite build is deliberately a **strict subset** of the reference
+architecture, so growth is additive, not a rewrite. If pcomirror ever serves many
+churches or one large org, adopt these — each already specified in the sections
+above:
+
+| Trigger | Swap in |
+|---|---|
+| Many orgs, or > ~100k people | **PostgreSQL** ([`docs/schema.sql`](docs/schema.sql)) — same tables, generated columns, and the four writer functions as SQL. |
+| Multiple churches | **Multi-tenancy** ([§9.2](#92-multi-tenancy)): `org_id` column + RLS; OAuth 2.0 + PKCE with the refresh loop ([§9.1](#91-auth-to-pco)); per-org watermarks/subscriptions. |
+| More than one PCO-calling process | **Redis GCRA limiter** keyed by `org_id` ([§5.2](#52-the-shared-rate-limiter-canonical)) — the in-process bucket can't coordinate across processes. |
+| Horizontal scale | The five-component deployment ([§9.6](#96-deployment)): autoscaled receivers, queue-scaled workers, leader-elected scheduler, replicas. |
+| Secret rotation at scale | KMS envelope encryption + version-pointer `org_secret` ([§9.1](#91-auth-to-pco)). |
+
+Because the data model, the canonical writer, ingestion, webhooks, and
+reconciliation are identical across both, migrating is: dump SQLite → load
+Postgres (raw JSON is portable verbatim), point the app at the new store, and turn
+on the multi-process machinery. The reviewed correctness properties carry over
+unchanged.
 
 ---
 
