@@ -50,13 +50,69 @@ python3 docs/schema_test_sqlite.py     # 11/11 assertions PASS
 (And on **PostgreSQL 16** for the scale-up path: `psql -d pcomirror -f docs/schema.sql`
 then `psql -d pcomirror -v ON_ERROR_STOP=1 -f docs/schema_test.sql`.)
 
+## Implementation
+
+A working, dependency-free implementation lives in [`pcomirror/`](pcomirror/)
+(pure Python 3.11+ standard library — SQLite, `hmac`, `urllib`, `wsgiref`; no
+`pip install`). It is a faithful build of the design: raw-JSON storage with
+generated projections, the one canonical writer, the rate-limited PCO client, the
+backfill/reconcile/merger/audit/drift ingestion, the webhook receiver + async
+processing, and the JSON:API serving layer with write-through and pass-through.
+
+```
+pcomirror/
+  registry.py   # the data-driven resource catalog (schema + behaviour, one source of truth)
+  db.py         # SQLite schema generation (from the registry) + a thread-safe handle
+  writer.py     # the 4 canonical writers (upsert / upsert_untimed / tombstone / confirm_live)
+  ratelimit.py  # in-process, header-adaptive token bucket
+  pcoclient.py  # PCO HTTP client (injectable transport), auth, version pin, 429 handling
+  ingest.py     # backfill, incremental sweep, merger poll, delete audit, drift, hydration
+  webhooks.py   # HMAC verify, per-event inbox, dispatch, thin->hydrate, merge handling
+  serving.py    # WSGI JSON:API drop-in: read/include/where/order/paginate, write-through, pass-through
+  scheduler.py  # one background loop: drain inbox + hydration, run due sweeps, poll mergers, drift
+  app.py, cli.py
+```
+
+The running schema is generated from `registry.py` to the exact contract
+documented in [`docs/schema.sqlite.sql`](docs/schema.sqlite.sql).
+
+### Run it
+
+```sh
+export PCO_APP_ID=... PCO_SECRET=...          # your Personal Access Token
+export PCOMIRROR_DB=pcomirror.db
+
+python3 -m pcomirror init-db                  # create the SQLite schema
+python3 -m pcomirror backfill                 # initial full load (once)
+python3 -m pcomirror reconcile --audit        # sweep + merger poll + id audit
+python3 -m pcomirror add-subscription \        # register a webhook (secret from PCO)
+    --subscription-id <id> --event people.v2.events.person.updated --secret <authenticity_secret>
+python3 -m pcomirror serve                    # JSON:API on :8080 + background scheduler
+```
+
+Local apps then point at `http://localhost:8080/people/v2/...` with only a
+base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
+and fail if PCO fails (`DESIGN.md` §8.4).
+
+### Test it
+
+```sh
+python3 run_tests.py     # 29 end-to-end tests (fake PCO) + 11 writer-semantics assertions
+```
+
+The suite drives backfill, sideloading, incremental sweep, merger poll, delete
+audit, include-diff child deletes, drift, webhook verify/dedup/dispatch/thin-
+hydrate/merge, JSON:API reads (where/order/include/pagination), the 410-on-merge
+redirect, and write-through — including the **fail-if-PCO-fails** guarantee —
+against an in-process fake PCO, so no network or live credentials are needed.
+
 ## Status
 
-Design phase. `DESIGN.md` was produced by fanning the work across six subsystem
-designs and then adversarially reviewing the combined design for sync
-correctness, rate-limit/scale math, and data-model/security; the result is
-reconciled into the canonical decisions in `DESIGN.md` §3 and §10, then tuned to
-the confirmed deployment profile in `DESIGN.md` §0.
+Design + reference implementation. `DESIGN.md` was produced by fanning the work
+across six subsystem designs and then adversarially reviewing the combined design
+for sync correctness, rate-limit/scale math, and data-model/security; the result
+is reconciled into the canonical decisions in `DESIGN.md` §3 and §10, then tuned to
+the confirmed deployment profile in `DESIGN.md` §0 and built out in `pcomirror/`.
 
 ## Deployment profile
 
