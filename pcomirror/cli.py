@@ -3,12 +3,34 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import signal
 import sys
-from wsgiref.simple_server import make_server
+import threading
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIServer, make_server
 
 from . import registry
 from .app import Mirror
 from .config import Settings
+
+
+class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+    """Serve requests concurrently (webhook deliveries + reads); DB access is
+    serialized under one lock, so concurrency here is safe."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _backfill_if_needed(m: Mirror) -> None:
+    if not m.settings.pco_app_id:
+        print("[serve] PCO_APP_ID not set — skipping backfill-on-start")
+        return
+    for r in registry.full_and_lite():
+        st = m.ingestor.state(r.name)
+        if st["backfill_completed_at"] is None:
+            n = m.ingestor.backfill(r.name)
+            print(f"[serve] backfill {r.name}: {n} records")
+    m.ingestor.merger_poll()
 
 
 def _mirror() -> Mirror:
@@ -63,21 +85,29 @@ def cmd_add_subscription(args):
 
 def cmd_serve(args):
     m = _mirror()
+    if m.settings.backfill_on_start or args.backfill:
+        _backfill_if_needed(m)
     sched = None
     if not args.no_scheduler:
         from .scheduler import Scheduler
         sched = Scheduler(m)
         sched.start()
-    srv = make_server(m.settings.bind_host, m.settings.bind_port, m.wsgi)
+    srv = make_server(m.settings.bind_host, m.settings.bind_port, m.wsgi,
+                      server_class=_ThreadingWSGIServer)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())   # graceful `docker stop`
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    threading.Thread(target=srv.serve_forever, name="pcomirror-wsgi", daemon=True).start()
     print(f"serving on http://{m.settings.bind_host}:{m.settings.bind_port} "
-          f"(scheduler {'on' if sched else 'off'})")
+          f"(scheduler {'on' if sched else 'off'})", flush=True)
     try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        stop.wait()
     finally:
+        print("shutting down…", flush=True)
+        srv.shutdown()
         if sched:
             sched.stop()
+        m.close()
 
 
 def main(argv=None):
@@ -88,7 +118,10 @@ def main(argv=None):
     rc = sub.add_parser("reconcile"); rc.add_argument("resource", nargs="?")
     rc.add_argument("--audit", action="store_true"); rc.set_defaults(func=cmd_reconcile)
     sub.add_parser("drift").set_defaults(func=cmd_drift)
-    s = sub.add_parser("serve"); s.add_argument("--no-scheduler", action="store_true")
+    s = sub.add_parser("serve")
+    s.add_argument("--no-scheduler", action="store_true")
+    s.add_argument("--backfill", action="store_true",
+                   help="run an initial backfill for any un-backfilled resource before serving")
     s.set_defaults(func=cmd_serve)
     a = sub.add_parser("add-subscription")
     a.add_argument("--subscription-id", required=True); a.add_argument("--event", required=True)

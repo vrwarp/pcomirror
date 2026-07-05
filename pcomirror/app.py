@@ -19,7 +19,7 @@ class Mirror:
         self.db = db or Database(settings.db_path)
         self.db.init_schema()
         self.limiter = RateLimiter(settings.rate_target_rps, settings.rate_util)
-        self.transport = transport or UrllibTransport()
+        self.transport = transport or UrllibTransport(settings.pco_ca_bundle or None)
         self.client = PcoClient(settings, self.limiter, self.transport)
         self.writer = Writer(self.db, settings.api_version)
         self.ingestor = Ingestor(self.db, self.client, self.writer)

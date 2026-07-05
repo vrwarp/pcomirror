@@ -94,6 +94,55 @@ Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
 and fail if PCO fails (`DESIGN.md` §8.4).
 
+### Run it in Docker
+
+The service ships as a small, dependency-free image (`python:3.13-slim`, no build
+step). It runs as a non-root user, binds `0.0.0.0:8080`, persists the SQLite file
+to a `/data` volume, handles `SIGTERM` for clean `docker stop`, and has a built-in
+healthcheck on `/healthz`.
+
+```sh
+cp .env.example .env          # fill in PCO_APP_ID / PCO_SECRET / PCOMIRROR_PUBLIC_URL
+docker compose up -d --build  # build + start (JSON:API + scheduler) on :8080
+
+# First-time full load (once). Either set PCOMIRROR_BACKFILL_ON_START=1 in .env,
+# or run it as a one-shot against the same volume:
+docker compose run --rm pcomirror backfill
+
+# Register a webhook subscription (authenticity_secret comes from PCO):
+docker compose run --rm pcomirror add-subscription \
+    --subscription-id <id> --event people.v2.events.person.updated --secret <authenticity_secret>
+
+docker compose logs -f pcomirror
+```
+
+Or with plain Docker:
+
+```sh
+docker build -t pcomirror .
+docker run -d --name pcomirror -p 8080:8080 \
+  -e PCO_APP_ID=... -e PCO_SECRET=... -e PCOMIRROR_BACKFILL_ON_START=1 \
+  -v pcomirror-data:/data pcomirror
+```
+
+**Container specifics**
+
+- **Persistence:** the DB lives at `/data/pcomirror.db` on the `pcomirror-data`
+  volume — the only state to back up (`docker run --rm -v pcomirror-data:/data ...`
+  or copy the file). Everything else is disposable.
+- **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
+  `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
+  `PCOMIRROR_BACKFILL_ON_START`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
+  and the container-friendly defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` /
+  `PCOMIRROR_PORT`.
+- **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
+  reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
+  terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`
+  to that URL — `add-subscription` prints the exact receiver URL to register at PCO.
+- **One-shot commands** override the default `serve` CMD:
+  `docker compose run --rm pcomirror reconcile --audit`,
+  `... pcomirror drift`, etc.
+
 ### Test it
 
 ```sh

@@ -864,6 +864,13 @@ checkpoint first). If you ever want the receiver isolated (public exposure), spl
 it into its own process — WAL lets both share the one file (single writer, many
 readers); coordinate the writer with `busy_timeout`.
 
+Packaged as a **single Docker container** (`Dockerfile` / `docker-compose.yml`):
+non-root, binds `0.0.0.0:8080`, the SQLite file on a `/data` volume (the only
+state to back up), `SIGTERM`-graceful for clean `docker stop`, and a `/healthz`
+healthcheck. Webhooks require a public HTTPS endpoint, so a TLS-terminating
+reverse proxy / tunnel sits in front and forwards to `:8080`. See the README's
+"Run it in Docker".
+
 *(Scale-up deployment — many orgs or a large org — fans this into autoscaled
 receivers, queue-scaled fetch-workers, a leader-elected scheduler, an RLS-scoped
 api-server, Postgres + read replicas, and Redis for the shared limiter/queue; see
