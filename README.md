@@ -1,5 +1,7 @@
 # pcomirror
 
+[![CI](https://github.com/vrwarp/pcomirror/actions/workflows/ci.yml/badge.svg)](https://github.com/vrwarp/pcomirror/actions/workflows/ci.yml)
+
 A **layer service that mirrors Planning Center (PCO) People data** into a local
 PostgreSQL store, so local applications can query it **without hitting the live
 API** — with an explicit **pass-through** to PCO when they need live data.
@@ -154,6 +156,41 @@ audit, include-diff child deletes, drift, webhook verify/dedup/dispatch/thin-
 hydrate/merge, JSON:API reads (where/order/include/pagination), the 410-on-merge
 redirect, and write-through — including the **fail-if-PCO-fails** guarantee —
 against an in-process fake PCO, so no network or live credentials are needed.
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every pull request,
+on pushes to `main`, on `v*` tags, and on demand (**Actions → CI → Run workflow**):
+
+| Job | What it does |
+|---|---|
+| `test` | `python -m compileall` + `python run_tests.py` on Python **3.11, 3.12, 3.13** (no `pip install` — the suite is stdlib-only). |
+| `docker` | Builds the image and smoke-tests it: `init-db` as a one-shot command, then `serve --no-scheduler` polled until `/healthz` and `/readyz` answer 200. |
+| `publish` | **Docker Hub push.** Runs only after `test` and `docker` pass, and only on a **push** to `main` or a `v*` tag. Never on a pull request (so a fork PR can't reach the registry credentials) and never on a manual dispatch — to re-publish by hand, re-run a `main` push run. Builds `linux/amd64` + `linux/arm64`. |
+
+So `test` and `docker` gate every pull request; `publish` is push-only.
+
+### Publishing to Docker Hub
+
+Add two repository secrets (**Settings → Secrets and variables → Actions**):
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | Your Docker Hub username. |
+| `DOCKERHUB_TOKEN` | A Docker Hub **access token** with Read & Write scope (Docker Hub → Account Settings → Personal access tokens) — not your account password. |
+
+The image is published as `<DOCKERHUB_USERNAME>/pcomirror`. To publish under a
+different name (e.g. an organization), set the repository **variable**
+`DOCKERHUB_IMAGE` to the full name. Tags pushed:
+
+| Trigger | Tags |
+|---|---|
+| push to `main` | `latest`, `main`, `sha-<full-sha>` |
+| tag `v1.2.3` | `1.2.3`, `1.2`, `1`, `sha-<full-sha>` |
+
+So a release is just `git tag v1.2.3 && git push origin v1.2.3`. If the secrets
+aren't configured the `publish` job fails with a message saying which are missing,
+rather than skipping silently.
 
 ## Status
 
