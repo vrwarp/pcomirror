@@ -107,9 +107,9 @@ and fail if PCO fails (`DESIGN.md` §8.4).
 ### Run it in Docker
 
 The service ships as a small, dependency-free image (`python:3.13-slim`, no build
-step). It runs as a non-root user, binds `0.0.0.0:8080`, persists the SQLite file
-to a `/data` volume, handles `SIGTERM` for clean `docker stop`, and has a built-in
-healthcheck on `/healthz`.
+step). It runs as a non-root user (`PUID`/`PGID`-configurable), binds
+`0.0.0.0:8080`, persists the SQLite file to a `/data` volume, handles `SIGTERM`
+for clean `docker stop`, and has a built-in healthcheck on `/healthz`.
 
 ```sh
 cp .env.example .env          # fill in PCO_APP_ID / PCO_SECRET / PCOMIRROR_PUBLIC_URL
@@ -170,12 +170,47 @@ JSON form instead:
 ```
 
 **On a Synology specifically:** paste the variables into Container Manager's
-*Environment* tab (or import `docker-compose.yml` as a Project). Prefer the named
-volume over a bind mount — the container runs as uid `10001`, so a
-`/volume1/docker/pcomirror` bind mount needs `chown -R 10001:10001` first or
-SQLite can't create its WAL files. For TLS, point *Control Panel → Login Portal →
-Advanced → Reverse Proxy* at `localhost:8080` and set `PCOMIRROR_PUBLIC_URL` to
-the public hostname.
+*Environment* tab (or import `docker-compose.yml` as a Project). If you bind-mount
+a share instead of using the named volume, set `PUID`/`PGID` to the host user that
+owns it (see below) — otherwise SQLite fails with `unable to open database file`.
+For TLS, point *Control Panel → Login Portal → Advanced → Reverse Proxy* at
+`localhost:8080` and set `PCOMIRROR_PUBLIC_URL` to the public hostname.
+
+#### `PUID` / `PGID`
+
+A bind-mounted directory keeps its *host* ownership, which is why the image's
+default uid can't write to it. Point the container at the owning user instead:
+
+```sh
+docker run -d --name pcomirror -p 8080:8080 \
+  -v /volume1/docker/pcomirror:/data \
+  -e PUID=1026 -e PGID=100 \
+  ... vrwarp/pcomirror:latest
+```
+
+On a Synology, `id <your-user>` over SSH gives those numbers (`1026`/`100` is a
+typical first admin user / `users` group). Find the owner of an existing folder
+with `stat -c '%u %g' /volume1/docker/pcomirror`.
+
+How it works: the container starts as root just long enough to `chown` the data
+directory (and the `.db` / `-wal` / `-shm` files in it) to `PUID:PGID`, then
+permanently drops to that user before exec'ing the app — the service itself never
+runs as root. The chown is skipped when ownership already matches, so restarts are
+cheap. Defaults are `10001:10001`, identical to the image's previous fixed user, so
+leaving both unset changes nothing.
+
+Starting the container with `--user` (or compose's `user:`) still works and takes
+precedence: the entrypoint sees it is already non-root, warns that `PUID`/`PGID`
+can't be applied, and runs the command unchanged. In that mode the host directory
+must already be writable by the uid you chose.
+
+If the data directory still isn't writable, the entrypoint now says so directly
+and exits, rather than surfacing a SQLite traceback:
+
+```
+[entrypoint] /data is not writable by uid 1000:1000 (owned by 0:0, mode 755).
+[entrypoint] If it is a bind mount, either set PUID/PGID to the host user that owns it, ...
+```
 
 **Container specifics**
 
@@ -184,9 +219,9 @@ the public hostname.
   or copy the file). Everything else is disposable.
 - **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
-  `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PCO_CA_BUNDLE` (if
-  PCO egress goes via a proxy), and the container-friendly defaults
-  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
+  `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
+  `PCO_CA_BUNDLE` (if PCO egress goes via a proxy), and the container-friendly
+  defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
   reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
   terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`

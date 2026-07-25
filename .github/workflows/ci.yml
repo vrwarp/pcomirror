@@ -66,6 +66,36 @@ jobs:
         run: |
           docker run --rm pcomirror:ci init-db
 
+      # The failure this guards against: a bind mount owned by a host user the
+      # image's default uid cannot write to.
+      - name: PUID/PGID smoke test
+        run: |
+          set -eux
+          mkdir -p /tmp/pcodata && sudo chown 0:0 /tmp/pcodata
+          docker run --rm -e PUID=1234 -e PGID=5678 -v /tmp/pcodata:/data pcomirror:ci init-db
+          owner=$(stat -c '%u:%g' /tmp/pcodata/pcomirror.db)
+          test "$owner" = "1234:5678" || { echo "::error::db owned by $owner, want 1234:5678"; exit 1; }
+
+          # default (no PUID/PGID) must stay on the image's original uid
+          mkdir -p /tmp/pcodata-default && sudo chown 0:0 /tmp/pcodata-default
+          docker run --rm -v /tmp/pcodata-default:/data pcomirror:ci init-db
+          owner=$(stat -c '%u:%g' /tmp/pcodata-default/pcomirror.db)
+          test "$owner" = "10001:10001" || { echo "::error::db owned by $owner, want 10001:10001"; exit 1; }
+
+          # --user still works and takes precedence over PUID/PGID
+          mkdir -p /tmp/pcodata-user && sudo chown 1000:1000 /tmp/pcodata-user
+          docker run --rm --user 1000:1000 -e PUID=1234 -v /tmp/pcodata-user:/data \
+            pcomirror:ci init-db
+          owner=$(stat -c '%u:%g' /tmp/pcodata-user/pcomirror.db)
+          test "$owner" = "1000:1000" || { echo "::error::db owned by $owner, want 1000:1000"; exit 1; }
+
+          # an unwritable mount must report the cause, not a SQLite traceback
+          mkdir -p /tmp/pcodata-ro && sudo chown 0:0 /tmp/pcodata-ro && sudo chmod 755 /tmp/pcodata-ro
+          out=$(docker run --rm --user 1000:1000 -v /tmp/pcodata-ro:/data pcomirror:ci serve 2>&1) && \
+            { echo "::error::expected a non-zero exit"; exit 1; }
+          echo "$out" | grep -q "is not writable by uid" || \
+            { echo "::error::missing the actionable message: $out"; exit 1; }
+
       - name: Server smoke test (/healthz + /readyz)
         run: |
           docker run -d --name pcomirror-smoke -p 8080:8080 \
