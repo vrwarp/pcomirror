@@ -166,7 +166,9 @@ on pushes to `main`, on `v*` tags, and on demand (**Actions → CI → Run workf
 |---|---|
 | `test` | `python -m compileall` + `python run_tests.py` on Python **3.11, 3.12, 3.13** (no `pip install` — the suite is stdlib-only). |
 | `docker` | Builds the image and smoke-tests it: `init-db` as a one-shot command, then `serve --no-scheduler` polled until `/healthz` and `/readyz` answer 200. |
-| `publish` | **Docker Hub push.** Runs only after `test` and `docker` pass, and only for `main` / `v*` tags — never for a pull request, so fork PRs can't reach the credentials. Builds `linux/amd64` + `linux/arm64`. |
+| `publish` | **Docker Hub push.** Runs only after `test` and `docker` pass, and only on a **push** to `main` or a `v*` tag. Never on a pull request (so a fork PR can't reach the registry credentials) and never on a manual dispatch — to re-publish by hand, re-run a `main` push run. Builds `linux/amd64` + `linux/arm64`. |
+
+So `test` and `docker` gate every pull request; `publish` is push-only.
 
 ### Publishing to Docker Hub
 
