@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import secrets
 import signal
 import sys
 import threading
@@ -12,6 +11,7 @@ from wsgiref.simple_server import WSGIServer, make_server
 from . import registry
 from .app import Mirror
 from .config import Settings
+from .webhooks import upsert_subscription
 
 
 class _ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -35,6 +35,20 @@ def _backfill_if_needed(m: Mirror) -> None:
 
 def _mirror() -> Mirror:
     return Mirror(Settings.from_env())
+
+
+def _receiver_url(s: Settings, token: str) -> str:
+    return f"{s.public_base_url}{s.webhook_path_prefix}/{token}"
+
+
+def _apply_env_subscriptions(m: Mirror) -> None:
+    """Re-apply PCOMIRROR_SUBSCRIPTIONS so a container needs no follow-up command."""
+    for spec in m.settings.subscriptions:
+        token, created = upsert_subscription(m.db, spec.subscription_id, spec.event,
+                                             spec.secret, spec.url_token or None)
+        verb = "registered" if created else "updated"
+        print(f"[serve] subscription {verb}: {spec.event} -> "
+              f"{_receiver_url(m.settings, token)}")
 
 
 def cmd_init_db(args):
@@ -72,19 +86,14 @@ def cmd_drift(args):
 def cmd_add_subscription(args):
     """Register a webhook subscription record locally (secret from PCO)."""
     m = _mirror()
-    token = secrets.token_hex(16)
-    m.db.execute(
-        "INSERT INTO webhook_subscription"
-        "(subscription_pco_id,event_name,resource,action,url_token,authenticity_secret) "
-        "VALUES(?,?,?,?,?,?)",
-        (args.subscription_id, args.event, args.event.split(".")[-2],
-         args.event.split(".")[-1], token, args.secret))
-    print(f"subscription {args.event} -> {m.settings.public_base_url}"
-          f"{m.settings.webhook_path_prefix}/{token}")
+    token, _ = upsert_subscription(m.db, args.subscription_id, args.event,
+                                   args.secret, args.url_token)
+    print(f"subscription {args.event} -> {_receiver_url(m.settings, token)}")
 
 
 def cmd_serve(args):
     m = _mirror()
+    _apply_env_subscriptions(m)
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)
     sched = None
@@ -125,7 +134,11 @@ def main(argv=None):
     s.set_defaults(func=cmd_serve)
     a = sub.add_parser("add-subscription")
     a.add_argument("--subscription-id", required=True); a.add_argument("--event", required=True)
-    a.add_argument("--secret", required=True); a.set_defaults(func=cmd_add_subscription)
+    a.add_argument("--secret", required=True)
+    a.add_argument("--url-token", help="receiver-URL token to use (8-64 chars of [A-Za-z0-9_-]); "
+                                       "pick one to know the URL before registering at PCO. "
+                                       "Default: keep the existing token, else generate one.")
+    a.set_defaults(func=cmd_add_subscription)
     args = p.parse_args(argv)
     args.func(args)
 

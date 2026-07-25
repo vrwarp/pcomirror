@@ -88,9 +88,17 @@ python3 -m pcomirror init-db                  # create the SQLite schema
 python3 -m pcomirror backfill                 # initial full load (once)
 python3 -m pcomirror reconcile --audit        # sweep + merger poll + id audit
 python3 -m pcomirror add-subscription \        # register a webhook (secret from PCO)
-    --subscription-id <id> --event people.v2.events.person.updated --secret <authenticity_secret>
+    --subscription-id <id> --event people.v2.events.person.updated \
+    --secret <authenticity_secret> --url-token person-updated-01
 python3 -m pcomirror serve                    # JSON:API on :8080 + background scheduler
 ```
+
+`--url-token` is optional but usually what you want: it fixes the receiver URL
+(`<public-url>/pco/webhooks/<token>`) so you can register it at PCO *before* the
+subscription exists there — otherwise you need PCO's `authenticity_secret` to run
+this command, and PCO needs the URL this command prints. Omit it and a random
+token is generated (or the existing one kept — re-running for the same
+`--subscription-id` rotates the secret without changing the URL).
 
 Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
@@ -118,14 +126,56 @@ docker compose run --rm pcomirror add-subscription \
 docker compose logs -f pcomirror
 ```
 
-Or with plain Docker:
+#### Plain Docker, fully configured in one command
+
+Every setup step is env-driven, so a fresh instance needs no follow-up commands —
+handy where running one-shots is awkward (Synology Container Manager, Portainer,
+a `docker run` unit file):
 
 ```sh
-docker build -t pcomirror .
-docker run -d --name pcomirror -p 8080:8080 \
-  -e PCO_APP_ID=... -e PCO_SECRET=... -e PCOMIRROR_BACKFILL_ON_START=1 \
-  -v pcomirror-data:/data pcomirror
+docker volume create pcomirror-data
+
+docker run -d --name pcomirror --restart unless-stopped \
+  -p 8080:8080 \
+  -v pcomirror-data:/data \
+  -e PCO_APP_ID=your_pat_app_id \
+  -e PCO_SECRET=your_pat_secret \
+  -e PCO_USER_AGENT="pcomirror/0.1 (+admin@yourchurch.org)" \
+  -e PCOMIRROR_PUBLIC_URL=https://pcomirror.yourchurch.org \
+  -e PCOMIRROR_BACKFILL_ON_START=1 \
+  -e PCOMIRROR_SUBSCRIPTIONS="sub_123:people.v2.events.person.updated:person-updated-01:whsec_aaa,sub_124:people.v2.events.person.created:person-created-01:whsec_bbb" \
+  pcomirror:latest
 ```
+
+That covers `init-db` + `add-subscription` + `backfill` + `serve` in one shot:
+the schema is created on every start (`CREATE TABLE IF NOT EXISTS`, so it's a
+no-op after the first), `PCOMIRROR_BACKFILL_ON_START=1` only loads resources that
+have never completed a backfill (safe to leave set — restarts won't re-load), and
+the scheduler starts with `serve`, the image's default CMD.
+
+**`PCOMIRROR_SUBSCRIPTIONS`** is a comma-separated list of
+`<subscription_id>:<event>:<url_token>:<authenticity_secret>`. It's re-applied on
+every start and keyed on the subscription id, so it's idempotent: repeats update
+the event and secret but never change a token already registered at PCO. Because
+you choose the tokens, you know the receiver URLs (`https://…/pco/webhooks/person-updated-01`)
+before the container has ever run — register those at PCO, paste the secrets it
+gives you back into this variable, and the deploy is genuinely one-shot. Leave the
+token field empty (`sub_123:people.v2.events.person.updated::whsec_aaa`) to keep
+an existing token or mint a random one. A malformed value fails startup loudly
+rather than leaving webhooks silently 404ing. If a secret contains a `,`, use the
+JSON form instead:
+
+```sh
+-e PCOMIRROR_SUBSCRIPTIONS='[{"id":"sub_123","event":"people.v2.events.person.updated","token":"person-updated-01","secret":"whsec_aaa"}]'
+```
+
+**On a Synology specifically:** paste the variables into Container Manager's
+*Environment* tab (or import `docker-compose.yml` as a Project). Prefer the named
+volume over a bind mount — the container runs as uid `10001`, so a
+`/volume1/docker/pcomirror` bind mount needs `chown -R 10001:10001` first or
+SQLite can't create its WAL files. For TLS, point *Control Panel → Login Portal →
+Advanced → Reverse Proxy* at `localhost:8080` and set `PCOMIRROR_PUBLIC_URL` to
+the public hostname.
 
 **Container specifics**
 
@@ -134,16 +184,26 @@ docker run -d --name pcomirror -p 8080:8080 \
   or copy the file). Everything else is disposable.
 - **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
-  `PCOMIRROR_BACKFILL_ON_START`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
-  and the container-friendly defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` /
-  `PCOMIRROR_PORT`.
+  `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PCO_CA_BUNDLE` (if
+  PCO egress goes via a proxy), and the container-friendly defaults
+  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
   reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
   terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`
-  to that URL — `add-subscription` prints the exact receiver URL to register at PCO.
-- **One-shot commands** override the default `serve` CMD:
-  `docker compose run --rm pcomirror reconcile --audit`,
-  `... pcomirror drift`, etc.
+  to that URL — both `PCOMIRROR_SUBSCRIPTIONS` and `add-subscription` print the
+  exact receiver URL to register at PCO.
+- **One-shot commands** override the default `serve` CMD — with compose,
+  `docker compose run --rm pcomirror reconcile --audit`; with plain Docker, pass
+  the same env and volume and put the subcommand after the image name:
+  ```sh
+  docker run --rm --env-file .env -v pcomirror-data:/data pcomirror:latest reconcile --audit
+  ```
+  Or, against the already-running container (note the explicit `python -m
+  pcomirror` — `docker exec` bypasses the image's ENTRYPOINT):
+  ```sh
+  docker exec pcomirror python -m pcomirror drift
+  ```
+  Doing this while `serve` is running is safe: the DB is WAL with a busy timeout.
 
 ### Test it
 
