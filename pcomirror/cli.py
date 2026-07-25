@@ -8,7 +8,7 @@ import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
-from . import registry
+from . import apikeys, registry
 from .app import Mirror
 from .config import Settings
 from .webhooks import upsert_subscription
@@ -91,9 +91,44 @@ def cmd_add_subscription(args):
     print(f"subscription {args.event} -> {_receiver_url(m.settings, token)}")
 
 
+def cmd_create_api_key(args):
+    """Mint a local API key. The secret is printed once and never stored."""
+    m = _mirror()
+    key = apikeys.create(m.db, args.name, args.scopes)
+    print(f"name:   {args.name}\nscopes: {args.scopes}\nkey:    {key}\n"
+          "\nStore it now — only its hash is kept, so it cannot be shown again.")
+
+
+def cmd_list_api_keys(args):
+    m = _mirror()
+    rows = apikeys.listing(m.db)
+    if not rows:
+        print("no API keys")
+        return
+    print(f"{'PREFIX':10} {'NAME':20} {'SCOPES':28} {'LAST USED':21} STATE")
+    for r in rows:
+        state = "revoked" if r["disabled_at"] else "active"
+        print(f"{r['prefix']:10} {(r['name'] or '-'):20} {r['scopes']:28} "
+              f"{(r['last_used_at'] or 'never'):21} {state}")
+
+
+def cmd_revoke_api_key(args):
+    m = _mirror()
+    if apikeys.revoke(m.db, args.prefix):
+        print(f"revoked {args.prefix}")
+    else:
+        sys.exit(f"no active key with prefix {args.prefix}")
+
+
 def cmd_serve(args):
     m = _mirror()
     _apply_env_subscriptions(m)
+    if m.settings.allow_anonymous:
+        print("[serve] PCOMIRROR_ALLOW_ANONYMOUS is set — /people/v2 is served "
+              "without an API key. Do not expose this service publicly.")
+    elif not apikeys.any_enabled(m.db):
+        print("[serve] no API keys configured — /people/v2 will return 401. "
+              "Create one with `pcomirror create-api-key --name <app>`.")
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)
     sched = None
@@ -139,6 +174,15 @@ def main(argv=None):
                                        "pick one to know the URL before registering at PCO. "
                                        "Default: keep the existing token, else generate one.")
     a.set_defaults(func=cmd_add_subscription)
+    k = sub.add_parser("create-api-key")
+    k.add_argument("--name", required=True, help="which app this key is for")
+    k.add_argument("--scopes", default=apikeys.DEFAULT_SCOPES,
+                   help="comma-separated: read:* or read:<endpoint>, write, passthrough "
+                        f"(default: {apikeys.DEFAULT_SCOPES})")
+    k.set_defaults(func=cmd_create_api_key)
+    sub.add_parser("list-api-keys").set_defaults(func=cmd_list_api_keys)
+    rv = sub.add_parser("revoke-api-key")
+    rv.add_argument("--prefix", required=True); rv.set_defaults(func=cmd_revoke_api_key)
     args = p.parse_args(argv)
     args.func(args)
 

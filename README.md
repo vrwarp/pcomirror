@@ -104,6 +104,54 @@ Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
 and fail if PCO fails (`DESIGN.md` §8.4).
 
+### Authentication
+
+Two strictly separated credential planes (`DESIGN.md` §8.4):
+
+| Plane | Direction | Mechanism |
+| --- | --- | --- |
+| **PCO PAT** | pcomirror → PCO | HTTP Basic `app_id:secret` from `PCO_APP_ID` / `PCO_SECRET`. Server-side only; never exposed to or selectable by callers. |
+| **Webhook secret** | PCO → pcomirror | HMAC-SHA256 over the raw body, keyed on the subscription's `authenticity_secret`, found by the `url_token` in the path. |
+| **API key** | your apps → pcomirror | `Authorization: Bearer pcm_…`, hashed at rest, scoped. |
+
+`/people/v2/**` requires an API key. Mint one — the secret is printed once and
+only its SHA-256 digest is stored, so it cannot be recovered later:
+
+```sh
+python3 -m pcomirror create-api-key --name dashboard --scopes 'read:*'
+python3 -m pcomirror list-api-keys          # prefixes, scopes, last-used, state
+python3 -m pcomirror revoke-api-key --prefix bb2d7fbb
+```
+
+```sh
+curl -H 'Authorization: Bearer pcm_bb2d7fbb_7187…' \
+     http://localhost:8080/people/v2/people
+```
+
+**Scopes** are comma-separated:
+
+- `read:*` — read every mirrored collection; `read:people`, `read:emails`, … grant
+  one endpoint each.
+- `write` — `POST` / `PATCH` / `DELETE`, which write through to PCO.
+- `passthrough` — let the caller spend the server's PCO credential on requests the
+  mirror can't answer (an unmirrored type, or `?passthrough=1` on a mirror miss).
+  Deliberately separate from `read:*`: reading the local mirror is free, calling
+  PCO is not.
+
+Missing or invalid key → `401` with a `WWW-Authenticate: Bearer` challenge; valid
+key without the right scope → `403`. `/healthz` and `/readyz` stay public so the
+container healthcheck works, and the webhook receiver stays public because it
+authenticates with its own HMAC.
+
+**It fails closed.** With no keys created, `/people/v2/**` returns `401` (saying so,
+with the command to fix it) rather than serving data. `serve` prints the same
+warning at startup. To keep the old open behaviour on a trusted LAN, set
+`PCOMIRROR_ALLOW_ANONYMOUS=1` — `serve` then warns on every start that the service
+must not be exposed publicly.
+
+Not yet enforced: the `rate_limit_per_min` / `passthrough_quota_per_min` columns
+on `api_key` are part of the §8.4 design but nothing reads them today.
+
 ### Run it in Docker
 
 The service ships as a small, dependency-free image (`python:3.13-slim`, no build
@@ -220,8 +268,13 @@ and exits, rather than surfacing a SQLite traceback:
 - **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
-  `PCO_CA_BUNDLE` (if PCO egress goes via a proxy), and the container-friendly
-  defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
+  `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
+  and the container-friendly defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` /
+  `PCOMIRROR_PORT`.
+- **API keys live in the DB**, so create one against the same volume:
+  `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.
+  They are deliberately not settable from the environment — that would mean
+  storing them in plaintext instead of hashed.
 - **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
   reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
   terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`

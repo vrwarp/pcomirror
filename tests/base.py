@@ -13,11 +13,14 @@ from pcomirror.config import Settings     # noqa: E402
 from fakepco import FakePCO               # noqa: E402
 
 
-def build(fake: FakePCO | None = None) -> tuple[Mirror, FakePCO]:
+def build(fake: FakePCO | None = None, allow_anonymous: bool = True) -> tuple[Mirror, FakePCO]:
+    """`allow_anonymous` defaults on so the serving tests can stay about serving;
+    the api_key plane has its own suite (test_apikeys.py)."""
     fake = fake or FakePCO()
     path = os.path.join(tempfile.mkdtemp(), "test.db")
     settings = Settings(db_path=path, rate_target_rps=1_000_000.0,
-                        pco_app_id="app", pco_secret="sec")
+                        pco_app_id="app", pco_secret="sec",
+                        allow_anonymous=allow_anonymous)
     return Mirror(settings, transport=fake), fake
 
 
