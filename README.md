@@ -104,6 +104,26 @@ Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
 and fail if PCO fails (`DESIGN.md` §8.4).
 
+**URLs in responses point back at the mirror.** A caller holds a pcomirror API
+key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
+Every `api.planningcenteronline.com/people/v2/...` URL — in `links`, in
+`relationships.<rel>.links`, and in pass-through and write-through responses — is
+rewritten to a mirror-relative path. Two are deliberately left absolute because
+they are not API endpoints: `links.html` (PCO's web UI for a record) and the
+avatar URLs (PCO's image CDN; the mirror doesn't proxy blobs).
+
+The `links` map is **generated from the registry**, not echoed from PCO. PCO
+returns a smaller map for a list page than for a single-resource fetch, so
+echoing it made a record's shape depend on whether it arrived via backfill or
+reconcile. The generated map is the same either way; `html` is the one entry
+passed through, since it needs PCO's account-prefixed id and can't be derived.
+
+PCO exposes relationships the mirror doesn't cover (`notes`, `workflow_cards`,
+`background_checks`, …). Those aren't advertised in the generated map, but
+requesting one resolves against PCO via pass-through rather than failing, so no
+mirror path is a dead end. That spends the server's PCO credential, so the
+caller's key needs the `passthrough` scope.
+
 ### Authentication
 
 Two strictly separated credential planes (`DESIGN.md` §8.4):

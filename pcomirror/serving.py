@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 
-from . import apikeys, registry
+from . import apikeys, links, registry
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
 
@@ -113,7 +113,7 @@ class Application:
             if len(segs) == 2:
                 return self._single(r, segs[1], qs, environ, scopes)
             if len(segs) == 3:
-                return self._nested(r, segs[1], segs[2], qs, environ)
+                return self._nested(r, segs[1], segs[2], qs, environ, scopes)
             raise _HttpError(404, "bad path")
         if method in ("POST", "PATCH", "DELETE"):
             self._require(scopes, apikeys.SCOPE_WRITE)
@@ -168,10 +168,14 @@ class Application:
             body["included"] = included
         return 200, {"X-Mirror-Source": "mirror"}, body
 
-    def _nested(self, r, pco_id, rel_name, qs, environ):
+    def _nested(self, r, pco_id, rel_name, qs, environ, scopes=None):
         rel = r.relationships.get(rel_name)
         if rel is None:
-            raise _HttpError(400, f"unknown relationship {rel_name}")
+            # PCO exposes relationships the mirror does not cover (notes,
+            # workflow_cards, …). The generated link map does not advertise them,
+            # but a caller porting PCO URLs will still ask — resolve it against PCO
+            # rather than 400, so no mirror path is a dead end.
+            return self._passthrough("GET", environ.get("PATH_INFO"), qs, b"", scopes)
         row = self.db.query_one(f"SELECT * FROM {r.table} WHERE pco_id=? AND deleted_at IS NULL", (pco_id,))
         if row is None:
             raise _HttpError(404, "not found")
@@ -197,7 +201,8 @@ class Application:
                 self.writer.route(item, "passthrough")
         for inc in out.get("included", []) or []:
             self.writer.route(inc, "passthrough")
-        return resp.status, dict(resp.headers), out
+        # Store PCO's payload verbatim, but hand the caller mirror-relative links.
+        return resp.status, dict(resp.headers), links.rewrite_document(out, self.s)
 
     # -- pass-through (non-mirrorable / miss / freshness) -----------------
     def _passthrough(self, method, path, qs, body, scopes=None):
@@ -216,7 +221,10 @@ class Application:
             for item in ([out.get("data")] if isinstance(out.get("data"), dict) else out.get("data", []) or []):
                 if item and registry.by_type(item.get("type", "")):
                     self.writer.route(item, "passthrough")
-        return resp.status, {"X-Mirror-Source": "passthrough"}, out or {"status": resp.status}
+        # Warm the mirror from PCO's payload above, then rewrite for the caller —
+        # a proxied response must not hand back URLs needing a PCO credential.
+        return (resp.status, {"X-Mirror-Source": "passthrough"},
+                links.rewrite_document(out, self.s) or {"status": resp.status})
 
     # -- query building ----------------------------------------------------
     def _build_where(self, r, qs):
@@ -325,8 +333,11 @@ class Application:
         obj = json.loads(row["raw"])
         obj.setdefault("id", row["pco_id"])
         obj.setdefault("type", r.type)
-        obj.setdefault("links", {})
-        obj["links"]["self"] = f"/people/v2/{r.endpoint.strip('/')}/{row['pco_id']}"
+        # Generated from the registry rather than echoed from `raw`: PCO returns a
+        # different link map for a list page than for a single fetch, which made a
+        # record's shape depend on how it was synced.
+        obj["links"] = links.link_map(r, row["pco_id"], (obj.get("links") or {}).get("html"))
+        links.rewrite_relationships(obj, self.s)
         obj["meta"] = {"mirror": {"last_synced_at": row["last_synced_at"],
                                   "pco_updated_at": row["pco_updated_at"],
                                   "source": row["source"], "deleted_at": row["deleted_at"]}}
