@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import urllib.parse
 
-from . import registry
+from . import apikeys, registry
+from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
 
 JSONAPI = "application/vnd.api+json"
@@ -25,6 +26,7 @@ class Application:
     def __init__(self, db, writer, ingestor, client, webhooks, settings):
         self.db, self.writer, self.ingestor = db, writer, ingestor
         self.client, self.webhooks, self.s = client, webhooks, settings
+        self.admin = AdminApp(db, settings)
 
     # -- WSGI --------------------------------------------------------------
     def __call__(self, environ, start_response):
@@ -35,7 +37,8 @@ class Application:
         try:
             status, headers, payload = self.route(method, path, qs, body, environ)
         except _HttpError as e:
-            status, headers, payload = e.status, {}, {"errors": [{"code": str(e.status), "detail": e.detail}]}
+            headers = {"WWW-Authenticate": 'Bearer realm="pcomirror"'} if e.status == 401 else {}
+            status, payload = e.status, {"errors": [{"code": str(e.status), "detail": e.detail}]}
         except Exception as e:  # noqa: BLE001
             status, headers, payload = 500, {}, {"errors": [{"code": "500", "detail": str(e)}]}
         raw = payload if isinstance(payload, (bytes, bytearray)) else json.dumps(payload).encode()
@@ -51,6 +54,26 @@ class Application:
             n = 0
         return environ["wsgi.input"].read(n) if n else b""
 
+    # -- auth (DESIGN §8.4: the local api_key plane) -----------------------
+    def _authenticate(self, environ) -> set[str]:
+        """Return the caller's scopes, or raise 401. `/healthz`, `/readyz` and the
+        webhook receiver are exempt (the receiver carries its own HMAC auth)."""
+        if self.s.allow_anonymous:
+            return {"read:*", apikeys.SCOPE_WRITE, apikeys.SCOPE_PASSTHROUGH}
+        row = apikeys.authenticate(self.db, environ.get("HTTP_AUTHORIZATION"))
+        if row is None:
+            if not apikeys.any_enabled(self.db):
+                # Fail closed, but say why: an empty key table is a fresh install,
+                # not an attack.
+                raise _HttpError(401, "no API keys configured — run "
+                                      "`pcomirror create-api-key --name <app>`")
+            raise _HttpError(401, "missing or invalid API key")
+        return apikeys.parse_scopes(row["scopes"])
+
+    def _require(self, scopes: set[str], needed: str) -> None:
+        if needed not in scopes:
+            raise _HttpError(403, f"key lacks the {needed!r} scope")
+
     # -- routing -----------------------------------------------------------
     def route(self, method, path, qs, body, environ):
         if path == "/healthz":
@@ -63,6 +86,11 @@ class Application:
             sig = environ.get("HTTP_X_PCO_WEBHOOKS_AUTHENTICITY")
             code, note = self.webhooks.receive(token, body, sig)
             return code, {}, {"status": note}
+        # The operator page carries its own session auth, not an API key.
+        if admin_handles(path):
+            return self.admin.handle(method, path, qs, body, environ)
+
+        scopes = self._authenticate(environ)
 
         prefix = "/people/v2/"
         if not path.startswith(prefix):
@@ -74,18 +102,21 @@ class Application:
         if r is None:
             # unmirrored type -> pass-through
             if method == "GET":
-                return self._passthrough(method, path, qs, body)
+                return self._passthrough(method, path, qs, body, scopes)
             raise _HttpError(404, f"unknown type {segs[0]}")
 
         if method == "GET":
+            if not apikeys.allows_read(scopes, segs[0]):
+                raise _HttpError(403, f"key lacks the 'read:{segs[0]}' scope")
             if len(segs) == 1:
                 return self._collection(r, qs, environ)
             if len(segs) == 2:
-                return self._single(r, segs[1], qs, environ)
+                return self._single(r, segs[1], qs, environ, scopes)
             if len(segs) == 3:
                 return self._nested(r, segs[1], segs[2], qs, environ)
             raise _HttpError(404, "bad path")
         if method in ("POST", "PATCH", "DELETE"):
+            self._require(scopes, apikeys.SCOPE_WRITE)
             return self._write_through(method, path, r, segs, body)
         raise _HttpError(405, "method not allowed")
 
@@ -115,11 +146,11 @@ class Application:
             body["included"] = included
         return 200, {"X-Mirror-Source": "mirror"}, body
 
-    def _single(self, r, pco_id, qs, environ):
+    def _single(self, r, pco_id, qs, environ, scopes=None):
         row = self.db.query_one(f"SELECT * FROM {r.table} WHERE pco_id=?", (pco_id,))
         if row is None:
             if qs.get("passthrough", [""])[0] in ("1", "on", "auto") or qs.get("fallback", [""])[0] == "1":
-                return self._passthrough("GET", environ.get("PATH_INFO"), qs, b"")
+                return self._passthrough("GET", environ.get("PATH_INFO"), qs, b"", scopes)
             raise _HttpError(404, "not found")
         if row["deleted_at"] is not None:
             headers = {}
@@ -169,7 +200,12 @@ class Application:
         return resp.status, dict(resp.headers), out
 
     # -- pass-through (non-mirrorable / miss / freshness) -----------------
-    def _passthrough(self, method, path, qs, body):
+    def _passthrough(self, method, path, qs, body, scopes=None):
+        # Spending the server's PCO credential is a distinct privilege from
+        # reading the mirror, so it needs its own scope. `scopes=None` means an
+        # internal caller that has already been authorised.
+        if scopes is not None:
+            self._require(scopes, apikeys.SCOPE_PASSTHROUGH)
         pco_path = path[len("/people/v2"):] if path.startswith("/people/v2") else path
         params = {k: v[0] for k, v in qs.items() if k not in ("passthrough", "fallback")}
         resp = self.client.request(method, pco_path, params=params or None,

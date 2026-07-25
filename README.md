@@ -104,12 +104,97 @@ Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
 and fail if PCO fails (`DESIGN.md` §8.4).
 
+### Authentication
+
+Two strictly separated credential planes (`DESIGN.md` §8.4):
+
+| Plane | Direction | Mechanism |
+| --- | --- | --- |
+| **PCO PAT** | pcomirror → PCO | HTTP Basic `app_id:secret` from `PCO_APP_ID` / `PCO_SECRET`. Server-side only; never exposed to or selectable by callers. |
+| **Webhook secret** | PCO → pcomirror | HMAC-SHA256 over the raw body, keyed on the subscription's `authenticity_secret`, found by the `url_token` in the path. |
+| **API key** | your apps → pcomirror | `Authorization: Bearer pcm_…`, hashed at rest, scoped. |
+
+`/people/v2/**` requires an API key. Mint one — the secret is printed once and
+only its SHA-256 digest is stored, so it cannot be recovered later:
+
+```sh
+python3 -m pcomirror create-api-key --name dashboard --scopes 'read:*'
+python3 -m pcomirror list-api-keys          # prefixes, scopes, last-used, state
+python3 -m pcomirror revoke-api-key --prefix bb2d7fbb
+```
+
+```sh
+curl -H 'Authorization: Bearer pcm_bb2d7fbb_7187…' \
+     http://localhost:8080/people/v2/people
+```
+
+**Scopes** are comma-separated:
+
+- `read:*` — read every mirrored collection; `read:people`, `read:emails`, … grant
+  one endpoint each.
+- `write` — `POST` / `PATCH` / `DELETE`, which write through to PCO.
+- `passthrough` — let the caller spend the server's PCO credential on requests the
+  mirror can't answer (an unmirrored type, or `?passthrough=1` on a mirror miss).
+  Deliberately separate from `read:*`: reading the local mirror is free, calling
+  PCO is not.
+
+Missing or invalid key → `401` with a `WWW-Authenticate: Bearer` challenge; valid
+key without the right scope → `403`. `/healthz` and `/readyz` stay public so the
+container healthcheck works, and the webhook receiver stays public because it
+authenticates with its own HMAC.
+
+**It fails closed.** With no keys created, `/people/v2/**` returns `401` (saying so,
+with the command to fix it) rather than serving data. `serve` prints the same
+warning at startup. To keep the old open behaviour on a trusted LAN, set
+`PCOMIRROR_ALLOW_ANONYMOUS=1` — `serve` then warns on every start that the service
+must not be exposed publicly.
+
+Not yet enforced: the `rate_limit_per_min` / `passthrough_quota_per_min` columns
+on `api_key` are part of the §8.4 design but nothing reads them today.
+
+### Admin page
+
+The root path (`http://localhost:8080/`) serves an operator console: create and
+revoke API keys, and read cache statistics. Server-rendered HTML, no JavaScript,
+no external assets.
+
+**First login** uses your `PCO_SECRET` as the password. That is not a security
+claim — anything that can read the container's environment already holds the PAT,
+so the PAT is the weakest link and a separate bootstrap secret would be theatre.
+The first login is therefore forced through a password change, and once you set a
+password `PCO_SECRET` stops working as a login. Passwords are stored as
+PBKDF2-HMAC-SHA256 (600k iterations, per-password salt); minimum 12 characters.
+
+If no password has been set *and* `PCO_SECRET` is empty, the page says so and
+admits nobody, rather than accepting an empty password.
+
+What the console shows:
+
+- **Cache** — live and tombstoned row counts per resource, oldest sync timestamp,
+  backfill and last-sweep times, consecutive errors, on-disk size (DB + WAL), and
+  **drift**: mirror count minus PCO's reported total at the last probe. Non-zero
+  drift means a sweep is due.
+- **API keys** — prefix, name, scopes, last used; create with scope checkboxes
+  (the secret is displayed exactly once), and revoke inline.
+- **Webhooks** — registered subscriptions with their receiver tokens and last
+  event, delivery and event counts by status, and dead-letter count.
+
+Session hardening: `HttpOnly` + `SameSite=Strict` cookies (`Secure` too when the
+request arrives over HTTPS, including via `X-Forwarded-Proto` from a reverse
+proxy), 12-hour expiry, tokens stored only as a SHA-256 digest, CSRF tokens on
+every state-changing form, a 5-attempt/60-second login lockout, and
+`Content-Security-Policy: default-src 'none'` since the page runs no scripts.
+Changing the password invalidates every existing session.
+
+The console is deliberately outside the API-key plane: an API key is for machines
+and cannot reach `/admin/**`, and an admin session cannot read `/people/v2/**`.
+
 ### Run it in Docker
 
 The service ships as a small, dependency-free image (`python:3.13-slim`, no build
-step). It runs as a non-root user, binds `0.0.0.0:8080`, persists the SQLite file
-to a `/data` volume, handles `SIGTERM` for clean `docker stop`, and has a built-in
-healthcheck on `/healthz`.
+step). It runs as a non-root user (`PUID`/`PGID`-configurable), binds
+`0.0.0.0:8080`, persists the SQLite file to a `/data` volume, handles `SIGTERM`
+for clean `docker stop`, and has a built-in healthcheck on `/healthz`.
 
 ```sh
 cp .env.example .env          # fill in PCO_APP_ID / PCO_SECRET / PCOMIRROR_PUBLIC_URL
@@ -170,12 +255,47 @@ JSON form instead:
 ```
 
 **On a Synology specifically:** paste the variables into Container Manager's
-*Environment* tab (or import `docker-compose.yml` as a Project). Prefer the named
-volume over a bind mount — the container runs as uid `10001`, so a
-`/volume1/docker/pcomirror` bind mount needs `chown -R 10001:10001` first or
-SQLite can't create its WAL files. For TLS, point *Control Panel → Login Portal →
-Advanced → Reverse Proxy* at `localhost:8080` and set `PCOMIRROR_PUBLIC_URL` to
-the public hostname.
+*Environment* tab (or import `docker-compose.yml` as a Project). If you bind-mount
+a share instead of using the named volume, set `PUID`/`PGID` to the host user that
+owns it (see below) — otherwise SQLite fails with `unable to open database file`.
+For TLS, point *Control Panel → Login Portal → Advanced → Reverse Proxy* at
+`localhost:8080` and set `PCOMIRROR_PUBLIC_URL` to the public hostname.
+
+#### `PUID` / `PGID`
+
+A bind-mounted directory keeps its *host* ownership, which is why the image's
+default uid can't write to it. Point the container at the owning user instead:
+
+```sh
+docker run -d --name pcomirror -p 8080:8080 \
+  -v /volume1/docker/pcomirror:/data \
+  -e PUID=1026 -e PGID=100 \
+  ... vrwarp/pcomirror:latest
+```
+
+On a Synology, `id <your-user>` over SSH gives those numbers (`1026`/`100` is a
+typical first admin user / `users` group). Find the owner of an existing folder
+with `stat -c '%u %g' /volume1/docker/pcomirror`.
+
+How it works: the container starts as root just long enough to `chown` the data
+directory (and the `.db` / `-wal` / `-shm` files in it) to `PUID:PGID`, then
+permanently drops to that user before exec'ing the app — the service itself never
+runs as root. The chown is skipped when ownership already matches, so restarts are
+cheap. Defaults are `10001:10001`, identical to the image's previous fixed user, so
+leaving both unset changes nothing.
+
+Starting the container with `--user` (or compose's `user:`) still works and takes
+precedence: the entrypoint sees it is already non-root, warns that `PUID`/`PGID`
+can't be applied, and runs the command unchanged. In that mode the host directory
+must already be writable by the uid you chose.
+
+If the data directory still isn't writable, the entrypoint now says so directly
+and exits, rather than surfacing a SQLite traceback:
+
+```
+[entrypoint] /data is not writable by uid 1000:1000 (owned by 0:0, mode 755).
+[entrypoint] If it is a bind mount, either set PUID/PGID to the host user that owns it, ...
+```
 
 **Container specifics**
 
@@ -184,9 +304,14 @@ the public hostname.
   or copy the file). Everything else is disposable.
 - **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
-  `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PCO_CA_BUNDLE` (if
-  PCO egress goes via a proxy), and the container-friendly defaults
-  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
+  `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
+  `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
+  and the container-friendly defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` /
+  `PCOMIRROR_PORT`.
+- **API keys live in the DB**, so create one against the same volume:
+  `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.
+  They are deliberately not settable from the environment — that would mean
+  storing them in plaintext instead of hashed.
 - **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
   reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
   terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`

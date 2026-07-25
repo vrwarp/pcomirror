@@ -10,6 +10,9 @@ services:
       - .env                        # PCO_APP_ID, PCO_SECRET, PCOMIRROR_PUBLIC_URL, ...
     volumes:
       - pcomirror-data:/data        # the SQLite file persists here
+    # Bind-mounting a host directory instead? Set PUID/PGID in .env to the uid:gid
+    # that owns it, e.g.
+    #   - /volume1/docker/pcomirror:/data
     # First boot: set PCOMIRROR_BACKFILL_ON_START=1 in .env to auto-load, or run
     #   docker compose run --rm pcomirror backfill
     # Webhooks: declare them in .env via PCOMIRROR_SUBSCRIPTIONS (applied on every

@@ -99,6 +99,8 @@ class Settings:
     backfill_on_start: bool = False
     # webhook subscriptions declared in the environment, re-applied on every `serve`
     subscriptions: list = field(default_factory=list)
+    # serve /people/v2 without an API key — LAN-only escape hatch (DESIGN §8.4)
+    allow_anonymous: bool = False
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -116,6 +118,7 @@ class Settings:
         s.public_base_url = e.get("PCOMIRROR_PUBLIC_URL", s.public_base_url)
         s.backfill_on_start = _truthy(e.get("PCOMIRROR_BACKFILL_ON_START"))
         s.subscriptions = parse_subscriptions(e.get("PCOMIRROR_SUBSCRIPTIONS"))
+        s.allow_anonymous = _truthy(e.get("PCOMIRROR_ALLOW_ANONYMOUS"))
         if e.get("PCOMIRROR_RATE_TARGET_RPS"):
             s.rate_target_rps = float(e["PCOMIRROR_RATE_TARGET_RPS"])
         return s

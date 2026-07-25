@@ -80,6 +80,17 @@ CREATE TABLE IF NOT EXISTS api_key (
   rate_limit_per_min INTEGER NOT NULL DEFAULT 600, passthrough_quota_per_min INTEGER NOT NULL DEFAULT 60,
   disabled_at TEXT, last_used_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+CREATE TABLE IF NOT EXISTS admin_account (
+  id INTEGER PRIMARY KEY CHECK (id = 1),          -- single operator account
+  password_hash BLOB NOT NULL, password_salt BLOB NOT NULL, iterations INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE TABLE IF NOT EXISTS admin_session (
+  token_hash BLOB PRIMARY KEY,                    -- sha256(token); the token itself is never stored
+  csrf TEXT NOT NULL, must_change_password INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS passthrough_cache (
   cache_key TEXT PRIMARY KEY, status INTEGER, body TEXT, headers TEXT,
   fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), expires_at TEXT NOT NULL
