@@ -9,11 +9,17 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
+import secrets
 
 from . import registry
 from .config import now_iso
 
 BURST_THRESHOLD = 200  # pending per-id hydrations above which we defer to a sweep
+
+# A url_token is the last path segment of the receiver URL, so keep it to
+# characters that survive a URL untouched (DESIGN §6, `POST /pco/webhooks/<url_token>`).
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
 def verify(secret: str, raw: bytes, signature: str | None) -> bool:
@@ -32,6 +38,36 @@ def parse_event_name(name: str) -> tuple[str, str]:
     parts = name.split(".")
     # people.v2.events.<resource>.<action>
     return (parts[-2], parts[-1]) if len(parts) >= 2 else (name, "")
+
+
+def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
+                        url_token: str | None = None) -> tuple[str, bool]:
+    """Register (or refresh) a subscription row; returns `(url_token, created)`.
+
+    Idempotent by `subscription_pco_id` so it can run on every container start:
+    a repeat registration updates the event and secret but *keeps the existing
+    token* unless a new one is passed explicitly — the receiver URL already
+    registered at PCO must never change underneath it.
+
+    Passing `url_token` lets the caller pick the token up front, so the receiver
+    URL is known before the subscription exists at PCO (which is what supplies
+    the `authenticity_secret`), breaking that ordering cycle.
+    """
+    if url_token is not None and not TOKEN_RE.match(url_token):
+        raise ValueError(f"invalid url_token {url_token!r}: expected 8-64 chars of [A-Za-z0-9_-]")
+    row = db.query_one(
+        "SELECT url_token FROM webhook_subscription WHERE subscription_pco_id=?", (subscription_id,))
+    token = url_token or (row["url_token"] if row else secrets.token_hex(16))
+    resource, action = parse_event_name(event_name)
+    db.execute(
+        "INSERT INTO webhook_subscription"
+        "(subscription_pco_id,event_name,resource,action,url_token,authenticity_secret) "
+        "VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(subscription_pco_id) DO UPDATE SET "
+        "event_name=excluded.event_name, resource=excluded.resource, action=excluded.action, "
+        "url_token=excluded.url_token, authenticity_secret=excluded.authenticity_secret, active=1",
+        (subscription_id, event_name, resource, action, token, secret))
+    return token, row is None
 
 
 class WebhookProcessor:

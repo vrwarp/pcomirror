@@ -12,9 +12,11 @@ services:
       - pcomirror-data:/data        # the SQLite file persists here
     # First boot: set PCOMIRROR_BACKFILL_ON_START=1 in .env to auto-load, or run
     #   docker compose run --rm pcomirror backfill
-    # Register a webhook (secret from PCO):
+    # Webhooks: declare them in .env via PCOMIRROR_SUBSCRIPTIONS (applied on every
+    # start, no follow-up command), or register one ad hoc:
     #   docker compose run --rm pcomirror add-subscription \
-    #     --subscription-id <id> --event people.v2.events.person.updated --secret <authenticity_secret>
+    #     --subscription-id <id> --event people.v2.events.person.updated \
+    #     --secret <authenticity_secret> --url-token person-updated-01
 
 volumes:
   pcomirror-data:
