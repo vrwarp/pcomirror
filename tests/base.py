@@ -49,5 +49,8 @@ def _wsgi(app, method, path, query, body, headers):
     chunks = app(env, start_response)
     raw = b"".join(chunks)
     import json
-    parsed = json.loads(raw) if raw else None
+    try:
+        parsed = json.loads(raw) if raw else None
+    except ValueError:
+        parsed = raw                       # HTML (the admin page) comes back as bytes
     return captured["status"], captured["headers"], parsed

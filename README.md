@@ -152,6 +152,43 @@ must not be exposed publicly.
 Not yet enforced: the `rate_limit_per_min` / `passthrough_quota_per_min` columns
 on `api_key` are part of the §8.4 design but nothing reads them today.
 
+### Admin page
+
+The root path (`http://localhost:8080/`) serves an operator console: create and
+revoke API keys, and read cache statistics. Server-rendered HTML, no JavaScript,
+no external assets.
+
+**First login** uses your `PCO_SECRET` as the password. That is not a security
+claim — anything that can read the container's environment already holds the PAT,
+so the PAT is the weakest link and a separate bootstrap secret would be theatre.
+The first login is therefore forced through a password change, and once you set a
+password `PCO_SECRET` stops working as a login. Passwords are stored as
+PBKDF2-HMAC-SHA256 (600k iterations, per-password salt); minimum 12 characters.
+
+If no password has been set *and* `PCO_SECRET` is empty, the page says so and
+admits nobody, rather than accepting an empty password.
+
+What the console shows:
+
+- **Cache** — live and tombstoned row counts per resource, oldest sync timestamp,
+  backfill and last-sweep times, consecutive errors, on-disk size (DB + WAL), and
+  **drift**: mirror count minus PCO's reported total at the last probe. Non-zero
+  drift means a sweep is due.
+- **API keys** — prefix, name, scopes, last used; create with scope checkboxes
+  (the secret is displayed exactly once), and revoke inline.
+- **Webhooks** — registered subscriptions with their receiver tokens and last
+  event, delivery and event counts by status, and dead-letter count.
+
+Session hardening: `HttpOnly` + `SameSite=Strict` cookies (`Secure` too when the
+request arrives over HTTPS, including via `X-Forwarded-Proto` from a reverse
+proxy), 12-hour expiry, tokens stored only as a SHA-256 digest, CSRF tokens on
+every state-changing form, a 5-attempt/60-second login lockout, and
+`Content-Security-Policy: default-src 'none'` since the page runs no scripts.
+Changing the password invalidates every existing session.
+
+The console is deliberately outside the API-key plane: an API key is for machines
+and cannot reach `/admin/**`, and an admin session cannot read `/people/v2/**`.
+
 ### Run it in Docker
 
 The service ships as a small, dependency-free image (`python:3.13-slim`, no build

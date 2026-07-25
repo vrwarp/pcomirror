@@ -11,6 +11,7 @@ import json
 import urllib.parse
 
 from . import apikeys, registry
+from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
 
 JSONAPI = "application/vnd.api+json"
@@ -25,6 +26,7 @@ class Application:
     def __init__(self, db, writer, ingestor, client, webhooks, settings):
         self.db, self.writer, self.ingestor = db, writer, ingestor
         self.client, self.webhooks, self.s = client, webhooks, settings
+        self.admin = AdminApp(db, settings)
 
     # -- WSGI --------------------------------------------------------------
     def __call__(self, environ, start_response):
@@ -84,6 +86,9 @@ class Application:
             sig = environ.get("HTTP_X_PCO_WEBHOOKS_AUTHENTICITY")
             code, note = self.webhooks.receive(token, body, sig)
             return code, {}, {"status": note}
+        # The operator page carries its own session auth, not an API key.
+        if admin_handles(path):
+            return self.admin.handle(method, path, qs, body, environ)
 
         scopes = self._authenticate(environ)
 
