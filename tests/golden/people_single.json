@@ -1,0 +1,107 @@
+{
+  "name": "people_single",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000001",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "data": {
+        "attributes": {
+          "accounting_administrator": true,
+          "anniversary": null,
+          "avatar": null,
+          "birthdate": "2003-02-09",
+          "can_create_forms": true,
+          "can_email_lists": true,
+          "child": false,
+          "created_at": "2024-01-06T22:43:30Z",
+          "demographic_avatar_url": null,
+          "directory_status": null,
+          "first_name": "Linnea0578",
+          "gender": "Male",
+          "given_name": null,
+          "grade": null,
+          "graduation_year": null,
+          "inactivated_at": null,
+          "last_name": "Yardley425",
+          "login_identifier": null,
+          "medical_notes": null,
+          "membership": "Full Member",
+          "middle_name": null,
+          "name": "Linnea0578 Yardley425",
+          "nickname": null,
+          "passed_background_check": null,
+          "people_permissions": "Manager",
+          "remote_id": null,
+          "resource_permission_flags": null,
+          "school_type": null,
+          "site_administrator": true,
+          "status": "active",
+          "updated_at": "2024-12-12T23:58:46Z"
+        },
+        "id": "100000001",
+        "links": {
+          "addresses": "https://api.planningcenteronline.com/people/XX2/people/100000001/addresses",
+          "apps": "https://api.planningcenteronline.com/people/XX2/people/100000001/apps",
+          "background_checks": "https://api.planningcenteronline.com/people/XX2/people/100000001/background_checks",
+          "connected_people": "https://api.planningcenteronline.com/people/XX2/people/100000001/connected_people",
+          "emails": "https://api.planningcenteronline.com/people/XX2/people/100000001/emails",
+          "field_data": "https://api.planningcenteronline.com/people/XX2/people/100000001/field_data",
+          "household_memberships": "https://api.planningcenteronline.com/people/XX2/people/100000001/household_memberships",
+          "households": "https://api.planningcenteronline.com/people/XX2/people/100000001/households",
+          "html": "https://people.planningcenteronline.com/people/XX100000001",
+          "inactive_reason": null,
+          "marital_status": "https://api.planningcenteronline.com/people/XX2/marital_statuses/1000001",
+          "message_groups": "https://api.planningcenteronline.com/people/XX2/people/100000001/message_groups",
+          "messages": "https://api.planningcenteronline.com/people/XX2/people/100000001/messages",
+          "name_prefix": null,
+          "name_suffix": null,
+          "notes": "https://api.planningcenteronline.com/people/XX2/people/100000001/notes",
+          "organization": "https://api.planningcenteronline.com/people/XX2/people/100000001/organization",
+          "person_apps": "https://api.planningcenteronline.com/people/XX2/people/100000001/person_apps",
+          "phone_numbers": "https://api.planningcenteronline.com/people/XX2/people/100000001/phone_numbers",
+          "platform_notifications": "https://api.planningcenteronline.com/people/XX2/people/100000001/platform_notifications",
+          "primary_campus": null,
+          "school": null,
+          "self": "https://api.planningcenteronline.com/people/XX2/people/100000001",
+          "social_profiles": "https://api.planningcenteronline.com/people/XX2/people/100000001/social_profiles",
+          "workflow_assignee_workflow_summaries": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_assignee_workflow_summaries",
+          "workflow_cards": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_cards",
+          "workflow_shares": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_shares"
+        },
+        "relationships": {
+          "primary_campus": {
+            "data": null
+          }
+        },
+        "type": "Person"
+      },
+      "meta": {
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "parent": {
+          "id": "100001",
+          "type": "Organization"
+        }
+      }
+    },
+    "status": 200
+  }
+}

@@ -1,0 +1,147 @@
+{
+  "api_version": "2026-06-04",
+  "calls": [
+    {
+      "name": "people_collection_default",
+      "path": "/people",
+      "query": "",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_child_filter_page1",
+      "path": "/people",
+      "query": "include=emails,phone_numbers,households&order=last_name&where[child]=true&per_page=25&offset=0",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_child_filter_page2",
+      "path": "/people",
+      "query": "include=emails,phone_numbers,households&order=last_name&where[child]=true&per_page=25&offset=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_last_name",
+      "path": "/people",
+      "query": "order=last_name&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_last_name_desc",
+      "path": "/people",
+      "query": "order=-last_name&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_where_grade",
+      "path": "/people",
+      "query": "where[grade]=8&per_page=25",
+      "records": 10,
+      "status": 200
+    },
+    {
+      "name": "people_single",
+      "path": "/people/100000001",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_single_include_contacts",
+      "path": "/people/100000001",
+      "query": "include=emails,phone_numbers,households",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_single_include_nested",
+      "path": "/people/100000001",
+      "query": "include=emails,phone_numbers,households,households.people",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_nested_emails",
+      "path": "/people/100000001/emails",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_nested_households",
+      "path": "/people/100000001/households",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "emails_collection",
+      "path": "/emails",
+      "query": "per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "emails_where_primary",
+      "path": "/emails",
+      "query": "where[primary]=true&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "phone_numbers_collection",
+      "path": "/phone_numbers",
+      "query": "per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "addresses_collection",
+      "path": "/addresses",
+      "query": "per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "households_collection",
+      "path": "/households",
+      "query": "per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "households_single",
+      "path": "/households/10000012",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "households_nested_people",
+      "path": "/households/10000012/people",
+      "query": "include=households",
+      "records": 4,
+      "status": 200
+    },
+    {
+      "name": "field_definitions_collection",
+      "path": "/field_definitions",
+      "query": "per_page=25",
+      "records": 6,
+      "status": 200
+    },
+    {
+      "name": "field_data_collection",
+      "path": "/field_data",
+      "query": "per_page=25",
+      "records": 25,
+      "status": 200
+    }
+  ],
+  "note": "Sanitized. Ids, names, contact details and dates are synthetic; id ordering and case-folded name ordering are preserved so ordering assertions remain meaningful.",
+  "source": "Planning Center People API"
+}

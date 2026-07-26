@@ -29,7 +29,18 @@ class Writer:
         return table
 
     # -- 7a. resources WITH updated_at -------------------------------------
-    def upsert(self, table: str, pco_id: str, raw: dict, source: str, now: str | None = None) -> None:
+    def upsert(self, table: str, pco_id: str, raw: dict, source: str, now: str | None = None,
+               primary: bool = True) -> None:
+        """`primary=False` marks a sideloaded copy from `included[]`.
+
+        At an equal `updated_at` the monotonic guard allows the write, which is
+        right for a correction and wrong for a sideload: PCO returns a resource in
+        `included[]` with only the relationships *that* document needed, so a
+        person sideloaded as a member of somebody else's household is a strictly
+        thinner record than the same person fetched directly. Letting it land
+        deleted their emails and phone numbers from the mirror until the next
+        sweep. A sideload may add and refresh; it may not make a record poorer.
+        """
         t = self._table(table)
         now = now or now_iso()
         self.db.execute(
@@ -37,7 +48,13 @@ class Writer:
                 VALUES(:pid,:raw,:now,:now,:source,:av)
                 ON CONFLICT(pco_id) DO UPDATE SET
                   last_synced_at=:now, source=excluded.source,
-                  raw=CASE WHEN excluded.pco_updated_at>=pco_updated_at THEN excluded.raw ELSE raw END,
+                  raw=CASE WHEN excluded.pco_updated_at>pco_updated_at THEN excluded.raw
+                           WHEN excluded.pco_updated_at<pco_updated_at THEN raw
+                           WHEN :primary=1 THEN excluded.raw
+                           WHEN (SELECT count(*) FROM json_each(excluded.raw,'$.relationships'))
+                              >= (SELECT count(*) FROM json_each({t}.raw,'$.relationships'))
+                                THEN excluded.raw
+                           ELSE raw END,
                   api_version=CASE WHEN excluded.pco_updated_at>=pco_updated_at THEN excluded.api_version ELSE api_version END,
                   deleted_at=CASE WHEN deleted_at IS NULL THEN NULL
                                   WHEN tombstone_reason='merged' THEN deleted_at
@@ -47,7 +64,8 @@ class Writer:
                   tombstone_reason=CASE WHEN deleted_at IS NOT NULL AND tombstone_reason<>'merged'
                                       AND excluded.pco_updated_at>tombstone_uat THEN NULL ELSE tombstone_reason END""",
             {"pid": pco_id, "raw": json.dumps(raw, separators=(",", ":")),
-             "now": now, "source": source, "av": self.api_version},
+             "now": now, "source": source, "av": self.api_version,
+             "primary": 1 if primary else 0},
         )
         if t == "field_datum":
             self._project_field_datum(pco_id)
@@ -97,7 +115,8 @@ class Writer:
             self._project_field_datum(pco_id)
 
     # -- sideload router ---------------------------------------------------
-    def route(self, resource: dict, source: str, owner_hint: dict | None = None) -> None:
+    def route(self, resource: dict, source: str, owner_hint: dict | None = None,
+              primary: bool = True, synthesized: frozenset = frozenset()) -> None:
         """Route one JSON:API resource (from data[] or included[]) to its table."""
         r = registry.by_type(resource.get("type", ""))
         if r is None:
@@ -107,20 +126,54 @@ class Writer:
             rels = resource.setdefault("relationships", {})
             if r.owner_rel not in rels or not rels[r.owner_rel].get("data"):
                 rels[r.owner_rel] = {"data": owner_hint}
+        stored = resource
+        rels = resource.get("relationships")
+        if synthesized and isinstance(rels, dict):
+            # PCO answers `include=households.people` by adding a `people`
+            # relationship to the *Person*. It is an artefact of the request, not
+            # part of the record, and storing it made every later read of that
+            # person claim a relationship PCO does not have.
+            #
+            # Copied rather than popped in place: on a pass-through this same
+            # object is the response being handed back to the caller, who asked
+            # for that include and is entitled to PCO's answer verbatim.
+            drop = {n for n in synthesized if n not in r.relationships and n in rels}
+            if drop:
+                stored = dict(resource)
+                stored["relationships"] = {k: v for k, v in rels.items() if k not in drop}
         if r.timestamped:
-            self.upsert(r.table, resource["id"], resource, source)
+            self.upsert(r.table, stored["id"], stored, source, primary=primary)
         else:
-            self.upsert_untimed(r.table, resource["id"], resource, source)
+            self.upsert_untimed(r.table, stored["id"], stored, source)
 
-    def route_page(self, body: dict, source: str) -> int:
-        """Apply a JSON:API list response's data[] + included[] to the mirror."""
+    @staticmethod
+    def synthesized_rels(include: str | None) -> frozenset:
+        """The relationship names PCO invents in response to a nested `include`."""
+        if not include:
+            return frozenset()
+        return frozenset(tok.partition(".")[2] for tok in include.split(",") if "." in tok)
+
+    def route_page(self, body: dict, source: str, synthesized: frozenset = frozenset()) -> int:
+        """Apply a JSON:API list response's data[] + included[] to the mirror.
+
+        `included[]` is applied *first*, so the primary representation wins.
+
+        A compound document can carry the same resource twice, and the two copies
+        are not equally good. `GET /people/X?include=households.people` returns X
+        in `data` with every requested relationship resolved, and returns X again
+        in `included` — as a member of their own household — carrying almost none.
+        Applying `data` first let the thin sideloaded copy overwrite it a moment
+        later (same `updated_at`, so the monotonic guard correctly allows the
+        write), and the person lost their emails, phone numbers and households.
+        The primary resource is the one the request was about; it goes last.
+        """
         n = 0
+        for inc in body.get("included", []) or []:
+            self.route(inc, source, primary=False, synthesized=synthesized)
         for item in body.get("data", []) if isinstance(body.get("data"), list) else [body.get("data")]:
             if item:
-                self.route(item, source)
+                self.route(item, source, synthesized=synthesized)
                 n += 1
-        for inc in body.get("included", []) or []:
-            self.route(inc, source)
         return n
 
     # -- field_datum typed columns ----------------------------------------

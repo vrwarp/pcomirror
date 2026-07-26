@@ -31,35 +31,46 @@ class Rel:
     via: str | None = None        # optional join table resource (e.g. household_membership)
     via_local_fk: str | None = None
     via_target_fk: str | None = None
+    # for kind="json"/"json_reverse": a JSON path on `raw` holding resource
+    # identifiers. PCO returns a person's households inline on the Person payload
+    # and offers no bulk endpoint for the join rows, so the array *is* the edge.
+    json_path: str | None = None
 
 
 @dataclass(frozen=True)
 class Search:
-    """A PCO `where[search_*]` filter — a normalised *substring* match, not equality.
+    """A PCO `where[search_*]` filter. Each arm has its own matching rule, and the
+    rules are not the same — every one below was measured against the live API
+    rather than reasoned about (the evidence is in `tests/golden/`).
 
-    PCO's search filters are fuzzy: `where[search_name]=ada byron` matches anyone
-    whose name contains that run of characters, and `search_name_or_email` widens
-    the same needle to the person's email addresses. Serving them as `col = ?`
-    would return nothing for almost every real query, so they are declared here
-    as a set of haystacks instead of as plain queryable columns.
+    `names` are SQL expressions matched with **word-prefix** semantics: the needle's
+    words must be a run of prefixes starting at a word boundary. `children` are
+    `(resource, child_fk, column, mode)` tuples matched with an EXISTS subquery,
+    where `mode` is one of:
 
-    `names` are SQL expressions over the resource's own columns. `children` are
-    `(resource, child_fk, column, mode)` tuples matched with an EXISTS subquery;
-    `mode` is `"text"` (case/whitespace-folded) or `"digits"` (digits only, so
-    formatting differences in a phone number do not matter).
+      * ``contains``      - normalised substring; how PCO matches email addresses
+      * ``digits_suffix`` - the stored number ends with the digits typed (phone)
+      * ``digits_exact``  - the same digits, punctuation discounted (E.164)
     """
     names: tuple[str, ...] = ()
     children: tuple[tuple[str, str, str, str], ...] = ()
 
 
-# The haystacks PCO searches a person's name against. `search_name` is PCO's own
-# precomputed field; the concatenations cover the two forms a human types — the
-# legal name and the one everybody actually uses.
+# The name haystacks, each matched from its own first word (see `db.name_matches`).
+#
+# There is no `attributes.search_name` on a PCO Person — the attribute does not
+# exist, so the column projected from it was always NULL. Nor does PCO index
+# "<nickname> <surname>" as a phrase: a nickname on its own finds the person,
+# that pairing finds nobody. Every field is therefore its own haystack, and the
+# full name is listed separately so a two-word needle like "ada by" can match
+# across the given name and the surname.
 _PERSON_NAMES = (
-    "search_name",
     "name",
     "coalesce(first_name,'') || ' ' || coalesce(last_name,'')",
-    "nickname || ' ' || coalesce(last_name,'')",
+    "first_name",
+    "last_name",
+    "nickname",
+    "given_name",
 )
 
 
@@ -110,14 +121,15 @@ _reg(Resource(
         ("last_name", "TEXT", "json", "$.attributes.last_name"),
         ("name", "TEXT", "json", "$.attributes.name"),
         ("nickname", "TEXT", "json", "$.attributes.nickname"),
+        # Searched by PCO's `where[search_name]`; `middle_name`, measured the same
+        # way, is not — so it is not projected.
+        ("given_name", "TEXT", "json", "$.attributes.given_name"),
         ("status", "TEXT", "json", "$.attributes.status"),
         ("membership", "TEXT", "json", "$.attributes.membership"),
         ("gender", "TEXT", "json", "$.attributes.gender"),
         ("grade", "TEXT", "json", "$.attributes.grade"),
         ("birthdate", "TEXT", "json", "$.attributes.birthdate"),
         ("anniversary", "TEXT", "json", "$.attributes.anniversary"),
-        ("primary_email", "TEXT", "json", "$.attributes.primary_email_address"),
-        ("search_name", "TEXT", "json", "$.attributes.search_name"),
         ("remote_id", "TEXT", "json", "$.attributes.remote_id"),
         ("child", "INTEGER", "json", "$.attributes.child"),
         ("primary_campus_id", "TEXT", "json", "$.relationships.primary_campus.data.id"),
@@ -134,29 +146,28 @@ _reg(Resource(
         "field_data": Rel("field_datum", "many", child_fk="person_pco_id"),
         "primary_campus": Rel("campus", "one", local_fk="primary_campus_id"),
         "marital_status": Rel("marital_status", "one", local_fk="marital_status_id"),
-        "households": Rel("household", "many", via="household_membership",
-                          via_local_fk="person_pco_id", via_target_fk="household_pco_id"),
-        "household_memberships": Rel("household_membership", "many", child_fk="person_pco_id"),
+        "households": Rel("household", "json",
+                          json_path="$.relationships.households.data"),
     },
     can_query_by=("created_at", "updated_at", "id", "remote_id", "primary_campus_id",
-                  "status", "first_name", "last_name", "nickname", "child", "grade",
-                  "gender", "membership", "birthdate", "anniversary"),
+                  "status", "first_name", "last_name", "nickname", "given_name",
+                  "child", "grade", "gender", "membership", "birthdate", "anniversary"),
     can_order_by=("created_at", "updated_at", "first_name", "last_name", "remote_id",
-                  "birthdate", "anniversary", "nickname", "child", "grade", "gender",
-                  "membership", "status"),
+                  "birthdate", "anniversary", "nickname", "given_name", "child",
+                  "grade", "gender", "membership", "status"),
     search_filters={
         "search_name": Search(names=_PERSON_NAMES),
         "search_name_or_email": Search(
             names=_PERSON_NAMES,
-            children=(("email", "person_pco_id", "address", "text"),)),
+            children=(("email", "person_pco_id", "address", "contains"),)),
         "search_phone_number": Search(
-            children=(("phone_number", "person_pco_id", "number", "digits"),)),
+            children=(("phone_number", "person_pco_id", "number", "digits_suffix"),)),
         "search_phone_number_e164": Search(
-            children=(("phone_number", "person_pco_id", "e164", "digits"),)),
+            children=(("phone_number", "person_pco_id", "e164", "digits_exact"),)),
         "search_name_or_email_or_phone_number": Search(
             names=_PERSON_NAMES,
-            children=(("email", "person_pco_id", "address", "text"),
-                      ("phone_number", "person_pco_id", "number", "digits"))),
+            children=(("email", "person_pco_id", "address", "contains"),
+                      ("phone_number", "person_pco_id", "number", "digits_suffix"))),
     },
 ))
 
@@ -257,17 +268,22 @@ _reg(Resource(
         ("primary_contact_id", "TEXT", "json", "$.relationships.primary_contact.data.id"),
     ),
     relationships={
-        "people": Rel("person", "many", via="household_membership",
-                      via_local_fk="household_pco_id", via_target_fk="person_pco_id"),
-        "household_memberships": Rel("household_membership", "many",
-                                     child_fk="household_pco_id"),
+        "people": Rel("person", "json_reverse",
+                      json_path="$.relationships.households.data"),
     },
     can_query_by=("created_at", "updated_at", "name"),
     can_order_by=("created_at", "updated_at", "name"),
 ))
+# Deliberately NOT mirrored. `GET /household_memberships` is a 404 — PCO exposes the
+# rows only under `/households/{id}/household_memberships`, one household at a time,
+# and the payload there carries no `household` relationship (the household id
+# appears only inside `links.self`). Mirroring it would mean a per-household walk
+# with no incremental signal to drive it, so the endpoints pass through instead and
+# the `households` edge is read off the Person payload, where PCO does provide it.
+# The table stays declared so the type is known and a payload can still be stored.
 _reg(Resource(
     name="household_membership", type="HouseholdMembership", table="household_membership",
-    endpoint="/household_memberships", tier="lite", method="reference_periodic",
+    endpoint="/household_memberships", tier="passthrough", method="passthrough_only",
     timestamped=False, supports_uat_filter=False, incr_interval_s=600, priority=2,
     projections=(
         ("household_pco_id", "TEXT", "json", "$.relationships.household.data.id"),

@@ -1,0 +1,620 @@
+{
+  "name": "emails_where_primary",
+  "request": {
+    "method": "GET",
+    "path": "/emails",
+    "query": "where[primary]=true&per_page=25"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "address": "rowan53@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:43:30Z",
+            "location": "Work",
+            "primary": true,
+            "updated_at": "2024-01-06T22:43:30Z"
+          },
+          "id": "10000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000001"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "briony32@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:45:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:45:04Z"
+          },
+          "id": "10000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000002"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "nessa93@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:51:32Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:51:32Z"
+          },
+          "id": "10000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000003"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000003",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "quenby93@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:38:49Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:38:49Z"
+          },
+          "id": "10000004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000004"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000007",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "wren72@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:01Z"
+          },
+          "id": "10000005",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000005"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100001245",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "oriel75@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:01Z"
+          },
+          "id": "10000006",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000006"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000021",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "perrin10@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:01Z"
+          },
+          "id": "10000007",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000007"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000023",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "nessa82@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:01Z"
+          },
+          "id": "10000008",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000008"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000024",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "cassian35@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:02Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:02Z"
+          },
+          "id": "10000009",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000009"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000027",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "marlow59@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:02Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:02Z"
+          },
+          "id": "10000010",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000010"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000028",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "quenby68@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:03Z"
+          },
+          "id": "10000011",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000011"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000032",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "kestrel78@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:03Z"
+          },
+          "id": "10000012",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000012"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000035",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "kestrel67@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:04Z"
+          },
+          "id": "10000013",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000013"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000037",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "tamsin89@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:04Z"
+          },
+          "id": "10000014",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000014"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000038",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "rowan74@example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:46:04Z"
+          },
+          "id": "10000015",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000015"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000043",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "delphine31@example.org",
+            "blocked": false,
+            "created_at": "2024-01-07T22:15:57Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-07T22:15:57Z"
+          },
+          "id": "10000016",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000016"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000004",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "cassian57@example.org",
+            "blocked": false,
+            "created_at": "2024-01-09T02:09:46Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-09T02:09:46Z"
+          },
+          "id": "10000017",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000017"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000048",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "rowan23@example.org",
+            "blocked": false,
+            "created_at": "2024-01-11T06:51:25Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-11T06:51:25Z"
+          },
+          "id": "10000018",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000018"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000049",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "yolande14@example.org",
+            "blocked": true,
+            "created_at": "2024-01-20T20:26:37Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2026-06-11T18:57:04Z"
+          },
+          "id": "10000019",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000019"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000051",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "nessa36@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:27Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:27Z"
+          },
+          "id": "10000020",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000020"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000054",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "emory82@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:27Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:27Z"
+          },
+          "id": "10000021",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000021"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000056",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "rowan35@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:27Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:27Z"
+          },
+          "id": "10000022",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000022"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000058",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "briony20@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:27Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:27Z"
+          },
+          "id": "10000023",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000023"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000057",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "ulric18@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:27Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:27Z"
+          },
+          "id": "10000024",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000024"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000388",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "rowan90@example.org",
+            "blocked": false,
+            "created_at": "2024-01-20T22:49:28Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-20T22:49:28Z"
+          },
+          "id": "10000025",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/emails/10000025"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000062",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/XX2/emails?offset=25&per_page=25&where[primary]=true",
+        "self": "https://api.planningcenteronline.com/people/XX2/emails?per_page=25&where[primary]=true"
+      },
+      "meta": {
+        "can_order_by": [
+          "address",
+          "location",
+          "primary",
+          "created_at",
+          "updated_at"
+        ],
+        "can_query_by": [
+          "address",
+          "location",
+          "primary",
+          "created_at",
+          "updated_at",
+          "blocked"
+        ],
+        "count": 25,
+        "next": {
+          "offset": 25
+        },
+        "parent": {
+          "id": "100001",
+          "type": "Organization"
+        },
+        "total_count": 606
+      }
+    },
+    "status": 200
+  }
+}

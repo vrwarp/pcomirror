@@ -1,0 +1,752 @@
+{
+  "name": "addresses_collection",
+  "request": {
+    "method": "GET",
+    "path": "/addresses",
+    "query": "per_page=25"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "city": "Linnea96",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Isolde37 Wren34 Wren96",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": "00000"
+          },
+          "id": "100000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000001"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000019",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": false,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": null
+          },
+          "id": "100000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000002"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000826",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Linnea96",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Isolde37 Wren34 Wren96",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": "00000"
+          },
+          "id": "100000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000003"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000020",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Delphine61",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": false,
+            "state": "CA",
+            "street_line_1": "Emory42 Underhill373 Sable46",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": "00000"
+          },
+          "id": "100000004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000004"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100001245",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Marlow71 Kestrel39 Wren96",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": "00000"
+          },
+          "id": "100000005",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000005"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000026",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Rowan89 Kestrel54",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Rowan86 Alder95 Wren96",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": "00000"
+          },
+          "id": "100000006",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000006"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000021",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": null
+          },
+          "id": "100000007",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000007"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000023",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:01Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:01Z",
+            "zip": null
+          },
+          "id": "100000008",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000008"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000024",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:02Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Oriel53 Sable66 Cassian23",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:02Z",
+            "zip": "00000"
+          },
+          "id": "100000009",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000009"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000029",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Rowan89 Nessa44",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:02Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Nessa59 Greer38 Isolde53",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:02Z",
+            "zip": "00000"
+          },
+          "id": "100000010",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000010"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000027",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:02Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:02Z",
+            "zip": null
+          },
+          "id": "100000011",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000011"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000028",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Oriel53 Sable66 Cassian23",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:03Z",
+            "zip": "00000"
+          },
+          "id": "100000012",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000012"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000030",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Linnea96",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Isolde37 Wren34 Wren96",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:03Z",
+            "zip": "00000"
+          },
+          "id": "100000013",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000013"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000031",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Rowan89 Kestrel54",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Perrin11 Jasper70 Cassian23",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:03Z",
+            "zip": "00000"
+          },
+          "id": "100000014",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000014"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000033",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Linnea96",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Ulric59 Wren59 Greer13",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:03Z",
+            "zip": "00000"
+          },
+          "id": "100000015",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000015"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000032",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2026-04-19T18:20:10Z",
+            "zip": null
+          },
+          "id": "100000016",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000016"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000259",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Sable55",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:03Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Alder52 Cassian82 Rowan39",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:03Z",
+            "zip": "00000"
+          },
+          "id": "100000017",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000017"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000035",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Emory14 Isolde55 Verity89",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000018",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000018"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000036",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Delphine39 Nessa54 Cassian23",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000019",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000019"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000037",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Isolde65 Alder94 Delphine84 Calloway038 Jasper63",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000020",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000020"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000039",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Sable44 Sable66 Marlow77 Oriel70",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000021",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000021"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000040",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Rowan89 Nessa44",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Wren43 Verity81 Isolde88",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000022",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000022"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000041",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Rowan89 Kestrel0521",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Delphine54 Yolande93 Cassian23",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000023",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000023"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000038",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": null,
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": null,
+            "street_line_2": null,
+            "updated_at": "2024-01-20T23:02:11Z",
+            "zip": null
+          },
+          "id": "100000024",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000024"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000042",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "city": "Calloway038 Tamsin73",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-06T23:46:04Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Isolde64 Sable66 Rowan13",
+            "street_line_2": null,
+            "updated_at": "2024-01-06T23:46:04Z",
+            "zip": "00000"
+          },
+          "id": "100000025",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/addresses/100000025"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000043",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/XX2/addresses?offset=25&per_page=25",
+        "self": "https://api.planningcenteronline.com/people/XX2/addresses?per_page=25"
+      },
+      "meta": {
+        "can_order_by": [
+          "city",
+          "state",
+          "zip",
+          "country_code",
+          "location",
+          "primary",
+          "created_at",
+          "updated_at",
+          "street_line_1",
+          "street_line_2"
+        ],
+        "can_query_by": [
+          "city",
+          "state",
+          "zip",
+          "country_code",
+          "location",
+          "primary",
+          "street_line_1",
+          "street_line_2"
+        ],
+        "count": 25,
+        "next": {
+          "offset": 25
+        },
+        "parent": {
+          "id": "100001",
+          "type": "Organization"
+        },
+        "total_count": 1400
+      }
+    },
+    "status": 200
+  }
+}

@@ -20,7 +20,22 @@ def _plus_one_second(iso: str) -> str:
     return (dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+class IngestError(RuntimeError):
+    """A sync step could not complete — raised rather than recorded as success."""
+
+
 class Ingestor:
+    ORG_META_KEY = "organization_id"
+
+    def note_parent(self, body: dict) -> None:
+        """Learn the organization id from `meta.parent`, which PCO puts on every
+        collection response. The mirror has to echo it back on its own responses,
+        and this is the only place it is ever told what it is."""
+        parent = (body.get("meta") or {}).get("parent") or {}
+        if parent.get("type") == "Organization" and parent.get("id"):
+            if self.db.get_meta(self.ORG_META_KEY) != str(parent["id"]):
+                self.db.set_meta(self.ORG_META_KEY, str(parent["id"]))
+
     def __init__(self, db, client: PcoClient, writer: Writer):
         self.db = db
         self.client = client
@@ -65,7 +80,13 @@ class Ingestor:
             params = {"order": "updated_at", "per_page": 100, "include": include}
             if cursor:
                 params["where[updated_at][gte]"] = cursor
-            body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
+            resp = self.client.get(r.endpoint, params, priority="backfill")
+            if not resp.ok:
+                # A 404 here used to read as "the collection is empty", so the
+                # backfill recorded success and the table stayed empty forever.
+                raise IngestError(f"backfill {r.endpoint} failed: HTTP {resp.status}")
+            body = resp.json() or {}
+            self.note_parent(body)
             data = body.get("data", [])
             if not data:
                 break

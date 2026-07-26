@@ -1,0 +1,2204 @@
+{
+  "name": "people_child_filter_page1",
+  "request": {
+    "method": "GET",
+    "path": "/people",
+    "query": "include=emails,phone_numbers,households&order=last_name&where[child]=true&per_page=25&offset=0"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-07-05T17:07:14Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Ashby000",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby000",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Ashby000 Ashby000",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-07-05T17:07:14Z"
+          },
+          "id": "100001913",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001913",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001913"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001913/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000511",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001913/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001913/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-11-16T17:40:48Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Nessa0702",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 4,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby001",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Nessa0702 Ashby001",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-11-16T18:50:47Z"
+          },
+          "id": "100001789",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001789",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001789"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001789/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000486",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001789/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001789/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-11-16T17:40:49Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Fenwick0271",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 1,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby001",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Fenwick0271 Ashby001",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-11-16T17:40:49Z"
+          },
+          "id": "100001790",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001790",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001790"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001790/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000486",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001790/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001790/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-04-05T16:32:34Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Alder0031",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 6,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby001",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Alder0031 Ashby001",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-04-05T16:32:34Z"
+          },
+          "id": "100001852",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001852",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001852"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001852/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000486",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001852/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001852/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-09-05T21:45:13Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Ulric1016",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 2,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby002",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Ulric1016 Ashby002",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:45:13Z"
+          },
+          "id": "100001611",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001611",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001611"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001611/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000439",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001611/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001611/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-04-13T02:40:53Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Alder0017",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 9,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby003",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Alder0017 Ashby003",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:38Z"
+          },
+          "id": "100001489",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001489",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001489"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001489/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001489/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001489/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-03-21T02:37:42Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Greer0326",
+            "gender": "Male",
+            "given_name": null,
+            "grade": 12,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby006",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Greer0326 Ashby006",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-03-21T02:37:42Z"
+          },
+          "id": "100001842",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001842",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001842"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001842/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001842/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001842/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-02-08T21:08:20Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Ulric1018",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby007",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Ulric1018 Ashby007",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-02-08T21:08:20Z"
+          },
+          "id": "100001823",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001823",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001823"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001823/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001823/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001823/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-02-08T17:50:24Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Rowan0877",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby008",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Rowan0877 Ashby008",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-02-08T17:50:24Z"
+          },
+          "id": "100001816",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001816",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001816"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001816/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001816/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001816/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-07-20T16:49:56Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Delphine0191",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "ashby009",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Delphine0191 ashby009",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-07-20T16:49:56Z"
+          },
+          "id": "100001735",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001735",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001735"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001735/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000019",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001735/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001735/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-30T06:37:48Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Mowbray235",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby011",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Mowbray235 Ashby011",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-30T06:42:40Z"
+          },
+          "id": "100000165",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000165",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000165"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000165/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000165/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000165/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-12-06T03:44:46Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Nessa0700",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 6,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby013",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Nessa0700 Ashby013",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-12-06T03:44:46Z"
+          },
+          "id": "100001795",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001795",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001795"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001795/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001795/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001795/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-12-28T17:38:41Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Thackery350",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 2,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby014",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Thackery350 Ashby014",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-12-28T17:38:41Z"
+          },
+          "id": "100001802",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001802",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001802"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001802/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000490",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001802/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001802/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-01-11T19:21:39Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Alder0033",
+            "gender": "Male",
+            "given_name": null,
+            "grade": 7,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby014",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Alder0033 Ashby014",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-01-11T19:21:39Z"
+          },
+          "id": "100001808",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001808",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001808"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001808/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001808/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001808/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-06-17T16:15:18Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Alder0032",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby014",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Alder0032 Ashby014",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-06-17T16:15:18Z"
+          },
+          "id": "100001902",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001902",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001902"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001902/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001902/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001902/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-30T06:38:05Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Linnea0582",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby015",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Linnea0582 Ashby015",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:38:20Z"
+          },
+          "id": "100000278",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000278",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000278"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000278/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000357",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000278/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000278/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-30T06:37:47Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Kestrel0509",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Ashby016",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Kestrel0509 Ashby016",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-30T06:42:35Z"
+          },
+          "id": "100000163",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000163",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000163"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000163/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000163/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000163/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-09-21T02:19:14Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Emory0240",
+            "gender": "Male",
+            "given_name": null,
+            "grade": 7,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather020",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Emory0240 Bellweather020",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-21T02:19:14Z"
+          },
+          "id": "100001620",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001620",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001620"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001620/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001620/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001620/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-10-19T02:34:21Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Emory0240",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather020",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Emory0240 Bellweather020",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-10-19T02:34:21Z"
+          },
+          "id": "100001642",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001642",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001642"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001642/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001642/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001642/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-09-05T21:39:30Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Kestrel0510",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 3,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather021",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Kestrel0510 Bellweather021",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:39:30Z"
+          },
+          "id": "100001609",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001609",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001609"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001609/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000438",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001609/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001609/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2026-05-03T16:30:10Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Greer0335",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather022",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Greer0335 Bellweather022",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2026-05-03T16:30:10Z"
+          },
+          "id": "100001864",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001864",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001864"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001864/emails"
+              }
+            },
+            "households": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001864/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001864/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-09-28T02:54:46Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "perrin0760",
+            "gender": "Male",
+            "given_name": null,
+            "grade": 0,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather024",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "perrin0760 Bellweather024",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-28T02:54:46Z"
+          },
+          "id": "100001632",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001632",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100001632"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001632/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000444",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001632/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100001632/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": "2031-03-21",
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-21T06:51:20Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Oriel0751",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather025",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Oriel0751 Bellweather025",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-21T06:57:43Z"
+          },
+          "id": "100000109",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000109",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000109"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000109/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000016",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000109/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000109/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-21T06:22:55Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Sable0941",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 1,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather025",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Sable0941 Bellweather025",
+            "nickname": "Briony0056",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:37Z"
+          },
+          "id": "100000645",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000645",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000645"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000645/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000016",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000645/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000645/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": "2024-09-15",
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-21T05:43:32Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Hollis0358",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 3,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Bellweather025",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Hollis0358 Bellweather025",
+            "nickname": "Briony0057",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:37Z"
+          },
+          "id": "100000646",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000646",
+            "self": "https://api.planningcenteronline.com/people/XX2/people/100000646"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000646/emails"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000016",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000646/households"
+              }
+            },
+            "phone_numbers": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/XX2/people/100000646/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        }
+      ],
+      "included": [
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2026-05-31T18:24:47Z",
+            "member_count": 19,
+            "name": "danforth033",
+            "primary_contact_id": "100001889",
+            "primary_contact_name": "Mickey mouse clubhouse",
+            "updated_at": "2026-07-05T17:07:14Z"
+          },
+          "id": "10000511",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000511"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001884",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001889",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001912",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001913",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001911",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001910",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001887",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001826",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001878",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001813",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001895",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001879",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001894",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001892",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001886",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001876",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001875",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001872",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001871",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001889",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2025-11-16T17:40:49Z",
+            "member_count": 4,
+            "name": "Ashby000",
+            "primary_contact_id": "100001788",
+            "primary_contact_name": "Seiko Alba",
+            "updated_at": "2026-04-05T16:32:34Z"
+          },
+          "id": "10000486",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000486"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001788",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001789",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001790",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001852",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001788",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-09-05T21:45:36Z",
+            "member_count": 3,
+            "name": "Ashby001",
+            "primary_contact_id": "100001612",
+            "primary_contact_name": "Oris Xia",
+            "updated_at": "2024-09-05T21:46:10Z"
+          },
+          "id": "10000439",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000439"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001612",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001613",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001611",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001612",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-21T05:51:47Z",
+            "member_count": 6,
+            "name": "Kingsley094",
+            "primary_contact_id": "100000083",
+            "primary_contact_name": "Joshua Lee",
+            "updated_at": "2025-11-08T04:49:53Z"
+          },
+          "id": "10000019",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000019"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000083",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000084",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001677",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001735",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001287",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000103",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000083",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2025-12-28T17:38:41Z",
+            "member_count": 2,
+            "name": "Ashby005",
+            "primary_contact_id": "100001803",
+            "primary_contact_name": "Chi Au",
+            "updated_at": "2025-12-28T17:38:41Z"
+          },
+          "id": "10000490",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000490"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001803",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001802",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001803",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-31T06:39:15Z",
+            "member_count": 2,
+            "name": "Ashby006",
+            "primary_contact_id": "100000278",
+            "primary_contact_name": "Khloe Ayar",
+            "updated_at": "2024-01-31T06:39:15Z"
+          },
+          "id": "10000357",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000357"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000277",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000278",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000278",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-09-05T21:44:26Z",
+            "member_count": 2,
+            "name": "Bellweather009",
+            "primary_contact_id": "100001610",
+            "primary_contact_name": "Renee Serna",
+            "updated_at": "2024-09-05T21:44:36Z"
+          },
+          "id": "10000438",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000438"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001610",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001609",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001610",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-09-28T02:54:47Z",
+            "member_count": 2,
+            "name": "Larkspur102",
+            "primary_contact_id": "100001633",
+            "primary_contact_name": "Angela Liu",
+            "updated_at": "2024-09-28T02:54:47Z"
+          },
+          "id": "10000444",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000444"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100001633",
+                  "type": "Person"
+                },
+                {
+                  "id": "100001632",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100001633",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-21T05:43:42Z",
+            "member_count": 5,
+            "name": "Bellweather011",
+            "primary_contact_id": "100000078",
+            "primary_contact_name": "Dorcas Bo",
+            "updated_at": "2024-01-21T06:52:54Z"
+          },
+          "id": "10000016",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000016"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000005",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000078",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000645",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000646",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000109",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000078",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/XX2/people?include=emails%2Cphone_numbers%2Chouseholds&offset=25&order=last_name&per_page=25&where[child]=true",
+        "self": "https://api.planningcenteronline.com/people/XX2/people?include=emails%2Cphone_numbers%2Chouseholds&offset=0&order=last_name&per_page=25&where[child]=true"
+      },
+      "meta": {
+        "can_filter": [
+          "created_since",
+          "admins",
+          "organization_admins"
+        ],
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "can_order_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "created_at",
+          "updated_at",
+          "first_name",
+          "last_name",
+          "remote_id",
+          "membership",
+          "status"
+        ],
+        "can_query_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "medical_notes",
+          "membership",
+          "created_at",
+          "updated_at",
+          "search_name",
+          "search_name_or_email",
+          "search_name_or_email_or_phone_number",
+          "search_phone_number",
+          "search_phone_number_e164",
+          "mfa_configured",
+          "first_name",
+          "last_name",
+          "id",
+          "primary_campus_id",
+          "remote_id",
+          "status"
+        ],
+        "count": 25,
+        "next": {
+          "offset": 25
+        },
+        "parent": {
+          "id": "100001",
+          "type": "Organization"
+        },
+        "total_count": 439
+      }
+    },
+    "status": 200
+  }
+}

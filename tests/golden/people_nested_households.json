@@ -1,0 +1,87 @@
+{
+  "name": "people_nested_households",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000001/households",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-20T23:47:09Z",
+            "member_count": 4,
+            "name": "Whitfield206",
+            "primary_contact_id": "100000001",
+            "primary_contact_name": "Kevin Zhang",
+            "updated_at": "2024-01-20T23:47:09Z"
+          },
+          "id": "10000012",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/XX2/households/10000012"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000002",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000001",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000072",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000140",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/XX2/people/100000001/households"
+      },
+      "meta": {
+        "can_include": [
+          "people"
+        ],
+        "can_order_by": [
+          "name",
+          "member_count",
+          "primary_contact_name",
+          "created_at",
+          "updated_at"
+        ],
+        "can_query_by": [
+          "name",
+          "member_count",
+          "primary_contact_name",
+          "created_at",
+          "updated_at"
+        ],
+        "count": 1,
+        "parent": {
+          "id": "100000001",
+          "type": "Person"
+        },
+        "total_count": 1
+      }
+    },
+    "status": 200
+  }
+}
