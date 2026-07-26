@@ -32,6 +32,11 @@ def _fixture():
         # is no `/household_memberships` collection to mirror the edge from.
         if pid in ("1", "4"):
             person["relationships"]["households"] = {"data": [{"type": "Household", "id": "h1"}]}
+        # …and it names the sideloaded children on the person too, which is what a
+        # backfill stores, since a backfill always asks for them.
+        person["relationships"]["emails"] = {"data": [{"type": "Email", "id": "e" + pid}]}
+        person["relationships"]["phone_numbers"] = {
+            "data": [{"type": "PhoneNumber", "id": "p" + pid}]}
         fake.add_child("Email", "e" + pid, pid,
                        {"address": f"{first.lower()}@example.org", "primary": True},
                        "2026-01-01T00:00:00Z")
@@ -286,6 +291,92 @@ class TestRelationshipReads(unittest.TestCase):
         self.fake.request_log.clear()
         wsgi_get(self.m.wsgi, "/people/v2/people/1/workflow_cards")
         self.assertEqual(self.fake.request_log, [("GET", "/people/1/workflow_cards")])
+
+
+class TestSparseFieldsets(unittest.TestCase):
+    """`fields[Type]=a,b` — JSON:API sparse fieldsets, as PCO honours them."""
+
+    def setUp(self):
+        self.m, self.fake = _fixture()
+
+    def get(self, query, path="/people/v2/people"):
+        status, _, body = wsgi_get(self.m.wsgi, path, query)
+        self.assertEqual(status, 200, body)
+        return body
+
+    def test_attributes_are_limited_to_the_named_set(self):
+        body = self.get("fields[Person]=first_name,last_name")
+        for item in body["data"]:
+            self.assertEqual(sorted(item["attributes"]), ["first_name", "last_name"])
+
+    def test_relationships_are_fields_too(self):
+        # A relationship survives only if it is named, even though `include=`
+        # still sideloads it.
+        named = self.get("fields[Person]=first_name,emails&include=emails")
+        self.assertEqual(sorted(named["data"][0].get("relationships") or {}), ["emails"])
+        self.assertTrue(named["included"])
+
+        unnamed = self.get("fields[Person]=first_name&include=emails")
+        self.assertEqual(unnamed["data"][0].get("relationships"), {})
+        self.assertTrue(unnamed["included"], "include= still sideloads")
+
+    def test_a_sideloaded_type_gets_its_own_fieldset(self):
+        body = self.get("fields[Person]=first_name&fields[Email]=address&include=emails")
+        for item in body["included"]:
+            self.assertEqual(sorted(item["attributes"]), ["address"])
+
+    def test_an_unknown_field_name_selects_nothing_rather_than_erroring(self):
+        body = self.get("fields[Person]=no_such_field")
+        self.assertEqual(body["data"][0]["attributes"], {})
+
+    def test_links_survive_a_fieldset(self):
+        body = self.get("fields[Person]=first_name")
+        self.assertIn("self", body["data"][0]["links"])
+
+    def test_fieldsets_apply_to_a_single_read(self):
+        body = self.get("fields[Person]=first_name", "/people/v2/people/1")
+        self.assertEqual(sorted(body["data"]["attributes"]), ["first_name"])
+
+
+class TestPartialPayloadsAreNotStored(unittest.TestCase):
+    """A representation without `updated_at` is not a record."""
+
+    def setUp(self):
+        self.m, self.fake = _fixture()
+
+    def test_a_sparse_payload_cannot_replace_a_mirrored_record(self):
+        import json
+        before = json.loads(
+            self.m.db.query_one("SELECT raw FROM person WHERE pco_id='1'")["raw"])
+        # Exactly what a pass-through with `fields[Person]=first_name` returns.
+        self.m.writer.route_page(
+            {"data": [{"type": "Person", "id": "1", "attributes": {"first_name": "Ada"}}]},
+            "passthrough")
+        after = json.loads(
+            self.m.db.query_one("SELECT raw FROM person WHERE pco_id='1'")["raw"])
+        self.assertEqual(before, after)
+        # …and the monotonic guard is still intact, which a NULL timestamp would
+        # have broken permanently.
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT pco_updated_at u FROM person WHERE pco_id='1'")["u"])
+
+    def test_a_complete_payload_still_applies(self):
+        self.m.writer.route_page({"data": [{"type": "Person", "id": "1", "attributes": {
+            "first_name": "Ada", "last_name": "Lovelace",
+            "updated_at": "2026-09-01T00:00:00Z"}}]}, "passthrough")
+        self.assertEqual(
+            self.m.db.query_one("SELECT last_name l FROM person WHERE pco_id='1'")["l"],
+            "Lovelace")
+
+    def test_an_untimed_resource_is_unaffected(self):
+        # `field_definition` carries no `updated_at` by design, so the guard must
+        # not apply to it.
+        self.m.writer.route_page({"data": [{"type": "FieldDefinition", "id": "fd9",
+                                            "attributes": {"name": "Allergies",
+                                                           "data_type": "text"}}]},
+                                 "backfill")
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT 1 FROM field_definition WHERE pco_id='fd9'"))
 
 
 class TestPcoOrdering(unittest.TestCase):

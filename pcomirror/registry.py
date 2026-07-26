@@ -242,8 +242,16 @@ _reg(Resource(
         ("value_date", "TEXT", "plain", None),
         ("value_bool", "INTEGER", "plain", None),
     ),
-    can_query_by=("created_at", "updated_at"),
-    can_order_by=("created_at", "updated_at"),
+    relationships={
+        # PCO serves `/field_data/{id}/field_definition` and offers
+        # `include=field_definition`, even though it puts no such entry in the
+        # resource's own `links` map. `customizable` is deliberately absent: it is
+        # polymorphic (Person or Organization) and a Rel names one target.
+        "field_definition": Rel("field_definition", "one", local_fk="field_definition_id"),
+    },
+    can_query_by=("created_at", "updated_at", "field_definition_id", "value", "file"),
+    can_order_by=("created_at", "updated_at", "value", "file"),
+    col_aliases={"file": "file_url"},
 ))
 _reg(Resource(
     name="field_definition", type="FieldDefinition", table="field_definition",

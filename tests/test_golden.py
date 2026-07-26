@@ -269,11 +269,17 @@ class GoldenReplay(unittest.TestCase):
         is one PCO really has, and that none of them sends a caller to PCO, where
         their pcomirror key would not work.
         """
+        # A link is legitimate if PCO either advertises it or exposes the same
+        # relationship — PCO's own link maps are inconsistent (it offers
+        # `include=field_definition` on a FieldDatum and serves
+        # `/field_data/{id}/field_definition`, while listing only `self` in that
+        # resource's links), which is why the mirror generates its own.
         pco_links = {}
         for record in _records():
             items, included = _flatten(record["response"]["body"])
             for item in items + included:
-                pco_links.setdefault(item["type"], set()).update((item.get("links") or {}).keys())
+                pco_links.setdefault(item["type"], set()).update(
+                    set(item.get("links") or {}) | set(item.get("relationships") or {}))
         for record in self.records:
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
@@ -308,22 +314,38 @@ class GoldenCorpusHygiene(unittest.TestCase):
     # shape of the values rather than against the sanitizer's own map — so it
     # still fails if the sanitizer is the thing that is broken.
     FORBIDDEN = {
-        "an email outside example.org": r"[\w.+-]+@(?!example\.org)[\w.-]+\.\w+",
         "a phone number outside the 555 range": r"\+1(?!555)\d{10}",
         "an un-redacted avatar URL": r"avatars\.planningcenteronline\.com/(?!uploads/redacted)",
-        "a real account code in a web link": r"/people/(?!XX)[A-Za-z]{1,4}\d+",
+        # `/people/v2` is the API version sitting in the same position, so a record
+        # id is distinguished by being at least three digits long.
+        "a real account code in a web link": r"/people/(?!XX)[A-Za-z]{1,4}\d{3,}",
         "a populated medical note": r'"medical_notes": "[^"]',
-        "an un-synthetic record id": r"\b(?!1000|10000)\d{8,9}\b",
+        # Synthetic record ids are minted as 1000… counting up from the low end of
+        # each width; ids for records that never existed (the 404 case) come from a
+        # reserved 9… block that cannot collide with them. Anything else in that
+        # width is a real Planning Center id.
+        "an un-synthetic record id": r"\b(?!1000\d{4,5}\b|9\d{8}\b)\d{8,9}\b",
     }
 
     def test_no_recording_carries_real_data(self):
         import re
-        for record in _records():
+        # The manifest too: it repeats every path and query, and was the one file
+        # the recordings-only scan never looked at.
+        with open(os.path.join(GOLDEN, "manifest.json")) as fh:
+            everything = [*_records(), json.load(fh)]
+        for record in everything:
             blob = json.dumps(record)
             for label, pattern in self.FORBIDDEN.items():
                 hits = set(re.findall(pattern, blob))
                 self.assertEqual(hits, set(),
-                                 f"{record['name']} contains {label}")
+                                 f"{record.get('name', 'manifest')} contains {label}")
+            # Emails carry a synthetic sub-domain per real provider, so that
+            # "everyone at one provider" stays a distinguishable set. Whatever the
+            # sub-domain, it must sit under example.org.
+            for address in re.findall(r"[\w.+-]+@[\w.-]+\.\w+", blob):
+                self.assertTrue(address.split("@", 1)[1].endswith("example.org"),
+                                f"{record.get('name', 'manifest')} has an email "
+                                f"outside example.org")
 
     def test_manifest_describes_the_corpus(self):
         with open(os.path.join(GOLDEN, "manifest.json")) as fh:

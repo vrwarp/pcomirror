@@ -43,33 +43,33 @@
         },
         "id": "100000001",
         "links": {
-          "addresses": "https://api.planningcenteronline.com/people/XX2/people/100000001/addresses",
-          "apps": "https://api.planningcenteronline.com/people/XX2/people/100000001/apps",
-          "background_checks": "https://api.planningcenteronline.com/people/XX2/people/100000001/background_checks",
-          "connected_people": "https://api.planningcenteronline.com/people/XX2/people/100000001/connected_people",
-          "emails": "https://api.planningcenteronline.com/people/XX2/people/100000001/emails",
-          "field_data": "https://api.planningcenteronline.com/people/XX2/people/100000001/field_data",
-          "household_memberships": "https://api.planningcenteronline.com/people/XX2/people/100000001/household_memberships",
-          "households": "https://api.planningcenteronline.com/people/XX2/people/100000001/households",
+          "addresses": "https://api.planningcenteronline.com/people/v2/people/100000001/addresses",
+          "apps": "https://api.planningcenteronline.com/people/v2/people/100000001/apps",
+          "background_checks": "https://api.planningcenteronline.com/people/v2/people/100000001/background_checks",
+          "connected_people": "https://api.planningcenteronline.com/people/v2/people/100000001/connected_people",
+          "emails": "https://api.planningcenteronline.com/people/v2/people/100000001/emails",
+          "field_data": "https://api.planningcenteronline.com/people/v2/people/100000001/field_data",
+          "household_memberships": "https://api.planningcenteronline.com/people/v2/people/100000001/household_memberships",
+          "households": "https://api.planningcenteronline.com/people/v2/people/100000001/households",
           "html": "https://people.planningcenteronline.com/people/XX100000001",
           "inactive_reason": null,
-          "marital_status": "https://api.planningcenteronline.com/people/XX2/marital_statuses/1000001",
-          "message_groups": "https://api.planningcenteronline.com/people/XX2/people/100000001/message_groups",
-          "messages": "https://api.planningcenteronline.com/people/XX2/people/100000001/messages",
+          "marital_status": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000001",
+          "message_groups": "https://api.planningcenteronline.com/people/v2/people/100000001/message_groups",
+          "messages": "https://api.planningcenteronline.com/people/v2/people/100000001/messages",
           "name_prefix": null,
           "name_suffix": null,
-          "notes": "https://api.planningcenteronline.com/people/XX2/people/100000001/notes",
-          "organization": "https://api.planningcenteronline.com/people/XX2/people/100000001/organization",
-          "person_apps": "https://api.planningcenteronline.com/people/XX2/people/100000001/person_apps",
-          "phone_numbers": "https://api.planningcenteronline.com/people/XX2/people/100000001/phone_numbers",
-          "platform_notifications": "https://api.planningcenteronline.com/people/XX2/people/100000001/platform_notifications",
+          "notes": "https://api.planningcenteronline.com/people/v2/people/100000001/notes",
+          "organization": "https://api.planningcenteronline.com/people/v2/people/100000001/organization",
+          "person_apps": "https://api.planningcenteronline.com/people/v2/people/100000001/person_apps",
+          "phone_numbers": "https://api.planningcenteronline.com/people/v2/people/100000001/phone_numbers",
+          "platform_notifications": "https://api.planningcenteronline.com/people/v2/people/100000001/platform_notifications",
           "primary_campus": null,
           "school": null,
-          "self": "https://api.planningcenteronline.com/people/XX2/people/100000001",
-          "social_profiles": "https://api.planningcenteronline.com/people/XX2/people/100000001/social_profiles",
-          "workflow_assignee_workflow_summaries": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_assignee_workflow_summaries",
-          "workflow_cards": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_cards",
-          "workflow_shares": "https://api.planningcenteronline.com/people/XX2/people/100000001/workflow_shares"
+          "self": "https://api.planningcenteronline.com/people/v2/people/100000001",
+          "social_profiles": "https://api.planningcenteronline.com/people/v2/people/100000001/social_profiles",
+          "workflow_assignee_workflow_summaries": "https://api.planningcenteronline.com/people/v2/people/100000001/workflow_assignee_workflow_summaries",
+          "workflow_cards": "https://api.planningcenteronline.com/people/v2/people/100000001/workflow_cards",
+          "workflow_shares": "https://api.planningcenteronline.com/people/v2/people/100000001/workflow_shares"
         },
         "relationships": {
           "primary_campus": {
@@ -97,7 +97,7 @@
           "social_profiles"
         ],
         "parent": {
-          "id": "100001",
+          "id": "982165",
           "type": "Organization"
         }
       }

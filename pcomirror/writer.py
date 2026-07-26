@@ -121,6 +121,15 @@ class Writer:
         r = registry.by_type(resource.get("type", ""))
         if r is None:
             return  # unmirrored type in an include set — ignore
+        if r.timestamped and not (resource.get("attributes") or {}).get("updated_at"):
+            # Not a record — a *partial representation* of one. A caller passing
+            # `fields[Person]=first_name` through to PCO gets exactly that back, and
+            # storing it replaced the mirrored person with a single attribute and a
+            # NULL `pco_updated_at`. Worse, the monotonic guard compares against
+            # that NULL and every comparison is false, so the record could never be
+            # repaired by a later write. Warm the mirror only from something that
+            # carries the timestamp the guard is built on.
+            return
         # Ensure an owned child's back-reference is present so its owner id projects.
         if r.owner_rel and owner_hint:
             rels = resource.setdefault("relationships", {})

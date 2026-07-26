@@ -42,6 +42,24 @@ _MATCHERS = {
 }
 
 
+def _sparse_fields(qs) -> dict[str, set[str]]:
+    """Parse `fields[Type]=a,b` into `{Type: {"a", "b"}}`.
+
+    JSON:API sparse fieldsets, which PCO honours exactly: a named set limits both
+    attributes *and* relationships for that type, applies to sideloaded resources
+    by their own type, leaves `links` alone, and treats an unknown field name as
+    simply selecting nothing rather than as an error.
+    """
+    out = {}
+    for key, vals in qs.items():
+        if not key.startswith("fields[") or not key.endswith("]"):
+            continue
+        rtype = key[len("fields["):-1]
+        names = {n.strip() for v in vals for n in v.split(",") if n.strip()}
+        out[rtype] = out.get(rtype, set()) | names
+    return out
+
+
 def _json_ids(raw: str, path: str) -> list[str]:
     """Resource ids out of a JSON:API relationship array stored on `raw`."""
     node = json.loads(raw)
@@ -215,8 +233,9 @@ class Application:
         rows = self.db.query(
             f"SELECT * FROM {r.table} WHERE deleted_at IS NULL{where_sql} {order_sql} "
             f"LIMIT ? OFFSET ?", (*params, per_page, offset))
+        fields = _sparse_fields(qs)
         included, echo = self._build_includes(r, rows, qs)
-        data = [self._serialize(r, row, echo.get(row["pco_id"])) for row in rows]
+        data = [self._serialize(r, row, echo.get(row["pco_id"]), fields) for row in rows]
         oldest = min((row["last_synced_at"] for row in rows), default=None)
         meta = {"total_count": total, "count": len(data),
                 "can_query_by": list(r.can_query_by), "can_order_by": list(r.can_order_by),
@@ -288,7 +307,7 @@ class Application:
                 headers["Location"] = f"/people/v2/{r.endpoint.strip('/')}/{row['merged_into_pco_id']}"
             return 410, headers, body
         included, echo = self._build_includes(r, [row], qs)
-        data = self._serialize(r, row, echo.get(row["pco_id"]))
+        data = self._serialize(r, row, echo.get(row["pco_id"]), _sparse_fields(qs))
         body = {"data": data,
                 "meta": {"can_include": list(r.relationships.keys()),
                          "parent": self._org_parent()}}
@@ -487,12 +506,13 @@ class Application:
         if not inc_param:
             return [], {}
         out, seen, echo = [], set(), {}
+        fields = _sparse_fields(qs)
 
         def add(res, row):
             key = (res.type, row["pco_id"])
             if key not in seen:
                 seen.add(key)
-                out.append(self._serialize(res, row))
+                out.append(self._serialize(res, row, None, fields))
 
         for token in inc_param.split(","):
             first, _, second = token.partition(".")
@@ -565,7 +585,7 @@ class Application:
         return []
 
     # -- serialization -----------------------------------------------------
-    def _serialize(self, r, row, echo=None):
+    def _serialize(self, r, row, echo=None, fields=None):
         obj = json.loads(row["raw"])
         obj.setdefault("id", row["pco_id"])
         obj.setdefault("type", r.type)
@@ -577,6 +597,15 @@ class Application:
             # PCO's own shape for a nested include; `related` is null there too.
             obj.setdefault("relationships", {})[name] = {"links": {"related": None}, "data": ids}
         links.rewrite_relationships(obj, self.s)
+        keep = (fields or {}).get(r.type)
+        if keep is not None:
+            # Relationships are fields too, so one that was not named goes as well —
+            # even one PCO synthesized for a nested include.
+            obj["attributes"] = {k: v for k, v in (obj.get("attributes") or {}).items()
+                                 if k in keep}
+            rels = {k: v for k, v in (obj.get("relationships") or {}).items() if k in keep}
+            if rels or "relationships" in obj:
+                obj["relationships"] = rels
         obj["meta"] = {"mirror": {"last_synced_at": row["last_synced_at"],
                                   "pco_updated_at": row["pco_updated_at"],
                                   "source": row["source"], "deleted_at": row["deleted_at"]}}

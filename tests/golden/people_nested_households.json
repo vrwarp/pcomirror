@@ -20,7 +20,7 @@
           },
           "id": "10000012",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000012"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000012"
           },
           "relationships": {
             "people": {
@@ -54,7 +54,7 @@
         }
       ],
       "links": {
-        "self": "https://api.planningcenteronline.com/people/XX2/people/100000001/households"
+        "self": "https://api.planningcenteronline.com/people/v2/people/100000001/households"
       },
       "meta": {
         "can_include": [

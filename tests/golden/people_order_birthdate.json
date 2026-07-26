@@ -1,105 +1,13 @@
 {
-  "name": "people_collection_default",
+  "name": "people_order_birthdate",
   "request": {
     "method": "GET",
     "path": "/people",
-    "query": ""
+    "query": "order=birthdate&per_page=25"
   },
   "response": {
     "body": {
       "data": [
-        {
-          "attributes": {
-            "accounting_administrator": true,
-            "anniversary": null,
-            "avatar": null,
-            "birthdate": "2003-02-09",
-            "can_create_forms": true,
-            "can_email_lists": true,
-            "child": false,
-            "created_at": "2024-01-06T22:43:30Z",
-            "demographic_avatar_url": null,
-            "directory_status": null,
-            "first_name": "Linnea0578",
-            "gender": "Male",
-            "given_name": null,
-            "grade": null,
-            "graduation_year": null,
-            "inactivated_at": null,
-            "last_name": "Yardley425",
-            "login_identifier": null,
-            "medical_notes": null,
-            "membership": "Full Member",
-            "middle_name": null,
-            "name": "Linnea0578 Yardley425",
-            "nickname": null,
-            "passed_background_check": null,
-            "people_permissions": "Manager",
-            "remote_id": null,
-            "resource_permission_flags": null,
-            "school_type": null,
-            "site_administrator": true,
-            "status": "active",
-            "updated_at": "2024-12-12T23:58:46Z"
-          },
-          "id": "100000001",
-          "links": {
-            "html": "https://people.planningcenteronline.com/people/XX100000001",
-            "self": "https://api.planningcenteronline.com/people/v2/people/100000001"
-          },
-          "relationships": {
-            "primary_campus": {
-              "data": null
-            }
-          },
-          "type": "Person"
-        },
-        {
-          "attributes": {
-            "accounting_administrator": false,
-            "anniversary": null,
-            "avatar": null,
-            "birthdate": "1997-04-27",
-            "can_create_forms": true,
-            "can_email_lists": true,
-            "child": false,
-            "created_at": "2024-01-06T22:44:37Z",
-            "demographic_avatar_url": null,
-            "directory_status": null,
-            "first_name": "Cassian0101",
-            "gender": "Male",
-            "given_name": null,
-            "grade": null,
-            "graduation_year": null,
-            "inactivated_at": null,
-            "last_name": "Thackery357",
-            "login_identifier": null,
-            "medical_notes": null,
-            "membership": "Full Member",
-            "middle_name": null,
-            "name": "Cassian0101 Thackery357",
-            "nickname": "Quenby0788",
-            "passed_background_check": null,
-            "people_permissions": "Manager",
-            "remote_id": null,
-            "resource_permission_flags": null,
-            "school_type": null,
-            "site_administrator": true,
-            "status": "active",
-            "updated_at": "2025-12-28T16:21:16Z"
-          },
-          "id": "100000002",
-          "links": {
-            "html": "https://people.planningcenteronline.com/people/XX100000002",
-            "self": "https://api.planningcenteronline.com/people/v2/people/100000002"
-          },
-          "relationships": {
-            "primary_campus": {
-              "data": null
-            }
-          },
-          "type": "Person"
-        },
         {
           "attributes": {
             "accounting_administrator": false,
@@ -657,52 +565,6 @@
             "accounting_administrator": false,
             "anniversary": null,
             "avatar": null,
-            "birthdate": "2032-10-02",
-            "can_create_forms": false,
-            "can_email_lists": false,
-            "child": false,
-            "created_at": "2024-01-06T23:37:27Z",
-            "demographic_avatar_url": null,
-            "directory_status": null,
-            "first_name": "Emory0204",
-            "gender": "Male",
-            "given_name": null,
-            "grade": null,
-            "graduation_year": null,
-            "inactivated_at": null,
-            "last_name": "Calloway048",
-            "login_identifier": null,
-            "medical_notes": null,
-            "membership": "Full Member",
-            "middle_name": null,
-            "name": "Emory0204 Calloway048",
-            "nickname": "Tamsin0919",
-            "passed_background_check": null,
-            "people_permissions": null,
-            "remote_id": null,
-            "resource_permission_flags": null,
-            "school_type": null,
-            "site_administrator": false,
-            "status": "active",
-            "updated_at": "2024-01-30T06:41:28Z"
-          },
-          "id": "100000015",
-          "links": {
-            "html": "https://people.planningcenteronline.com/people/XX100000015",
-            "self": "https://api.planningcenteronline.com/people/v2/people/100000015"
-          },
-          "relationships": {
-            "primary_campus": {
-              "data": null
-            }
-          },
-          "type": "Person"
-        },
-        {
-          "attributes": {
-            "accounting_administrator": false,
-            "anniversary": null,
-            "avatar": null,
             "birthdate": null,
             "can_create_forms": false,
             "can_email_lists": false,
@@ -1157,11 +1019,149 @@
             }
           },
           "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-06T23:46:01Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Hollis0400",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Danforth057",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Hollis0400 Danforth057",
+            "nickname": "Isolde0408",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:34Z"
+          },
+          "id": "100000026",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000026",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000026"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-06T23:46:02Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Isolde0407",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 10,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Calloway046",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Isolde0407 Calloway046",
+            "nickname": "Ulric0990",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:34Z"
+          },
+          "id": "100000027",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000027",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000027"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-06T23:46:02Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Hollis0358",
+            "gender": "Female",
+            "given_name": null,
+            "grade": 10,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Vance403",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Regular Attendee",
+            "middle_name": null,
+            "name": "Hollis0358 Vance403",
+            "nickname": "Emory0200",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-09-05T21:27:34Z"
+          },
+          "id": "100000028",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000028",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000028"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
         }
       ],
       "links": {
-        "next": "https://api.planningcenteronline.com/people/v2/people?offset=25",
-        "self": "https://api.planningcenteronline.com/people/v2/people"
+        "next": "https://api.planningcenteronline.com/people/v2/people?offset=25&order=birthdate&per_page=25",
+        "self": "https://api.planningcenteronline.com/people/v2/people?order=birthdate&per_page=25"
       },
       "meta": {
         "can_filter": [

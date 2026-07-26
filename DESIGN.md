@@ -737,6 +737,20 @@ link that dropped `where`/`order`/`include` would not be a smaller answer — it
 would be a *different* query wearing the same URL, duplicating and skipping rows
 with nothing to signal it.
 
+**Sparse fieldsets** (`fields[Type]=a,b`) are honoured with PCO's semantics: the
+named set limits attributes *and* relationships for that type, applies to
+sideloaded resources by their own type, leaves `links` alone, and treats an
+unknown name as selecting nothing rather than as an error. `include=` still
+sideloads a relationship the fieldset does not name.
+
+**A record has one shape regardless of the request.** PCO varies a resource's
+relationship set per call — a bare `/people` read carries only `primary_campus`;
+`emails` appears only under `include=emails`. The mirror serves what it holds,
+which a backfill always fetched with includes, so its set is a superset. This is
+the same decision as the generated `links` map and is strictly additive: nothing
+PCO would have sent is omitted, and nothing PCO does not have is invented. The
+golden suite asserts exactly those two properties rather than equality.
+
 **Nested collections get the top-level surface.** `/:type/:id/:rel` runs the same
 where/order/include/pagination path as the collection read, restricted to the
 relationship — because that is what PCO serves at
