@@ -45,8 +45,12 @@ def _fixture():
         fake.add_child("PhoneNumber", "p" + pid, pid,
                        {"number": f"(555) 010-{pid}", "e164": f"+1555010{pid}", "primary": True},
                        "2026-01-01T00:00:00Z")
+    # PCO's shape: the household id lives only in `links.self`, and the roles are
+    # the ones a real organization uses.
+    fake.add_membership("hm1", "h1", "1", role="child_or_dependent")
+    fake.add_membership("hm4", "h1", "4", role="parent_guardian")
     mirror, _ = build(fake)
-    for name in ("person", "email", "phone_number", "household"):
+    for name in ("person", "email", "phone_number", "household", "household_membership"):
         mirror.ingestor.backfill(name)
     return mirror, fake
 
@@ -289,14 +293,35 @@ class TestRelationshipReads(unittest.TestCase):
         self.assertEqual([d["id"] for d in body["data"]], ["e1"])
         self.assertEqual(self.fake.request_log, [])
 
-    def test_household_memberships_pass_through(self):
-        """PCO serves these one household at a time and omits the household from the
-        payload, so there is nothing the mirror can hold. Passing through returns
-        the real answer; serving an empty page would have been a silent lie."""
+    def test_household_memberships_serve_from_the_mirror(self):
+        """Walked, not proxied.
+
+        PCO serves these one household at a time and omits the household from the
+        payload, so they are collected by a periodic walk and the owning id is
+        parsed out of `links.self`. Once held, the read costs nothing upstream.
+        """
         self.fake.request_log.clear()
-        wsgi_get(self.m.wsgi, "/people/v2/households/h1/household_memberships", "include=person")
-        self.assertEqual(self.fake.request_log,
-                         [("GET", "/households/h1/household_memberships")])
+        status, headers, body = wsgi_get(
+            self.m.wsgi, "/people/v2/households/h1/household_memberships", "include=person")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(headers["X-Mirror-Source"], "mirror")
+        self.assertEqual(sorted(d["id"] for d in body["data"]), ["hm1", "hm4"])
+        self.assertEqual(self.fake.request_log, [])
+
+    def test_the_role_that_decides_the_parent_is_held(self):
+        _, _, body = wsgi_get(self.m.wsgi, "/people/v2/households/h1/household_memberships", "")
+        roles = {d["id"]: d["attributes"]["household_role"] for d in body["data"]}
+        self.assertEqual(roles, {"hm1": "child_or_dependent", "hm4": "parent_guardian"})
+
+    def test_a_membership_pco_stops_returning_is_tombstoned(self):
+        """A walk that could only ever add would never notice a parent leaving."""
+        self.fake.destroy("HouseholdMembership", "hm4")
+        self.m.ingestor.incremental_sweep("household_membership")
+        _, _, body = wsgi_get(self.m.wsgi, "/people/v2/households/h1/household_memberships", "")
+        self.assertEqual([d["id"] for d in body["data"]], ["hm1"])
+        row = self.m.db.query_one(
+            "SELECT tombstone_reason FROM household_membership WHERE pco_id='hm4'")
+        self.assertEqual(row["tombstone_reason"], "destroyed")
 
     def test_a_relationship_the_mirror_does_not_cover_still_passes_through(self):
         self.fake.request_log.clear()
@@ -434,33 +459,41 @@ class TestPersonDetailReadShape(unittest.TestCase):
         self.assertIn(("Household", "h1"),
                       {(i["type"], i["id"]) for i in body.get("included", [])})
 
-    def test_the_membership_half_passes_through_rather_than_answering_empty(self):
+    def test_the_membership_half_is_served_locally_too(self):
+        """The request that decides which adult is the parent, and carries their
+        contact details. Both halves of the detail read are now local."""
         self.fake.request_log.clear()
-        wsgi_get(self.m.wsgi, "/people/v2/households/h1/household_memberships",
-                 "include=person,person.emails,person.phone_numbers")
-        self.assertEqual(self.fake.request_log,
-                         [("GET", "/households/h1/household_memberships")],
-                         "membership is not mirrorable; it must reach PCO, not return []")
+        status, headers, body = wsgi_get(
+            self.m.wsgi, "/people/v2/households/h1/household_memberships",
+            "include=person,person.emails,person.phone_numbers")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(headers["X-Mirror-Source"], "mirror")
+        included = {(i["type"], i["id"]) for i in body["included"]}
+        self.assertIn(("Person", "4"), included)          # the candidate parent
+        self.assertIn(("Email", "e4"), included)          # and how to reach them
+        self.assertIn(("PhoneNumber", "p4"), included)
+        self.assertEqual(self.fake.request_log, [],
+                         "the parent-contact request must not wait on PCO either")
 
-    def test_that_pass_through_needs_its_own_scope(self):
-        """The failure a misconfigured key produces, pinned.
+    def test_a_read_only_key_can_complete_the_whole_detail_view(self):
+        """No `passthrough` scope required any more, which is the point.
 
-        Reading the mirror is free and calling PCO is not, so they are separate
-        scopes — but the consequence is worth a test: a key without `passthrough`
-        turns the parent-contact request into a 403, and the client that issues it
-        does not catch, so the whole detail view is lost.
+        While membership was proxied, a key without that scope turned the
+        parent-contact request into a 403 — and because the client does not catch
+        it, the entire detail view was lost, including the allergies the mirror
+        already held. Both halves are local now, so a read-only key is enough.
         """
         from pcomirror import apikeys
         m, fake = _fixture_with_auth()
         key = apikeys.create(m.db, "reader", "read:*")
         auth = {"Authorization": f"Bearer {key}"}
-        status, _, _ = wsgi_get(m.wsgi, "/people/v2/people/1",
-                                self.DETAIL_INCLUDE, headers=auth)
-        self.assertEqual(status, 200, "the person half needs no passthrough scope")
-        status, _, body = wsgi_get(m.wsgi, "/people/v2/households/h1/household_memberships",
-                                   "include=person", headers=auth)
-        self.assertEqual(status, 403)
-        self.assertIn("passthrough", body["errors"][0]["detail"])
+        fake.request_log.clear()
+        for path, query in (("/people/v2/people/1", self.DETAIL_INCLUDE),
+                            ("/people/v2/households/h1/household_memberships",
+                             "include=person,person.emails,person.phone_numbers")):
+            status, _, body = wsgi_get(m.wsgi, path, query, headers=auth)
+            self.assertEqual(status, 200, f"{path} -> {body}")
+        self.assertEqual(fake.request_log, [])
 
 
 class TestPcoOrdering(unittest.TestCase):

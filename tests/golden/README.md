@@ -21,7 +21,7 @@ built to catch was invisible to the unit suite:
 | Person has an `attributes.search_name` | There is no such attribute; the column projected from it was always NULL. |
 | Collections sort by id as text | They sort **numerically**. `/emails` carries both 8- and 9-digit ids, so every row of page one was in the wrong place. |
 | `order=last_name` sorts like SQLite | PCO folds case. SQLite's BINARY collation put every lowercase surname after every uppercase one. |
-| `/household_memberships` is a collection | It is a **404**. The rows exist only under `/households/{id}/household_memberships`, and carry no `household` relationship. |
+| `/household_memberships` is a collection | It is a **404**. The rows exist only under `/households/{id}/household_memberships`, carry no `household` relationship, and are mirrored by a periodic per-household walk that parses the owning id out of `links.self`. |
 | `fields[Type]` was honoured | It was ignored entirely — a caller asking for two attributes got all thirty-one. |
 | Any payload can warm the mirror | A `fields[]` response has no `updated_at`, and storing one replaced a person with a single attribute and a NULL timestamp that the monotonic guard could never repair. |
 | `include=field_definition` on a FieldDatum worked | The registry declared no relationship, so it silently sideloaded nothing. |

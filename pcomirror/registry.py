@@ -82,7 +82,10 @@ class Resource:
     table: str                      # physical table name (singular)
     endpoint: str                   # e.g. "/people"
     tier: str = "full"              # full | lite | passthrough
-    method: str = "incremental"     # incremental | merger_poll | reference_periodic | passthrough_only
+    method: str = "incremental"     # incremental | merger_poll | reference_periodic | nested_walk | passthrough_only
+    parent: str | None = None       # for nested_walk: the resource whose rows are walked
+    parent_path: str | None = None  # for nested_walk: the sub-path under each parent
+    parent_fk: str | None = None    # for nested_walk: our column holding the parent id
     timestamped: bool = True        # has attributes.updated_at
     supports_uat_filter: bool = True  # where[updated_at] usable (False -> descending walk, e.g. address)
     owner_rel: str | None = None    # for children: relationship name pointing at the owner (e.g. "person")
@@ -105,6 +108,16 @@ class Resource:
 # ---------------------------------------------------------------------------
 
 _CHILD = lambda: {}  # noqa: E731 (placeholder, children declare no includes)
+
+#: `…/people/v2/households/19674701/household_memberships/59474308` -> `19674701`.
+#: Written out rather than done in Python because it has to be a generated column.
+_SELF = "raw ->> '$.links.self'"
+_AFTER = f"substr({_SELF}, instr({_SELF}, '/households/') + 12)"
+_HOUSEHOLD_FROM_SELF_LINK = (
+    f"coalesce(raw ->> '$.relationships.household.data.id', "
+    f"CASE WHEN {_SELF} LIKE '%/households/%/household_memberships/%' "
+    f"THEN substr({_AFTER}, 1, instr({_AFTER}, '/') - 1) END)"
+)
 
 RESOURCES: dict[str, Resource] = {}
 
@@ -149,6 +162,8 @@ _reg(Resource(
         "marital_status": Rel("marital_status", "one", local_fk="marital_status_id"),
         "households": Rel("household", "json",
                           json_path="$.relationships.households.data"),
+        "household_memberships": Rel("household_membership", "many",
+                                     child_fk="person_pco_id"),
     },
     can_query_by=("created_at", "updated_at", "id", "remote_id", "primary_campus_id",
                   "status", "first_name", "last_name", "nickname", "given_name",
@@ -285,25 +300,43 @@ _reg(Resource(
         # household carries no households array to scan.
         "people": Rel("person", "json", json_path="$.relationships.people.data"),
         "primary_contact": Rel("person", "one", local_fk="primary_contact_id"),
+        "household_memberships": Rel("household_membership", "many",
+                                     child_fk="household_pco_id"),
     },
     can_query_by=("created_at", "updated_at", "name"),
     can_order_by=("created_at", "updated_at", "name"),
 ))
-# Deliberately NOT mirrored. `GET /household_memberships` is a 404 — PCO exposes the
-# rows only under `/households/{id}/household_memberships`, one household at a time,
-# and the payload there carries no `household` relationship (the household id
-# appears only inside `links.self`). Mirroring it would mean a per-household walk
-# with no incremental signal to drive it, so the endpoints pass through instead and
-# the `households` edge is read off the Person payload, where PCO does provide it.
-# The table stays declared so the type is known and a payload can still be stored.
+# Mirrored by walking, not by listing. `GET /household_memberships` is a 404 — PCO
+# exposes the rows only under `/households/{id}/household_memberships`, one
+# household at a time — and the payload carries no `household` relationship, so the
+# owning id is projected out of `links.self`, which is the only place PCO puts it.
+#
+# There is no `updated_at` on a membership, and joining a household does not
+# reliably move the household's own `updated_at` (measured: 6% of households hold a
+# member created after the household was last touched). So the refresh is a
+# **periodic full walk** rather than a watermark — the standard treatment for a
+# slowly-changing dimension, and the same one the reference tables get. It costs one
+# request per household: at a few hundred households that is a couple of minutes
+# daily, around a tenth of a percent of the rate budget.
+#
+# Worth mirroring because `household_role` is the whole basis on which a caller
+# decides which adult in a household is the parent to telephone, and that lookup
+# sits on the path somebody waits on at a check-in door.
 _reg(Resource(
     name="household_membership", type="HouseholdMembership", table="household_membership",
-    endpoint="/household_memberships", tier="passthrough", method="passthrough_only",
-    timestamped=False, supports_uat_filter=False, incr_interval_s=600, priority=2,
+    endpoint="/household_memberships", tier="lite", method="nested_walk",
+    parent="household", parent_path="/household_memberships",
+    parent_fk="household_pco_id",
+    timestamped=False, supports_uat_filter=False, incr_interval_s=86400, priority=3,
     projections=(
-        ("household_pco_id", "TEXT", "json", "$.relationships.household.data.id"),
+        # PCO omits the household relationship on this payload; `links.self` is
+        # `…/households/{household_id}/household_memberships/{id}`, so the owning
+        # id is parsed back out of the URL PCO actually sent rather than injected
+        # into `raw`, which has to stay verbatim.
+        ("household_pco_id", "TEXT", "expr", _HOUSEHOLD_FROM_SELF_LINK),
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
         ("household_role", "TEXT", "json", "$.attributes.household_role"),
+        ("person_name", "TEXT", "json", "$.attributes.person_name"),
         ("pending", "INTEGER", "json", "$.attributes.pending"),
     ),
     relationships={
@@ -311,7 +344,7 @@ _reg(Resource(
         "household": Rel("household", "one", local_fk="household_pco_id"),
     },
     can_query_by=("pending", "household_role"),
-    can_order_by=("pending",),
+    can_order_by=("pending", "household_role", "person_name"),
 ))
 
 # --- reference / config (LITE) ---

@@ -82,9 +82,26 @@ class PcoClient:
             headers["Content-Type"] = "application/json"
         url = self._url(path, params)
 
+        idempotent = method == "GET"
         for attempt in range(max_attempts):
             self.limiter.acquire(priority)
-            resp = self.transport.send(method, url, headers, body)
+            try:
+                resp = self.transport.send(method, url, headers, body)
+            except Exception:
+                # A reset socket, a DNS blip or a timeout is exactly as transient as
+                # a 503 and arrives as neither a status nor a body. Long operations
+                # feel this: a backfill or a per-parent walk is hundreds of requests
+                # over minutes, and one dropped connection used to abort the whole
+                # thing.
+                #
+                # Retried for GET only. A write that reached PCO but whose response
+                # was lost is indistinguishable from one that never arrived, and
+                # replaying it would create a second record — so a write surfaces
+                # the error and lets the caller decide.
+                if not idempotent or attempt == max_attempts - 1:
+                    raise
+                time.sleep(min(30.0, 2 ** attempt))
+                continue
             self.limiter.on_response(resp.headers)
             if resp.status == 429:
                 ra = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
