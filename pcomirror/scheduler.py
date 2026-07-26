@@ -75,7 +75,16 @@ class Scheduler:
             for r in registry.full_and_lite():
                 if ing.state(r.name)["backfill_completed_at"]:
                     self._guard(f"drift:{r.name}", ing.drift_probe, r.name)
+                    # Drift counts rows; this checks whether the rows are whole.
+                    # A record can only be degraded, never repaired, if nothing
+                    # looks — its `updated_at` will not move again.
+                    self._guard(f"repair:{r.name}", self._repair, r.name)
             self._last_drift = t
+
+    def _repair(self, name: str) -> None:
+        n = self.m.ingestor.repair_incomplete(name)
+        if n:
+            print(f"[scheduler] queued {n} incomplete {name} record(s) for re-fetch", flush=True)
 
     def _guard(self, label, fn, *args) -> bool:
         """Run one unit; a failure (e.g. transient PCO/network) is logged, not fatal."""

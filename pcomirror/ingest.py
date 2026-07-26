@@ -421,6 +421,51 @@ class Ingestor:
         return {"resource": name, "total_count": total, "mirror_live": mirror,
                 "delta": (mirror - total) if total is not None else None}
 
+    def repair_incomplete(self, name: str, limit: int = 500,
+                          min_age_seconds: int = 3600) -> int:
+        """Queue a re-fetch for records the mirror holds thinner than PCO returns.
+
+        A degraded record is invisible to every other check here. The incremental
+        sweep only re-reads what `updated_at` moved, the audit only looks for
+        deletions, and the drift probe only counts rows — so a person whose
+        relationships were overwritten by a narrower payload stays wrong forever,
+        because nothing about them will ever change again.
+
+        That is not hypothetical: before the equal-timestamp guard existed, one
+        pass-through of `/lists/{id}/people` — which PCO answers with `primary_campus`
+        and nothing else — flattened 82 people in a live mirror, and their household
+        edge was still missing days later. The guard stops it happening again; this
+        is what puts the records back.
+
+        Thinness is measured against the resource's declared `includes` — the set
+        every mirrored copy is fetched with, so a row missing one of them was
+        written by something narrower. Measuring against the *other rows* instead
+        would be self-calibrating but blind in the case that matters most: a
+        pass-through of a whole collection flattens every row at once, and then
+        there are no richer peers left to notice.
+
+        `min_age_seconds` is what keeps that from becoming a loop. If PCO answers
+        without a relationship the registry asks for, the re-fetch cannot fix it,
+        and the row would otherwise be queued again on every pass. Records
+        re-fetched recently are left alone, so the worst case is one re-read per
+        record per interval rather than a spin.
+        """
+        r = registry.by_name(name)
+        expected = [i for i in r.includes if i in r.relationships]
+        if not expected:
+            return 0
+        missing = " OR ".join(
+            "NOT EXISTS (SELECT 1 FROM json_each(t.raw,'$.relationships') k WHERE k.key=?)"
+            for _ in expected)
+        rows = self.db.query(
+            f"SELECT pco_id FROM {r.table} t WHERE deleted_at IS NULL AND ({missing}) "
+            f"  AND last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
+            f"ORDER BY CAST(pco_id AS INTEGER), pco_id LIMIT ?",
+            (*expected, f"-{int(min_age_seconds)} seconds", limit))
+        for row in rows:
+            self.enqueue_hydration(name, row["pco_id"], reason="incomplete")
+        return len(rows)
+
     # -- hydration ---------------------------------------------------------
     def enqueue_hydration(self, name: str, pco_id: str, reason: str = "thin_webhook",
                           includes: list[str] | None = None) -> None:

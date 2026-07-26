@@ -780,6 +780,39 @@ member of their own household, carrying almost none. Both have the same
 equal timestamp a sideload may refresh a record but may not replace it with one
 carrying fewer relationships.
 
+The same rule has to hold for a **pass-through**, and there the payload is not a
+sideload but an ordinary primary resource. `GET /lists/{id}/people` answers with a
+Person carrying `primary_campus` and nothing else, whatever that person actually
+has, and the mirror stores what a pass-through returns. In a live mirror one such
+read flattened 82 people, took their household edge with it, and the app reading
+the mirror told a room of youth workers that nobody could reach those families.
+
+So the comparison is a **superset of relationship keys first, count second**.
+Counting alone was not enough: a narrower `include=` returns a *different* set,
+not merely a smaller one, so an equal-sized payload could still drop the one
+relationship that mattered. The count survives as the tiebreak because a superset
+test on its own is a one-way door — a flattened record holding `primary_campus`
+could never be replaced by a richer payload that does not carry that key, and
+would stay wrong forever. Either way `raw` stays verbatim: one payload is stored
+whole, never a merge of two.
+
+**A degraded record has to be repairable, and nothing else looks.** Stopping the
+flattening does not undo it, and no other check here would ever notice: the
+incremental sweep is keyed on `updated_at`, which will not move again for a record
+whose only change was ours; the audit looks for deletions; the drift probe counts
+rows, and a hollow record still counts as one. That made a degraded record a
+one-way door — the 82 were still wrong days later.
+
+`repair_incomplete` closes it. A row missing a relationship the resource's
+`includes` asks for was written by something narrower than a mirrored fetch, so it
+is queued through the existing hydration path and re-read whole. The expectation
+comes from the registry rather than from comparing rows against each other,
+because the case that matters most — a pass-through of an entire collection —
+flattens every row at once and leaves no richer peer to compare against. A
+recency floor keeps it from spinning on a record PCO will not answer more fully.
+It runs on the scheduler beside the drift probe, and `pcomirror repair` runs it
+now for a mirror that was damaged before the guard existed.
+
 **Include-synthesized relationships are not stored.** PCO answers
 `include=households.people` by adding a `people` relationship to the *Person*.
 It is an artefact of the request rather than part of the record, so the writer
