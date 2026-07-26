@@ -34,6 +34,36 @@ class Rel:
 
 
 @dataclass(frozen=True)
+class Search:
+    """A PCO `where[search_*]` filter — a normalised *substring* match, not equality.
+
+    PCO's search filters are fuzzy: `where[search_name]=ada byron` matches anyone
+    whose name contains that run of characters, and `search_name_or_email` widens
+    the same needle to the person's email addresses. Serving them as `col = ?`
+    would return nothing for almost every real query, so they are declared here
+    as a set of haystacks instead of as plain queryable columns.
+
+    `names` are SQL expressions over the resource's own columns. `children` are
+    `(resource, child_fk, column, mode)` tuples matched with an EXISTS subquery;
+    `mode` is `"text"` (case/whitespace-folded) or `"digits"` (digits only, so
+    formatting differences in a phone number do not matter).
+    """
+    names: tuple[str, ...] = ()
+    children: tuple[tuple[str, str, str, str], ...] = ()
+
+
+# The haystacks PCO searches a person's name against. `search_name` is PCO's own
+# precomputed field; the concatenations cover the two forms a human types — the
+# legal name and the one everybody actually uses.
+_PERSON_NAMES = (
+    "search_name",
+    "name",
+    "coalesce(first_name,'') || ' ' || coalesce(last_name,'')",
+    "nickname || ' ' || coalesce(last_name,'')",
+)
+
+
+@dataclass(frozen=True)
 class Resource:
     name: str                       # registry key, e.g. "person"
     type: str                       # JSON:API type, e.g. "Person"
@@ -49,6 +79,10 @@ class Resource:
     relationships: dict[str, Rel] = field(default_factory=dict)
     can_query_by: tuple[str, ...] = ()
     can_order_by: tuple[str, ...] = ()
+    search_filters: dict[str, Search] = field(default_factory=dict)
+    # PCO attribute name -> our column, where the two differ (`primary` is a
+    # reserved-ish word, so the projection is `is_primary`).
+    col_aliases: dict[str, str] = field(default_factory=dict)
     incr_interval_s: int = 300
     audit_interval_s: int | None = None
     priority: int = 2
@@ -102,10 +136,28 @@ _reg(Resource(
         "marital_status": Rel("marital_status", "one", local_fk="marital_status_id"),
         "households": Rel("household", "many", via="household_membership",
                           via_local_fk="person_pco_id", via_target_fk="household_pco_id"),
+        "household_memberships": Rel("household_membership", "many", child_fk="person_pco_id"),
     },
     can_query_by=("created_at", "updated_at", "id", "remote_id", "primary_campus_id",
-                  "status", "first_name", "last_name"),
-    can_order_by=("created_at", "updated_at", "first_name", "last_name", "remote_id", "birthdate"),
+                  "status", "first_name", "last_name", "nickname", "child", "grade",
+                  "gender", "membership", "birthdate", "anniversary"),
+    can_order_by=("created_at", "updated_at", "first_name", "last_name", "remote_id",
+                  "birthdate", "anniversary", "nickname", "child", "grade", "gender",
+                  "membership", "status"),
+    search_filters={
+        "search_name": Search(names=_PERSON_NAMES),
+        "search_name_or_email": Search(
+            names=_PERSON_NAMES,
+            children=(("email", "person_pco_id", "address", "text"),)),
+        "search_phone_number": Search(
+            children=(("phone_number", "person_pco_id", "number", "digits"),)),
+        "search_phone_number_e164": Search(
+            children=(("phone_number", "person_pco_id", "e164", "digits"),)),
+        "search_name_or_email_or_phone_number": Search(
+            names=_PERSON_NAMES,
+            children=(("email", "person_pco_id", "address", "text"),
+                      ("phone_number", "person_pco_id", "number", "digits"))),
+    },
 ))
 
 # --- person-owned children (fk person_pco_id via relationships.person) ---
@@ -119,8 +171,9 @@ _reg(Resource(
         ("is_primary", "INTEGER", "json", "$.attributes.primary"),
         ("blocked", "INTEGER", "json", "$.attributes.blocked"),
     ),
-    can_query_by=("created_at", "updated_at", "address", "primary"),
+    can_query_by=("created_at", "updated_at", "address", "location", "primary", "blocked"),
     can_order_by=("created_at", "updated_at", "address"),
+    col_aliases={"primary": "is_primary"},
 ))
 _reg(Resource(
     name="phone_number", type="PhoneNumber", table="phone_number", endpoint="/phone_numbers",
@@ -132,8 +185,9 @@ _reg(Resource(
         ("location", "TEXT", "json", "$.attributes.location"),
         ("is_primary", "INTEGER", "json", "$.attributes.primary"),
     ),
-    can_query_by=("created_at", "updated_at", "number"),
+    can_query_by=("created_at", "updated_at", "number", "location", "primary"),
     can_order_by=("created_at", "updated_at"),
+    col_aliases={"primary": "is_primary"},
 ))
 _reg(Resource(
     name="address", type="Address", table="address", endpoint="/addresses",
@@ -149,8 +203,10 @@ _reg(Resource(
         ("location", "TEXT", "json", "$.attributes.location"),
         ("is_primary", "INTEGER", "json", "$.attributes.primary"),
     ),
-    can_query_by=("created_at", "updated_at", "city", "state", "zip"),
+    can_query_by=("created_at", "updated_at", "city", "state", "zip",
+                  "street_line_1", "street_line_2", "location", "primary"),
     can_order_by=("created_at", "updated_at"),
+    col_aliases={"primary": "is_primary"},
 ))
 
 # --- custom fields ---
@@ -203,6 +259,8 @@ _reg(Resource(
     relationships={
         "people": Rel("person", "many", via="household_membership",
                       via_local_fk="household_pco_id", via_target_fk="person_pco_id"),
+        "household_memberships": Rel("household_membership", "many",
+                                     child_fk="household_pco_id"),
     },
     can_query_by=("created_at", "updated_at", "name"),
     can_order_by=("created_at", "updated_at", "name"),
@@ -217,6 +275,12 @@ _reg(Resource(
         ("household_role", "TEXT", "json", "$.attributes.household_role"),
         ("pending", "INTEGER", "json", "$.attributes.pending"),
     ),
+    relationships={
+        "person": Rel("person", "one", local_fk="person_pco_id"),
+        "household": Rel("household", "one", local_fk="household_pco_id"),
+    },
+    can_query_by=("pending", "household_role"),
+    can_order_by=("pending",),
 ))
 
 # --- reference / config (LITE) ---
@@ -258,8 +322,17 @@ _BY_TABLE = {r.table: r for r in RESOURCES.values()}
 _BY_EVENT_RESOURCE = {r.name: r for r in RESOURCES.values()}
 
 
+_COL_TYPES = {(r.name, p[0]): p[1] for r in RESOURCES.values() for p in r.projections}
+
+
 def by_name(name: str) -> Resource:
     return RESOURCES[name]
+
+
+def col_type(r: Resource, col: str) -> str | None:
+    """The declared SQL type of a projected column — so the serving layer can
+    coerce `where[child]=true` to the 1/0 the generated column actually holds."""
+    return _COL_TYPES.get((r.name, col))
 
 
 def by_type(jsonapi_type: str) -> Resource | None:

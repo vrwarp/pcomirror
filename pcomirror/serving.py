@@ -13,13 +13,48 @@ import urllib.parse
 from . import apikeys, links, registry
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
+from .db import norm_digits, norm_text
 
 JSONAPI = "application/vnd.api+json"
 _SEG = {r.endpoint.strip("/"): r for r in registry.RESOURCES.values()}
 
+# Query keys that are pagination, not filtering — stripped before a page link is
+# rebuilt so `offset`/`per_page` are set once, by us.
+_PAGING = ("offset", "per_page")
 
-def _col_for(attr: str) -> str:
+_BOOLS = {"true": 1, "t": 1, "1": 1, "yes": 1, "on": 1,
+          "false": 0, "f": 0, "0": 0, "no": 0, "off": 0}
+
+
+def _col_for(r, attr: str) -> str:
+    if attr in r.col_aliases:
+        return r.col_aliases[attr]
     return {"id": "pco_id", "created_at": "pco_created_at", "updated_at": "pco_updated_at"}.get(attr, attr)
+
+
+def _coerce(r, col: str, val: str):
+    """Match the value to the column's declared type.
+
+    `child` is projected `INTEGER`, so SQLite stores JSON `true` as `1`. Comparing
+    it as text against the literal string `true` — which is exactly what a PCO
+    client sends — silently matched nothing, which is the worst way for a filter
+    to fail.
+    """
+    sqltype = registry.col_type(r, col)
+    if sqltype == "INTEGER":
+        low = val.strip().lower()
+        if low in _BOOLS:
+            return _BOOLS[low]
+        try:
+            return int(low)
+        except ValueError:
+            raise _HttpError(400, f"{col} takes a boolean or integer, got {val!r}") from None
+    if sqltype == "REAL":
+        try:
+            return float(val)
+        except ValueError:
+            raise _HttpError(400, f"{col} takes a number, got {val!r}") from None
+    return val
 
 
 class Application:
@@ -37,7 +72,9 @@ class Application:
         try:
             status, headers, payload = self.route(method, path, qs, body, environ)
         except _HttpError as e:
-            headers = {"WWW-Authenticate": 'Bearer realm="pcomirror"'} if e.status == 401 else {}
+            # Both schemes are accepted (apikeys.bearer_token), so both are offered.
+            headers = ({"WWW-Authenticate": 'Bearer realm="pcomirror", Basic realm="pcomirror"'}
+                       if e.status == 401 else {})
             status, payload = e.status, {"errors": [{"code": str(e.status), "detail": e.detail}]}
         except Exception as e:  # noqa: BLE001
             status, headers, payload = 500, {}, {"errors": [{"code": "500", "detail": str(e)}]}
@@ -122,10 +159,21 @@ class Application:
 
     # -- reads -------------------------------------------------------------
     def _collection(self, r, qs, environ):
+        return self._list(r, qs, environ)
+
+    def _list(self, r, qs, environ, extra_sql: str = "", extra_params=()):
+        """One paged, filtered, ordered, included collection read.
+
+        Shared by `/people` and by the nested `/households/{id}/household_memberships`
+        form, which PCO serves with the identical query surface — `extra_sql` is
+        just the relationship restriction.
+        """
         where_sql, params = self._build_where(r, qs)
+        where_sql = extra_sql + where_sql
+        params = [*extra_params, *params]
         order_sql = self._build_order(r, qs)
-        per_page = max(1, min(100, int(qs.get("per_page", ["25"])[0])))
-        offset = max(0, int(qs.get("offset", ["0"])[0]))
+        per_page = max(1, min(100, self._int(qs, "per_page", 25)))
+        offset = max(0, self._int(qs, "offset", 0))
         total = self.db.query_one(
             f"SELECT count(*) c FROM {r.table} WHERE deleted_at IS NULL{where_sql}", params)["c"]
         rows = self.db.query(
@@ -137,14 +185,51 @@ class Application:
         meta = {"total_count": total, "count": len(data),
                 "can_query_by": list(r.can_query_by), "can_order_by": list(r.can_order_by),
                 "can_include": list(r.relationships.keys()),
+                "can_search_by": list(r.search_filters.keys()),
                 "mirror": {"source": "mirror", "oldest_last_synced_at": oldest}}
-        links = {"self": environ.get("PATH_INFO", "")}
+        # PCO reports the cursor in `meta` as well as in `links`; clients pick
+        # whichever they find, so serve both rather than half of the contract.
         if offset + per_page < total:
-            links["next"] = f"{links['self']}?offset={offset + per_page}&per_page={per_page}"
-        body = {"data": data, "meta": meta, "links": links}
+            meta["next"] = {"offset": offset + per_page}
+        if offset > 0:
+            meta["prev"] = {"offset": max(0, offset - per_page)}
+        body = {"data": data, "meta": meta,
+                "links": self._page_links(environ, qs, offset, per_page, total)}
         if included:
             body["included"] = included
         return 200, {"X-Mirror-Source": "mirror"}, body
+
+    def _int(self, qs, key, default):
+        raw = qs.get(key, [""])[0]
+        try:
+            return int(raw) if raw != "" else default
+        except ValueError:
+            raise _HttpError(400, f"{key} must be an integer, got {raw!r}") from None
+
+    def _page_links(self, environ, qs, offset, per_page, total):
+        """Page links that carry the caller's whole query.
+
+        The previous form emitted a bare `?offset=…&per_page=…`, which dropped
+        `where[…]`, `order` and `include` — so following `links.next` silently
+        switched to an unfiltered, unordered, un-included page. Records were
+        duplicated and skipped with nothing to signal it. A page link is only
+        meaningful as *the same query, further along*.
+        """
+        path = environ.get("PATH_INFO", "") or ""
+        keep = [(k, v) for k, vals in qs.items() if k not in _PAGING for v in vals]
+
+        def url(off):
+            pairs = [*keep, ("offset", str(off)), ("per_page", str(per_page))]
+            # Brackets left literal: PCO accepts either form and `where[grade]` is
+            # far easier to read in a log than `where%5Bgrade%5D`.
+            return f"{path}?{urllib.parse.urlencode(pairs, safe='[]')}"
+
+        out = {"self": url(offset)}
+        if offset + per_page < total:
+            out["next"] = url(offset + per_page)
+        if offset > 0:
+            out["prev"] = url(max(0, offset - per_page))
+        return out
 
     def _single(self, r, pco_id, qs, environ, scopes=None):
         row = self.db.query_one(f"SELECT * FROM {r.table} WHERE pco_id=?", (pco_id,))
@@ -179,10 +264,24 @@ class Application:
         row = self.db.query_one(f"SELECT * FROM {r.table} WHERE pco_id=? AND deleted_at IS NULL", (pco_id,))
         if row is None:
             raise _HttpError(404, "not found")
-        targets = self._related_rows(rel, [row])
         tr = registry.by_name(rel.target)
-        data = [self._serialize(tr, x) for x in targets]
-        return 200, {"X-Mirror-Source": "mirror"}, {"data": data, "meta": {"count": len(data)}}
+        restriction, params = self._rel_restriction(rel, row)
+        # PCO gives a nested collection the same query surface as the top-level
+        # one, so serve it the same way: where/order/include/pagination all work.
+        return self._list(tr, qs, environ, restriction, params)
+
+    def _rel_restriction(self, rel, row):
+        """The SQL restricting a relationship's target table to `row`'s side of it."""
+        if rel.kind == "one":
+            target_id = row[rel.local_fk]
+            # An unset foreign key is an empty collection, not an error — and it
+            # still goes through the normal read so the page shape stays identical.
+            return (" AND pco_id=?", (target_id,)) if target_id else (" AND 0", ())
+        if rel.via:
+            join = registry.by_name(rel.via)
+            return (f" AND pco_id IN (SELECT {rel.via_target_fk} FROM {join.table} "
+                    f"WHERE {rel.via_local_fk}=? AND deleted_at IS NULL)", (row["pco_id"],))
+        return f" AND {rel.child_fk}=?", (row["pco_id"],)
 
     # -- writes: PCO-first write-through (DESIGN §8.4) ---------------------
     def _write_through(self, method, path, r, segs, body):
@@ -236,25 +335,73 @@ class Application:
             parts = inner.split("][")
             attr = parts[0]
             op = parts[1] if len(parts) > 1 else "eq"
+            val = vals[0]
+
+            search = r.search_filters.get(attr)
+            if search is not None:
+                if op != "eq":
+                    raise _HttpError(400, f"{attr} is a search filter and takes no {op!r} operator")
+                clause, ps = self._search_clause(r, search, val)
+                if clause:                      # an empty needle filters nothing, as at PCO
+                    clauses.append(clause)
+                    params.extend(ps)
+                continue
+
             if attr not in r.can_query_by:
                 raise _HttpError(400, f"unsupported filter: {attr}")
-            col = _col_for(attr)
-            val = vals[0]
+            col = _col_for(r, attr)
             if op == "eq":
-                if "%" in val:
+                if isinstance(val, str) and "%" in val:
                     clauses.append(f"{col} LIKE ?")
                     params.append(val)
                 else:
-                    clauses.append(f"lower({col})=lower(?)")
-                    params.append(val)
+                    coerced = _coerce(r, col, val)
+                    if isinstance(coerced, str):
+                        clauses.append(f"lower({col})=lower(?)")
+                    else:
+                        clauses.append(f"{col}=?")
+                    params.append(coerced)
             elif op in ("gt", "gte", "lt", "lte"):
                 sym = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
                 clauses.append(f"{col}{sym}?")
-                params.append(val)
+                params.append(_coerce(r, col, val))
             else:
                 raise _HttpError(400, f"unsupported operator: {op}")
         sql = (" AND " + " AND ".join(clauses)) if clauses else ""
         return sql, params
+
+    def _search_clause(self, r, search, needle: str):
+        """PCO's `where[search_*]`: a normalised substring match, OR-ed across every
+        haystack the filter names — the person's own name columns plus, for the
+        wider filters, an EXISTS over their emails or phone numbers.
+
+        `instr` rather than `LIKE '%…%'` so a needle containing `%` or `_` is a
+        literal, with no escaping to get wrong.
+        """
+        terms, params = [], []
+        text = norm_text(needle)
+        if text:
+            for expr in search.names:
+                terms.append(f"instr(pcm_norm({expr}), ?) > 0")
+                params.append(text)
+        for target, child_fk, col, mode in search.children:
+            probe = norm_digits(needle) if mode == "digits" else text
+            if not probe:       # a name typed into a phone search matches no digits
+                continue
+            fn = "pcm_digits" if mode == "digits" else "pcm_norm"
+            tr = registry.by_name(target)
+            terms.append(
+                f"EXISTS (SELECT 1 FROM {tr.table} c WHERE c.{child_fk}={r.table}.pco_id "
+                f"AND c.deleted_at IS NULL AND instr({fn}(c.{col}), ?) > 0)")
+            params.append(probe)
+        if terms:
+            return "(" + " OR ".join(terms) + ")", params
+        # Two very different empty cases. A blank value is no filter at all, which
+        # is how PCO reads it. A value that *is* something but normalises away for
+        # every haystack the filter covers — a name typed into a phone-number
+        # search — matches nobody; falling back to "no filter" would answer that
+        # query with the entire church.
+        return ("", []) if not text else ("(0)", [])
 
     def _build_order(self, r, qs):
         order = qs.get("order", [None])[0]
@@ -266,7 +413,7 @@ class Application:
             attr = tok.lstrip("-")
             if attr not in r.can_order_by:
                 raise _HttpError(400, f"unsupported order: {attr}")
-            cols.append(f"{_col_for(attr)} {'DESC' if desc else 'ASC'}")
+            cols.append(f"{_col_for(r, attr)} {'DESC' if desc else 'ASC'}")
         cols.append("pco_id")
         return "ORDER BY " + ", ".join(cols)
 

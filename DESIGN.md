@@ -678,10 +678,37 @@ to PCO; `meta.can_*` advertises exactly which grammar the mirror honors.
 Pagination supports PCO-parity `per_page`/`offset` **plus** a recommended keyset
 `page[after]=<cursor>` over `(sort_col, pco_id)`.
 
-**Cannot be replicated locally → pass-through or degrade:** `search_*` virtual
-fields, dynamic **List rule evaluation** (`list_result` is PCO's last materialized
-membership; we serve last-known, live eval → pass-through), permission-derived
-`filter=admins`, and all aggregates/reports/`/me`.
+**`where[search_*]` is served locally** (§11.3, decided). PCO's search filters are
+normalised **substring** matches, not equality, so they are declared in the
+registry as a set of haystacks (`Search`) rather than as queryable columns:
+`search_name` over PCO's own `search_name` plus `first last` and `nickname last`,
+`search_name_or_email` widening the same needle to the person's emails via
+`EXISTS`, and the phone variants matching on digits only so formatting is
+irrelevant. Folding is one Python function used on both sides — as a SQLite UDF
+for the column and directly for the needle — so a search cannot disagree with
+itself about case or whitespace. Matching uses `instr`, not `LIKE`, so `%` and `_`
+in a needle are literal and there is no escaping to get wrong. A needle that
+normalises away for every haystack a filter covers (a name typed into a
+phone-number search) matches **nobody**; only a genuinely blank value filters
+nothing, which is how PCO reads it.
+
+**Cannot be replicated locally → pass-through or degrade:** dynamic **List rule
+evaluation** (a List is a saved *query*, and `list_result` is only PCO's last
+materialized membership — mirroring it would serve a stale answer with no way to
+tell; live eval → pass-through), permission-derived `filter=admins`, and all
+aggregates/reports/`/me`.
+
+**Page links carry the whole query.** `links.self`/`next`/`prev` are rebuilt from
+the caller's own query string with only `offset`/`per_page` replaced, and
+`meta.next`/`meta.prev` carry the same cursor for clients that read it there. A
+link that dropped `where`/`order`/`include` would not be a smaller answer — it
+would be a *different* query wearing the same URL, duplicating and skipping rows
+with nothing to signal it.
+
+**Nested collections get the top-level surface.** `/:type/:id/:rel` runs the same
+where/order/include/pagination path as the collection read, restricted to the
+relationship — because that is what PCO serves at
+`/households/{id}/household_memberships`, includes and all.
 
 ### 8.2 Freshness is first-class
 
@@ -927,9 +954,12 @@ thing that must be *measured* rather than decided, plus two minor knobs:
 2. **Audit cadence** (minor). At ~300 people the full id-audit is ~3 requests, so
    run it **nightly** — it's effectively free. (Default in Appendix B is weekly;
    nightly is the better fit here.)
-3. **`search_*`** (minor). Default is pass-through (faithful to PCO's server-side
-   search). At this size, a local `LIKE`/FTS5 over `search_name` is also viable if
-   you'd rather avoid the round trip — flagged so callers know semantics differ.
+3. **`search_*`** — **decided: served locally** (§8.1). At a few hundred people a
+   scan is free, and the round trip was not the real cost: pass-through spends the
+   PCO budget on the one call a human waits for, keystroke by keystroke. Semantics
+   are matched to PCO's rather than approximated — substring, not equality, over
+   the name/nickname/email/phone haystacks. FTS5 remains the scale-up answer
+   (§12) if the person table ever gets big enough for the scan to show.
 
 **Still useful to confirm:** the **service language** (the store is fixed —
 SQLite; the writer/pseudocode is language-agnostic). Any language with an HTTP

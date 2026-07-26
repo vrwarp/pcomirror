@@ -18,8 +18,8 @@ Local apps that read PCO People data repeatedly (directories, reporting,
 integrations) otherwise burn the shared **100 requests / 20 s** rate budget and
 couple their latency/availability to PCO. pcomirror turns that into fast local
 Postgres queries, keeps a faithful copy up to date, and only reaches out to PCO
-when data isn't mirrorable (stats, reports, live search) or a caller explicitly
-demands live freshness.
+when data isn't mirrorable (stats, reports, live List membership) or a caller
+explicitly demands live freshness.
 
 ## How it works (one paragraph)
 
@@ -70,7 +70,7 @@ pcomirror/
   pcoclient.py  # PCO HTTP client (injectable transport), auth, version pin, 429 handling
   ingest.py     # backfill, incremental sweep, merger poll, delete audit, drift, hydration
   webhooks.py   # HMAC verify, per-event inbox, dispatch, thin->hydrate, merge handling
-  serving.py    # WSGI JSON:API drop-in: read/include/where/order/paginate, write-through, pass-through
+  serving.py    # WSGI JSON:API drop-in: read/include/where/search/order/paginate, write-through, pass-through
   scheduler.py  # one background loop: drain inbox + hydration, run due sweeps, poll mergers, drift
   app.py, cli.py
 ```
@@ -104,6 +104,43 @@ Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
 and fail if PCO fails (`DESIGN.md` §8.4).
 
+### The query surface
+
+The read grammar is PCO's, served from SQLite. Two parts of it are easy to get
+subtly wrong, so they are worth stating outright.
+
+**`where[search_*]` is a substring match, not equality.** All five of PCO's search
+filters are served locally:
+
+| Filter | Matches |
+| --- | --- |
+| `where[search_name]` | PCO's own `search_name`, plus `first last` and `nickname last` |
+| `where[search_name_or_email]` | the above, or any of the person's email addresses |
+| `where[search_phone_number]` | any of their phone numbers, compared on digits only |
+| `where[search_phone_number_e164]` | the same, against the E.164 form |
+| `where[search_name_or_email_or_phone_number]` | all of the above |
+
+Case and whitespace are folded on both sides by the same function, so
+`ADA   BYRON` finds Ada Byron; `(555) 010-1` and `5550101` are the same number;
+and `%` in a needle is a literal `%`, not a wildcard. A needle that can't apply to
+a filter — a name typed into a phone-number search — matches nobody. Only a blank
+value filters nothing.
+
+Ordinary `where[attr]=v` stays exact and case-insensitive (with `%` as a wildcard),
+and values are coerced to the column's type, so `where[child]=true` matches the
+`1` a boolean is stored as instead of silently matching nothing.
+
+**Page links carry the whole query.** `links.next` is your request with `offset`
+advanced — `where`, `order` and `include` included — and `meta.next.offset` says
+the same thing for clients that read it there. Following the link walks every
+matching row exactly once.
+
+Nested collections (`/households/{id}/household_memberships`,
+`/people/{id}/emails`, …) take the same `where`/`order`/`include`/`per_page`
+grammar as the top-level ones, served from the mirror. `meta.can_query_by`,
+`can_order_by`, `can_search_by` and `can_include` advertise exactly what each
+endpoint honours.
+
 **URLs in responses point back at the mirror.** A caller holds a pcomirror API
 key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
 Every `api.planningcenteronline.com/people/v2/...` URL — in `links`, in
@@ -132,7 +169,7 @@ Two strictly separated credential planes (`DESIGN.md` §8.4):
 | --- | --- | --- |
 | **PCO PAT** | pcomirror → PCO | HTTP Basic `app_id:secret` from `PCO_APP_ID` / `PCO_SECRET`. Server-side only; never exposed to or selectable by callers. |
 | **Webhook secret** | PCO → pcomirror | HMAC-SHA256 over the raw body, keyed on the subscription's `authenticity_secret`, found by the `url_token` in the path. |
-| **API key** | your apps → pcomirror | `Authorization: Bearer pcm_…`, hashed at rest, scoped. |
+| **API key** | your apps → pcomirror | `Authorization: Bearer pcm_…` — or HTTP Basic with the key as the username or the password, since that is what an existing PCO client already sends. Hashed at rest, scoped. |
 
 `/people/v2/**` requires an API key. Mint one — the secret is printed once and
 only its SHA-256 digest is stored, so it cannot be recovered later:
@@ -146,7 +183,14 @@ python3 -m pcomirror revoke-api-key --prefix bb2d7fbb
 ```sh
 curl -H 'Authorization: Bearer pcm_bb2d7fbb_7187…' \
      http://localhost:8080/people/v2/people
+
+# Or, for a client built against PCO — which authenticates with HTTP Basic —
+# put the key where the app id or the secret goes and change nothing else:
+curl -u 'pcm_bb2d7fbb_7187…:unused' http://localhost:8080/people/v2/people
 ```
+
+A PCO PAT is never a way in: Basic is accepted only when one of its two fields is
+a `pcm_` key. The planes stay separate.
 
 **Scopes** are comma-separated:
 
@@ -353,14 +397,18 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 29 end-to-end tests (fake PCO) + 11 writer-semantics assertions
+python3 run_tests.py     # 146 end-to-end tests (fake PCO) + 11 writer-semantics assertions
 ```
 
 The suite drives backfill, sideloading, incremental sweep, merger poll, delete
 audit, include-diff child deletes, drift, webhook verify/dedup/dispatch/thin-
-hydrate/merge, JSON:API reads (where/order/include/pagination), the 410-on-merge
-redirect, and write-through — including the **fail-if-PCO-fails** guarantee —
-against an in-process fake PCO, so no network or live credentials are needed.
+hydrate/merge, JSON:API reads (where/search/order/include/pagination), the
+410-on-merge redirect, and write-through — including the **fail-if-PCO-fails**
+guarantee — against an in-process fake PCO, so no network or live credentials are
+needed. `tests/test_search.py` covers the query surface a real PCO client sends:
+every `where[search_*]` filter, typed/boolean filters, nested collections with
+includes, and a full walk of `links.next` asserting each row is visited exactly
+once.
 
 ## Continuous integration
 

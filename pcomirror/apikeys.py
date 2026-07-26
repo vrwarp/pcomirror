@@ -12,6 +12,8 @@ slow down.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import secrets
@@ -61,14 +63,33 @@ def create(db, name: str, scopes: str = DEFAULT_SCOPES) -> str:
 
 
 def bearer_token(header: str | None) -> str | None:
-    """Accept `Authorization: Bearer <key>`; the bare key is also allowed so
-    curl-by-hand and simple clients do not need the ceremony."""
+    """Pull a `pcm_…` key out of an `Authorization` header, whichever way it came.
+
+    Three accepted forms, in descending order of ceremony:
+
+      * `Bearer <key>` — the documented one.
+      * `Basic <base64(user:pass)>` with the key in *either* field. PCO itself
+        authenticates with HTTP Basic (`app_id:secret`), so every existing PCO
+        client sends Basic. The mirror's promise is a base-URL + credential swap;
+        refusing Basic would have made it a code change instead, for every caller.
+      * A bare `pcm_…`, so curl-by-hand needs no ceremony.
+
+    The key is never the PCO PAT: the two planes stay separate (DESIGN §8.4), and
+    a Basic credential that is not a `pcm_` key is rejected like any other.
+    """
     if not header:
         return None
     value = header.strip()
     scheme, _, rest = value.partition(" ")
     if scheme.lower() == "bearer":
         return rest.strip() or None
+    if scheme.lower() == "basic":
+        try:
+            decoded = base64.b64decode(rest.strip(), validate=True).decode("utf-8")
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            return None
+        user, _, password = decoded.partition(":")
+        return next((c for c in (user, password) if c.startswith(f"{TOKEN_PREFIX}_")), None)
     return value if value.startswith(f"{TOKEN_PREFIX}_") else None
 
 
