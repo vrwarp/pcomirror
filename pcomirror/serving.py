@@ -25,6 +25,36 @@ _PAGING = ("offset", "per_page")
 _BOOLS = {"true": 1, "t": 1, "1": 1, "yes": 1, "on": 1,
           "false": 0, "f": 0, "0": 0, "no": 0, "off": 0}
 
+# PCO orders by id *numerically*. `pco_id` is TEXT, so a plain sort puts a
+# nine-digit id before an eight-digit one and a whole page comes back in a
+# different order than PCO would send — measured on `/emails`, where the two id
+# lengths coexist and all 25 rows of page one differed. The trailing lexical sort
+# only breaks ties between ids that are not numeric at all.
+_ID_ORDER = "CAST(pco_id AS INTEGER), pco_id"
+
+# How each `where[search_*]` arm matches. Verified against the live API, not
+# assumed: the rules genuinely differ per arm.
+_MATCHERS = {
+    "words":         lambda expr: f"pcm_name_match({expr}, ?)",
+    "contains":      lambda expr: f"instr(pcm_norm({expr}), ?) > 0",
+    "digits_suffix": lambda expr: f"pcm_digits_suffix({expr}, ?)",
+    "digits_exact":  lambda expr: f"pcm_digits_eq({expr}, ?)",
+}
+
+
+def _json_ids(raw: str, path: str) -> list[str]:
+    """Resource ids out of a JSON:API relationship array stored on `raw`."""
+    node = json.loads(raw)
+    for key in path.lstrip("$.").split("."):
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key)
+        if node is None:
+            return []
+    if isinstance(node, dict):
+        node = [node]
+    return [str(x["id"]) for x in node if isinstance(x, dict) and x.get("id")]
+
 
 def _col_for(r, attr: str) -> str:
     if attr in r.col_aliases:
@@ -161,7 +191,13 @@ class Application:
     def _collection(self, r, qs, environ):
         return self._list(r, qs, environ)
 
-    def _list(self, r, qs, environ, extra_sql: str = "", extra_params=()):
+    def _org_parent(self):
+        """`meta.parent` for a top-level collection: the organization, as PCO
+        reports it. Learned from PCO's own responses during ingest."""
+        org = self.db.get_meta("organization_id")
+        return {"type": "Organization", "id": org} if org else None
+
+    def _list(self, r, qs, environ, extra_sql: str = "", extra_params=(), parent=None):
         """One paged, filtered, ordered, included collection read.
 
         Shared by `/people` and by the nested `/households/{id}/household_memberships`
@@ -179,13 +215,18 @@ class Application:
         rows = self.db.query(
             f"SELECT * FROM {r.table} WHERE deleted_at IS NULL{where_sql} {order_sql} "
             f"LIMIT ? OFFSET ?", (*params, per_page, offset))
-        data = [self._serialize(r, row) for row in rows]
-        included = self._build_includes(r, rows, qs)
+        included, echo = self._build_includes(r, rows, qs)
+        data = [self._serialize(r, row, echo.get(row["pco_id"])) for row in rows]
         oldest = min((row["last_synced_at"] for row in rows), default=None)
         meta = {"total_count": total, "count": len(data),
                 "can_query_by": list(r.can_query_by), "can_order_by": list(r.can_order_by),
                 "can_include": list(r.relationships.keys()),
                 "can_search_by": list(r.search_filters.keys()),
+                # `filter=` is not implemented, so the honest advertisement is an
+                # empty list — PCO always sends the key, and claiming filters we do
+                # not honour would be worse than claiming none.
+                "can_filter": [],
+                "parent": parent or self._org_parent(),
                 "mirror": {"source": "mirror", "oldest_last_synced_at": oldest}}
         # PCO reports the cursor in `meta` as well as in `links`; clients pick
         # whichever they find, so serve both rather than half of the contract.
@@ -246,9 +287,11 @@ class Application:
                 body["errors"][0]["meta"]["merged_into"] = row["merged_into_pco_id"]
                 headers["Location"] = f"/people/v2/{r.endpoint.strip('/')}/{row['merged_into_pco_id']}"
             return 410, headers, body
-        data = self._serialize(r, row)
-        included = self._build_includes(r, [row], qs)
-        body = {"data": data}
+        included, echo = self._build_includes(r, [row], qs)
+        data = self._serialize(r, row, echo.get(row["pco_id"]))
+        body = {"data": data,
+                "meta": {"can_include": list(r.relationships.keys()),
+                         "parent": self._org_parent()}}
         if included:
             body["included"] = included
         return 200, {"X-Mirror-Source": "mirror"}, body
@@ -268,10 +311,21 @@ class Application:
         restriction, params = self._rel_restriction(rel, row)
         # PCO gives a nested collection the same query surface as the top-level
         # one, so serve it the same way: where/order/include/pagination all work.
-        return self._list(tr, qs, environ, restriction, params)
+        # Its `meta.parent` is the record it hangs off, not the organization.
+        return self._list(tr, qs, environ, restriction, params,
+                          parent={"type": r.type, "id": pco_id})
 
     def _rel_restriction(self, rel, row):
         """The SQL restricting a relationship's target table to `row`'s side of it."""
+        if rel.kind == "json":
+            ids = _json_ids(row["raw"], rel.json_path)
+            if not ids:
+                return " AND 0", ()
+            return f" AND pco_id IN ({','.join('?' * len(ids))})", tuple(ids)
+        if rel.kind == "json_reverse":
+            tr = registry.by_name(rel.target)
+            return (f" AND EXISTS (SELECT 1 FROM json_each({tr.table}.raw, ?) j "
+                    f"WHERE j.value ->> '$.id' = ?)", (rel.json_path, row["pco_id"]))
         if rel.kind == "one":
             target_id = row[rel.local_fk]
             # An unset foreign key is an empty collection, not an error — and it
@@ -295,11 +349,7 @@ class Application:
                 self.writer.tombstone(r.table, segs[1], None, "destroyed")
             return resp.status or 204, {}, b""
         out = resp.json() or {}
-        for item in ([out["data"]] if isinstance(out.get("data"), dict) else out.get("data", [])):
-            if item:
-                self.writer.route(item, "passthrough")
-        for inc in out.get("included", []) or []:
-            self.writer.route(inc, "passthrough")
+        self.writer.route_page(out, "passthrough")
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
         return resp.status, dict(resp.headers), links.rewrite_document(out, self.s)
 
@@ -317,9 +367,9 @@ class Application:
         out = resp.json() if resp.body else {}
         # read-through: warm the mirror for mirrorable results
         if resp.ok and isinstance(out, dict):
-            for item in ([out.get("data")] if isinstance(out.get("data"), dict) else out.get("data", []) or []):
-                if item and registry.by_type(item.get("type", "")):
-                    self.writer.route(item, "passthrough")
+            self.writer.route_page(
+                out, "passthrough",
+                synthesized=self.writer.synthesized_rels(qs.get("include", [None])[0]))
         # Warm the mirror from PCO's payload above, then rewrite for the caller —
         # a proxied response must not hand back URLs needing a PCO credential.
         return (resp.status, {"X-Mirror-Source": "passthrough"},
@@ -371,29 +421,30 @@ class Application:
         return sql, params
 
     def _search_clause(self, r, search, needle: str):
-        """PCO's `where[search_*]`: a normalised substring match, OR-ed across every
-        haystack the filter names — the person's own name columns plus, for the
-        wider filters, an EXISTS over their emails or phone numbers.
+        """PCO's `where[search_*]`, one arm at a time.
 
-        `instr` rather than `LIKE '%…%'` so a needle containing `%` or `_` is a
-        literal, with no escaping to get wrong.
+        The arms do not share a rule, and the differences are not cosmetic. Names
+        match by word-prefix — `byron` and `ada by` find Ada Byron, `yron` does
+        not. Email addresses match by substring. Phone numbers match on a digits
+        *suffix*, which is how a person searches for one. Treating all three as
+        "contains" returned a hundred people where PCO returned nine.
         """
         terms, params = [], []
         text = norm_text(needle)
         if text:
             for expr in search.names:
-                terms.append(f"instr(pcm_norm({expr}), ?) > 0")
+                terms.append(_MATCHERS["words"](expr))
                 params.append(text)
         for target, child_fk, col, mode in search.children:
-            probe = norm_digits(needle) if mode == "digits" else text
+            probe = norm_digits(needle) if mode.startswith("digits") else text
             if not probe:       # a name typed into a phone search matches no digits
                 continue
-            fn = "pcm_digits" if mode == "digits" else "pcm_norm"
             tr = registry.by_name(target)
+            inner = _MATCHERS[mode](f"c.{col}")
             terms.append(
                 f"EXISTS (SELECT 1 FROM {tr.table} c WHERE c.{child_fk}={r.table}.pco_id "
-                f"AND c.deleted_at IS NULL AND instr({fn}(c.{col}), ?) > 0)")
-            params.append(probe)
+                f"AND c.deleted_at IS NULL AND {inner})")
+            params.append(needle if mode.startswith("digits") else probe)
         if terms:
             return "(" + " OR ".join(terms) + ")", params
         # Two very different empty cases. A blank value is no filter at all, which
@@ -406,23 +457,36 @@ class Application:
     def _build_order(self, r, qs):
         order = qs.get("order", [None])[0]
         if not order:
-            return "ORDER BY pco_id"
+            return f"ORDER BY {_ID_ORDER}"
         cols = []
         for tok in order.split(","):
             desc = tok.startswith("-")
             attr = tok.lstrip("-")
             if attr not in r.can_order_by:
                 raise _HttpError(400, f"unsupported order: {attr}")
-            cols.append(f"{_col_for(r, attr)} {'DESC' if desc else 'ASC'}")
-        cols.append("pco_id")
+            col = _col_for(r, attr)
+            # PCO sorts names case-insensitively. SQLite's default BINARY collation
+            # puts every capital ahead of every lowercase letter, so a surname
+            # entered in lower case jumped to the end of the roster.
+            collate = "" if registry.col_type(r, col) in ("INTEGER", "REAL") else " COLLATE NOCASE"
+            cols.append(f"{col}{collate} {'DESC' if desc else 'ASC'}")
+        cols.append(_ID_ORDER)
         return "ORDER BY " + ", ".join(cols)
 
     # -- includes ----------------------------------------------------------
     def _build_includes(self, r, rows, qs):
+        """Resolve `include=` into `included[]`, plus the relationship echo PCO adds.
+
+        Returns `(included, echo)`. `echo` maps a primary row's id to the extra
+        relationship PCO synthesizes for a *nested* include: asking for
+        `include=households.people` makes PCO add a `people` relationship to the
+        Person itself, listing the ids it sideloaded. It is derived from the rows
+        already resolved here, so echoing it costs nothing.
+        """
         inc_param = qs.get("include", [None])[0]
         if not inc_param:
-            return []
-        out, seen = [], set()
+            return [], {}
+        out, seen, echo = [], set(), {}
 
         def add(res, row):
             key = (res.type, row["pco_id"])
@@ -439,12 +503,23 @@ class Application:
             tr = registry.by_name(rel.target)
             for x in level1:
                 add(tr, x)
-            if second:  # one nested level
-                rel2 = tr.relationships.get(second)
-                if rel2:
-                    for y in self._related_rows(rel2, level1):
-                        add(registry.by_name(rel2.target), y)
-        return out
+            if not second:
+                continue
+            rel2 = tr.relationships.get(second)
+            if rel2 is None:
+                continue
+            tr2 = registry.by_name(rel2.target)
+            for y in self._related_rows(rel2, level1):
+                add(tr2, y)
+            # Per row, so the echo says what *this* record is related to rather
+            # than what the whole page is.
+            for row in rows:
+                own1 = self._related_rows(rel, [row])
+                ids = [{"type": tr2.type, "id": y["pco_id"]}
+                       for y in self._related_rows(rel2, own1)]
+                if ids:
+                    echo.setdefault(row["pco_id"], {})[second] = ids
+        return out, echo
 
     def _related_rows(self, rel, rows):
         tr = registry.by_name(rel.target)
@@ -452,6 +527,20 @@ class Application:
         if not ids:
             return []
         ph = ",".join("?" * len(ids))
+        if rel.kind == "json":
+            # PCO puts a person's households inline on the Person payload and has
+            # no bulk endpoint for the join rows, so the array on `raw` is the edge.
+            targets = sorted({t for row in rows for t in _json_ids(row["raw"], rel.json_path)})
+            if not targets:
+                return []
+            ph2 = ",".join("?" * len(targets))
+            return self.db.query(
+                f"SELECT * FROM {tr.table} WHERE pco_id IN ({ph2}) AND deleted_at IS NULL", targets)
+        if rel.kind == "json_reverse":
+            return self.db.query(
+                f"SELECT * FROM {tr.table} WHERE deleted_at IS NULL AND EXISTS "
+                f"(SELECT 1 FROM json_each({tr.table}.raw, ?) j "
+                f"WHERE j.value ->> '$.id' IN ({ph}))", (rel.json_path, *ids))
         if rel.kind == "many" and rel.via is None:
             return self.db.query(
                 f"SELECT * FROM {tr.table} WHERE {rel.child_fk} IN ({ph}) AND deleted_at IS NULL", ids)
@@ -476,7 +565,7 @@ class Application:
         return []
 
     # -- serialization -----------------------------------------------------
-    def _serialize(self, r, row):
+    def _serialize(self, r, row, echo=None):
         obj = json.loads(row["raw"])
         obj.setdefault("id", row["pco_id"])
         obj.setdefault("type", r.type)
@@ -484,6 +573,9 @@ class Application:
         # different link map for a list page than for a single fetch, which made a
         # record's shape depend on how it was synced.
         obj["links"] = links.link_map(r, row["pco_id"], (obj.get("links") or {}).get("html"))
+        for name, ids in (echo or {}).items():
+            # PCO's own shape for a nested include; `related` is null there too.
+            obj.setdefault("relationships", {})[name] = {"links": {"related": None}, "data": ids}
         links.rewrite_relationships(obj, self.s)
         obj["meta"] = {"mirror": {"last_synced_at": row["last_synced_at"],
                                   "pco_updated_at": row["pco_updated_at"],

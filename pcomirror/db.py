@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS admin_session (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS mirror_meta (
+  key TEXT PRIMARY KEY, value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
 CREATE TABLE IF NOT EXISTS passthrough_cache (
   cache_key TEXT PRIMARY KEY, status INTEGER, body TEXT, headers TEXT,
   fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), expires_at TEXT NOT NULL
@@ -122,6 +126,48 @@ def norm_digits(value) -> str | None:
     if value is None:
         return None
     return "".join(ch for ch in str(value) if ch.isdigit())
+
+
+def name_matches(haystack, needle) -> int:
+    """PCO's `where[search_name]` rule, measured against the live API.
+
+    Anchored, word-wise prefixing. The needle's words must prefix the *leading*
+    words of the haystack, so against `Ada Byron`: `ada`, `ada by` and `ada byron`
+    match; `yron` and `byron ada` do not. `byron` matches too — not here, but
+    against the `last_name` haystack, which is why the surname is searched as a
+    field in its own right rather than by letting a match start anywhere.
+
+    Both looser rules were tried and both were wrong in the permissive direction.
+    Substring matching returned a hundred people where PCO returned nine; allowing
+    the run to start at any word boundary still over-matched by three on a
+    1,915-person organization, by finding a needle in the middle of a compound
+    surname where PCO finds nothing.
+    """
+    if haystack is None:
+        return 0
+    words = (norm_text(haystack) or "").split()
+    probe = (norm_text(needle) or "").split()
+    if not probe:
+        return 1                       # a blank needle filters nothing
+    if len(probe) > len(words):
+        return 0
+    return int(all(words[i].startswith(probe[i]) for i in range(len(probe))))
+
+
+def digits_suffix(haystack, needle) -> int:
+    """`where[search_phone_number]`: the stored number *ends with* the digits typed.
+
+    Which is how people search for a phone number — the last four, the last seven —
+    and why the country code on the front of an E.164 value finds nothing.
+    """
+    stored, probe = norm_digits(haystack), norm_digits(needle)
+    return int(bool(stored) and bool(probe) and stored.endswith(probe))
+
+
+def digits_equal(haystack, needle) -> int:
+    """`where[search_phone_number_e164]`: exact, once punctuation is discounted."""
+    stored, probe = norm_digits(haystack), norm_digits(needle)
+    return int(bool(stored) and bool(probe) and stored == probe)
 
 
 def _projection_sql(proj: registry.Projection) -> str:
@@ -174,11 +220,48 @@ class Database:
             # itself about whitespace is worse than one that does not exist.
             self._conn.create_function("pcm_norm", 1, norm_text, deterministic=True)
             self._conn.create_function("pcm_digits", 1, norm_digits, deterministic=True)
+            self._conn.create_function("pcm_name_match", 2, name_matches, deterministic=True)
+            self._conn.create_function("pcm_digits_suffix", 2, digits_suffix, deterministic=True)
+            self._conn.create_function("pcm_digits_eq", 2, digits_equal, deterministic=True)
 
-    def init_schema(self) -> None:
+    def init_schema(self) -> list[str]:
+        """Create anything missing, then reconcile columns on tables that already
+        exist. Returns the columns it had to add.
+
+        `CREATE TABLE IF NOT EXISTS` is a no-op once a table is there, so adding a
+        projection to the registry used to leave every existing deployment with a
+        table the serving layer would query and SQLite would reject. SQLite cannot
+        add a STORED generated column to a populated table but it can add a
+        VIRTUAL one, which queries identically — it is computed on read instead of
+        on write. A fresh database still gets STORED columns throughout.
+        """
         with self._lock:
             self._conn.executescript(schema_sql())
+            added = self._reconcile_columns()
             self._conn.commit()
+        return added
+
+    def _reconcile_columns(self) -> list[str]:
+        added = []
+        for r in registry.RESOURCES.values():
+            # `table_xinfo`, not `table_info`: the latter hides generated columns,
+            # which is nearly all of them here.
+            have = {row["name"] for row in
+                    self._conn.execute(f"PRAGMA table_xinfo({r.table})").fetchall()}
+            for col, sqltype, kind, spec in r.projections:
+                if col in have:
+                    continue
+                if kind == "json":
+                    body = f"(raw ->> '{spec}') VIRTUAL"
+                elif kind == "expr":
+                    body = f"({spec}) VIRTUAL"
+                else:
+                    body = ""                       # plain, writer-filled
+                self._conn.execute(
+                    f"ALTER TABLE {r.table} ADD COLUMN {col} {sqltype} "
+                    + (f"GENERATED ALWAYS AS {body}" if body else ""))
+                added.append(f"{r.table}.{col}")
+        return added
 
     def execute(self, sql: str, params=()):
         with self._lock:
@@ -198,6 +281,15 @@ class Database:
     def query_one(self, sql: str, params=()) -> sqlite3.Row | None:
         with self._lock:
             return self._conn.execute(sql, params).fetchone()
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.execute("INSERT INTO mirror_meta(key,value) VALUES(?,?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                     "updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')", (key, value))
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.query_one("SELECT value FROM mirror_meta WHERE key=?", (key,))
+        return row["value"] if row else None
 
     def transaction(self):
         return _Txn(self)

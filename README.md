@@ -109,22 +109,25 @@ and fail if PCO fails (`DESIGN.md` §8.4).
 The read grammar is PCO's, served from SQLite. Two parts of it are easy to get
 subtly wrong, so they are worth stating outright.
 
-**`where[search_*]` is a substring match, not equality.** All five of PCO's search
-filters are served locally:
+**`where[search_*]` does not mean one thing.** All five of PCO's search filters are
+served locally, and each arm matches by its own rule — measured against the live
+API, not assumed (see [`tests/golden/README.md`](tests/golden/README.md)):
 
-| Filter | Matches |
-| --- | --- |
-| `where[search_name]` | PCO's own `search_name`, plus `first last` and `nickname last` |
-| `where[search_name_or_email]` | the above, or any of the person's email addresses |
-| `where[search_phone_number]` | any of their phone numbers, compared on digits only |
-| `where[search_phone_number_e164]` | the same, against the E.164 form |
-| `where[search_name_or_email_or_phone_number]` | all of the above |
+| Filter | Rule | Matches |
+| --- | --- | --- |
+| `where[search_name]` | anchored word-prefix | `name`, `first last`, `first_name`, `last_name`, `nickname`, `given_name` |
+| `where[search_name_or_email]` | + substring | the above, or anywhere inside an email address |
+| `where[search_phone_number]` | digits suffix | a phone number ending in the digits typed |
+| `where[search_phone_number_e164]` | digits exact | the E.164 value, punctuation discounted |
+| `where[search_name_or_email_or_phone_number]` | all three | every arm above |
 
-Case and whitespace are folded on both sides by the same function, so
-`ADA   BYRON` finds Ada Byron; `(555) 010-1` and `5550101` are the same number;
-and `%` in a needle is a literal `%`, not a wildcard. A needle that can't apply to
-a filter — a name typed into a phone-number search — matches nobody. Only a blank
-value filters nothing.
+Concretely, for *Ada Byron*: `ada`, `byron`, `ada by` and `ADA   BYRON` all find
+her; `yron` and `byron ada` find nobody, because the match is anchored at the
+start of a name field and the words must be in order. Phone numbers match on a
+suffix, so the last four digits find a person and a leading area code does not —
+`(555) 010-1` and `5550101` are the same number. `%` in a needle is a literal `%`.
+A needle that cannot apply to a filter — a name typed into a phone-number search —
+matches nobody; only a blank value filters nothing.
 
 Ordinary `where[attr]=v` stays exact and case-insensitive (with `%` as a wildcard),
 and values are coerced to the column's type, so `where[child]=true` matches the
@@ -135,11 +138,26 @@ advanced — `where`, `order` and `include` included — and `meta.next.offset` 
 the same thing for clients that read it there. Following the link walks every
 matching row exactly once.
 
-Nested collections (`/households/{id}/household_memberships`,
-`/people/{id}/emails`, …) take the same `where`/`order`/`include`/`per_page`
-grammar as the top-level ones, served from the mirror. `meta.can_query_by`,
-`can_order_by`, `can_search_by` and `can_include` advertise exactly what each
-endpoint honours.
+**Ordering follows PCO's, not SQLite's.** Ids sort numerically, because they are
+text columns holding numbers of different lengths and `/emails` carries both
+8- and 9-digit ones. Text sorts case-insensitively, because PCO folds case and
+SQLite's default collation does not. Both are the difference between a page that
+matches PCO and a page that quietly contains different rows.
+
+Nested collections (`/people/{id}/emails`, `/households/{id}/people`, …) take the
+same `where`/`order`/`include`/`per_page` grammar as the top-level ones, served
+from the mirror. `meta.can_query_by`, `can_order_by`, `can_search_by` and
+`can_include` advertise exactly what each endpoint honours, and `meta.parent`,
+`meta.next`/`prev` and `meta.can_filter` mirror PCO's own contract.
+
+**Household membership is deliberately not mirrored.** `GET /household_memberships`
+is a 404 — PCO exposes those rows only under `/households/{id}/household_memberships`,
+one household at a time, and the payload there carries no `household`
+relationship, so there is no bulk source and no incremental signal. Those two
+endpoints therefore pass through. The `households` edge itself *is* local: PCO
+returns a person's household identifiers inline on the Person, so
+`include=households`, `/people/{id}/households` and `/households/{id}/people` all
+answer from the mirror at no upstream cost.
 
 **URLs in responses point back at the mirror.** A caller holds a pcomirror API
 key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
@@ -397,7 +415,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 146 end-to-end tests (fake PCO) + 11 writer-semantics assertions
+python3 run_tests.py     # 169 end-to-end tests + 11 writer-semantics assertions
 ```
 
 The suite drives backfill, sideloading, incremental sweep, merger poll, delete
@@ -409,6 +427,13 @@ needed. `tests/test_search.py` covers the query surface a real PCO client sends:
 every `where[search_*]` filter, typed/boolean filters, nested collections with
 includes, and a full walk of `links.next` asserting each row is visited exactly
 once.
+
+[`tests/golden/`](tests/golden/README.md) holds request/response pairs captured
+from the **live** Planning Center API and sanitized; `tests/test_golden.py`
+replays them against the serving layer and asserts the mirror answers in PCO's
+shape and PCO's order. That corpus is the only part of the suite that cannot be
+wrong in the same direction as the code — every semantic rule above was corrected
+because of it.
 
 ## Continuous integration
 

@@ -695,8 +695,40 @@ nothing, which is how PCO reads it.
 **Cannot be replicated locally → pass-through or degrade:** dynamic **List rule
 evaluation** (a List is a saved *query*, and `list_result` is only PCO's last
 materialized membership — mirroring it would serve a stale answer with no way to
-tell; live eval → pass-through), permission-derived `filter=admins`, and all
-aggregates/reports/`/me`.
+tell; live eval → pass-through), **household memberships**, permission-derived
+`filter=admins`, and all aggregates/reports/`/me`.
+
+**Household membership, specifically.** `GET /household_memberships` is a **404**:
+PCO exposes the rows only under `/households/{id}/household_memberships`, one
+household at a time, and the payload there carries no `household` relationship —
+the household id appears only inside `links.self`. So there is no bulk source and
+no incremental signal to drive a refresh, and the honest answer is pass-through.
+The `households` **edge** is a different matter and is served locally: PCO returns
+a person's household identifiers inline on the Person payload, so the registry
+models the relationship as a JSON array on `raw` (`Rel(kind="json")`) rather than
+through a join table, and `include=households`, `/people/{id}/households` and
+`/households/{id}/people` all answer from the mirror. The join table was
+previously declared as a mirrored resource with a `/household_memberships`
+endpoint; backfill read the 404 as an empty collection and recorded success, so
+the table stayed empty and every household relationship silently resolved to
+nothing. Backfill now raises on a non-OK page rather than recording an empty
+success.
+
+**A sideloaded copy may not make a record poorer.** A compound document can carry
+the same resource twice — `GET /people/X?include=households.people` returns X in
+`data` with every requested relationship resolved and again in `included`, as a
+member of their own household, carrying almost none. Both have the same
+`updated_at`, so the monotonic guard admits both. `route_page` therefore applies
+`included[]` first and `data[]` last, and `upsert` takes a `primary` flag: at an
+equal timestamp a sideload may refresh a record but may not replace it with one
+carrying fewer relationships.
+
+**Include-synthesized relationships are not stored.** PCO answers
+`include=households.people` by adding a `people` relationship to the *Person*.
+It is an artefact of the request rather than part of the record, so the writer
+strips it before storing (on a copy — on a pass-through that same object is the
+caller's response, and they are entitled to PCO's answer verbatim) and the
+serving layer regenerates it whenever a nested include asks for it.
 
 **Page links carry the whole query.** `links.self`/`next`/`prev` are rebuilt from
 the caller's own query string with only `offset`/`per_page` replaced, and
