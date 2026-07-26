@@ -42,6 +42,7 @@ PCO shares **one per-org rate limiter**.
 | [`docs/schema.sqlite.sql`](docs/schema.sqlite.sql) | **The store** — the SQLite schema: table contract, generated projections, and the four canonical writer statements. |
 | [`docs/schema_test_sqlite.py`](docs/schema_test_sqlite.py) | Assertion harness verifying the writer semantics on SQLite (monotonic guard, same-second correction, sticky/merge tombstones, authoritative resurrection, polymorphic `field_datum`, untimed-tombstone terminality). |
 | [`docs/schema.sql`](docs/schema.sql) · [`docs/schema_test.sql`](docs/schema_test.sql) | The PostgreSQL equivalent (schema + writer functions + test) — the **scale-up** target for many churches / a large org (`DESIGN.md` §12). |
+| [`docs/mutation-testing.md`](docs/mutation-testing.md) | Verifying `POST`/`PATCH`/`DELETE` against a **live** organization: the procedure, the guard that makes it survivable, the last run's results, and what PCO's validation does and does not catch. |
 
 The schema and writer semantics are runnable and verified on **SQLite 3.45**:
 
@@ -102,7 +103,9 @@ token is generated (or the existing one kept — re-running for the same
 
 Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
-and fail if PCO fails (`DESIGN.md` §8.4).
+and fail if PCO fails (`DESIGN.md` §8.4) — verified against a live organization,
+including that a rejected write leaves the mirror completely untouched
+([`docs/mutation-testing.md`](docs/mutation-testing.md)).
 
 ### The query surface
 
@@ -442,8 +445,15 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 179 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 197 end-to-end tests + 11 writer-semantics assertions
 ```
+
+`tests/test_mutation_guard.py` covers the refusal logic behind the live write
+check — offline, against a transport that fails if it is ever reached, so the
+blocking rules have regression coverage without any network or credential. The
+writes themselves are a manual procedure
+([`docs/mutation-testing.md`](docs/mutation-testing.md)); there is deliberately no
+committed script that creates and deletes a person in production.
 
 The suite drives backfill, sideloading, incremental sweep, merger poll, delete
 audit, include-diff child deletes, drift, webhook verify/dedup/dispatch/thin-
