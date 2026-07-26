@@ -79,7 +79,7 @@ class Ingestor:
         applied, failed = 0, []
         for parent_id in parents:
             try:
-                applied += self._walk_one(r, parent, parent_id, source)
+                applied += self.walk_parent(name, parent_id, source)
             except Exception as e:  # noqa: BLE001
                 # One unreachable parent must not cost the whole walk. Its rows stay
                 # as they were — stale, not wrong — and the walk is not recorded as
@@ -94,6 +94,51 @@ class Ingestor:
         self._set(name, last_sweep_completed_at=now_iso(), consecutive_errors=0, last_error=None,
                   mirror_count_last=self._live_count(r.table))
         return applied
+
+    def walked_parents(self, name: str) -> int:
+        return self.db.query_one(
+            "SELECT count(*) c FROM nested_walk_state WHERE resource_type=?", (name,))["c"]
+
+    def parent_walked(self, name: str, parent_id: str) -> bool:
+        """Has this parent's child collection ever been fetched?
+
+        The distinction the read path needs: a parent with no walk record has an
+        *unknown* child collection, and unknown must not be served as empty.
+        """
+        return self.db.query_one(
+            "SELECT 1 FROM nested_walk_state WHERE resource_type=? AND parent_pco_id=?",
+            (name, parent_id)) is not None
+
+    def ensure_parent_walked(self, name: str, parent_id: str, source: str = "passthrough") -> bool:
+        """Fill one parent's child collection if it has never been fetched.
+
+        Called from the read path, so it costs one upstream request the first
+        time a parent is asked about and nothing thereafter. The periodic walk
+        keeps it current from then on; this only closes the window between a
+        parent appearing and the next sweep reaching it — including the window
+        that opens the moment this resource is added to an existing mirror.
+
+        Returns True if the parent's rows can now be trusted. Raises if PCO could
+        not be reached, because the caller must answer with an error rather than
+        an empty collection.
+        """
+        if self.parent_walked(name, parent_id):
+            return True
+        self.walk_parent(name, parent_id, source)
+        return True
+
+    def walk_parent(self, name: str, parent_id: str, source: str = "reconcile") -> int:
+        """Walk exactly one parent and record that it was walked."""
+        r = registry.by_name(name)
+        parent = registry.by_name(r.parent)
+        n = self._walk_one(r, parent, parent_id, source)
+        self.db.execute(
+            "INSERT INTO nested_walk_state(resource_type,parent_pco_id,walked_at,row_count) "
+            "VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'),?) "
+            "ON CONFLICT(resource_type,parent_pco_id) DO UPDATE SET "
+            "walked_at=excluded.walked_at, row_count=excluded.row_count",
+            (name, parent_id, n))
+        return n
 
     def _walk_one(self, r, parent, parent_id: str, source: str) -> int:
         seen: set[str] = set()

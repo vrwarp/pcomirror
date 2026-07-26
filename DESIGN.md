@@ -727,6 +727,50 @@ is the trade this makes against pass-through: a day-old `household_role` against
 parent's phone number being unavailable whenever PCO is. For the read a counselor
 waits on at a door, bounded staleness is the better failure.
 
+**"Not walked yet" is not "empty", and the read path has to know the difference.**
+A resource collected one parent at a time has a third state the other resources do
+not: a parent whose collection has never been fetched. Its table rows are absent,
+and absent rows serialize to an empty page — which is not a weaker answer than the
+truth but the *opposite* one. For household memberships it reads as "this student
+has no parent", and a caller that trusts it says so in the words a family would
+read: *nobody can reach this family in an emergency*.
+
+So the walk keeps a ledger, `nested_walk_state`, of which parents it has actually
+visited, and a read of an unvisited parent does not answer from the empty table.
+It fills that one parent first — a single upstream request, once ever per parent,
+after which the periodic walk keeps it current — and if PCO cannot be reached it
+returns **503**. An empty collection is then only ever a statement about the
+family; an error is the only way the mirror says "I do not know".
+
+The fill is bounded per read. One nested read needs one parent; only a page-wide
+`include` can want one per row, and a hundred serial upstream requests is not a
+response but a timeout — past the budget the read answers 503 with the same
+distinction intact. The ledger is also seeded from rows already held on first
+open, because a row can only exist if its parent was walked: a mirror that has
+been walking for months does not re-fetch 500 households to learn what it knows.
+
+This is also what makes the resource safe to *add*. Every sweep in the scheduler is
+gated on the resource having been backfilled, and a resource declared after a
+mirror was first built has no backfill — so on an existing deployment the walk
+never ran at all, and every household read empty indefinitely. The scheduler now
+adopts a newly declared resource by backfilling it once; the read-time fill covers
+the interval before that lands, and the ledger keeps the cost at one request per
+parent rather than one per read.
+
+**The mirror does not invent the top-level collection either.** `GET
+/household_memberships` is a 404 at PCO, and so is `GET
+/household_memberships/{id}` — the row is addressable only through its household.
+Both are 404 here. Serving them would put paths in front of clients that no other
+backend has, and a client that came to depend on one would break on the API this
+is a drop-in for.
+
+The link map follows from that: a parented resource is linked **through** its
+parent (`/households/{h}/household_memberships/{m}`), which is also the form PCO
+returns and the one the owning id is parsed back out of. And because the mirror
+generates a relationship link per declared relationship, the router serves the
+segment past a parented record too — publishing a link it would then refuse is its
+own bug, and PCO answers those paths.
+
 **A sideloaded copy may not make a record poorer.** A compound document can carry
 the same resource twice — `GET /people/X?include=households.people` returns X in
 `data` with every requested relationship resolved and again in `included`, as a
@@ -1090,7 +1134,7 @@ unchanged.
 | address | `/addresses` | incremental (descending-walk) | **no** | 300 s | — | P2 | — |
 | field_datum | `/field_data` | incremental | yes | 300 s | — | P2 | field_definition |
 | household | `/households` | incremental | yes | 600 s | monthly | P2 | — |
-| household_membership | (via household) | list-and-replace | n/a (untimed) | 600 s | — | P2 | — |
+| household_membership | (via household, per parent) | nested walk, list-and-replace per parent | n/a (untimed) | 86400 s + filled on read for an unwalked parent | — | P3 | — |
 | note | `/notes` | incremental | yes | 600 s | monthly | P2 | note_category |
 | social_profile | `/social_profiles` | incremental | yes | 600 s | — | P2 | — |
 | background_check | `/background_checks` | incremental | yes | 900 s | monthly | P3 | — |

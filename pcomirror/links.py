@@ -44,14 +44,25 @@ def to_mirror_path(url, settings) -> object:
     return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
-def link_map(r, pco_id: str, html: object = None) -> dict:
+def link_map(r, pco_id: str, html: object = None, parent_id: object = None) -> dict:
     """The link set for a mirrored record, generated from the registry.
 
     Generated rather than echoed: PCO returns a different `links` map for a list
     page than for a single-resource fetch, so echoing it made a record's shape
     depend on whether it happened to arrive via backfill or reconcile.
+
+    A resource PCO only exposes under a parent is linked **through** that parent.
+    `GET /household_memberships/{id}` is a 404 upstream exactly as the collection
+    is, so a top-level self link would be one that works against the mirror and
+    404s against the API it stands in for — and PCO's own `links.self` is the
+    parented form, which is where the owning id is read back out of.
     """
-    base = f"{MIRROR_PREFIX}/{r.endpoint.strip('/')}/{pco_id}"
+    if r.parent and parent_id:
+        parent = registry.by_name(r.parent)
+        base = (f"{MIRROR_PREFIX}/{parent.endpoint.strip('/')}/{parent_id}"
+                f"/{r.endpoint.strip('/')}/{pco_id}")
+    else:
+        base = f"{MIRROR_PREFIX}/{r.endpoint.strip('/')}/{pco_id}"
     links = {"self": base}
     for name in r.relationships:
         links[name] = f"{base}/{name}"

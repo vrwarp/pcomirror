@@ -560,6 +560,13 @@
       "query": "order=name&per_page=10",
       "records": 6,
       "status": 200
+    },
+    {
+      "name": "err_household_memberships_top_level",
+      "path": "/household_memberships",
+      "query": "per_page=5",
+      "records": 1,
+      "status": 404
     }
   ],
   "note": "Sanitized. Ids, names, contact details and dates are synthetic; id ordering and case-folded name ordering are preserved so ordering assertions remain meaningful.",

@@ -56,6 +56,13 @@ class Scheduler:
         for r in registry.full_and_lite():
             st = ing.state(r.name)
             if st["backfill_completed_at"] is None:
+                # A resource added to the registry after this mirror was first
+                # backfilled has none of its own, and every sweep below is gated
+                # on having one — so without this it would stay empty forever
+                # while the sweeps around it ran, and reads would answer from an
+                # empty table. Backfill it now, in the background, once.
+                if self._guard(f"late-backfill:{r.name}", ing.backfill, r.name):
+                    print(f"[scheduler] backfilled newly declared resource {r.name}", flush=True)
                 continue
             if st["next_run_at"] and st["next_run_at"] <= now:
                 if self._guard(f"sweep:{r.name}", ing.incremental_sweep, r.name):

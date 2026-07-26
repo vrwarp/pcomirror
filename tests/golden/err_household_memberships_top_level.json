@@ -1,0 +1,20 @@
+{
+  "name": "err_household_memberships_top_level",
+  "request": {
+    "method": "GET",
+    "path": "/household_memberships",
+    "query": "per_page=5"
+  },
+  "response": {
+    "body": {
+      "errors": [
+        {
+          "detail": "The resource you requested could not be found",
+          "status": "404",
+          "title": "Not Found"
+        }
+      ]
+    },
+    "status": 404
+  }
+}

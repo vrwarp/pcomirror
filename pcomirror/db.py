@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS passthrough_cache (
   cache_key TEXT PRIMARY KEY, status INTEGER, body TEXT, headers TEXT,
   fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), expires_at TEXT NOT NULL
 );
+-- Which parents a `nested_walk` child has actually been walked for. A child PCO
+-- only serves one parent at a time has no other way to tell "this parent has no
+-- rows" from "nobody has ever asked about this parent", and those two answers
+-- are opposites: the first means the household is empty, the second means the
+-- mirror does not know yet. Serving an empty page for the second is how a
+-- student's parent contact silently became "nobody can reach this family".
+CREATE TABLE IF NOT EXISTS nested_walk_state (
+  resource_type TEXT NOT NULL, parent_pco_id TEXT NOT NULL,
+  walked_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  row_count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (resource_type, parent_pco_id)
+);
 CREATE VIEW IF NOT EXISTS person_custom_fields AS
 SELECT fd.person_pco_id,
        json_group_object(def.slug,
@@ -253,8 +265,30 @@ class Database:
         with self._lock:
             self._conn.executescript(schema_sql())
             added = self._reconcile_columns()
+            self._seed_walk_ledger()
             self._conn.commit()
         return added
+
+    def _seed_walk_ledger(self) -> None:
+        """Credit parents whose rows prove they were already walked.
+
+        The ledger arrived after the walk did, so a mirror that has been walking
+        for a while has the rows and none of the record. Without this, every one of
+        those parents would look unvisited and be re-fetched on first read — one
+        request each, for work already done. A row can only exist because its
+        parent was walked, so the rows are the record.
+        """
+        for r in registry.full_and_lite():
+            if r.method != "nested_walk" or not r.parent_fk:
+                continue
+            have = self._conn.execute(
+                "SELECT count(*) FROM nested_walk_state WHERE resource_type=?", (r.name,)).fetchone()[0]
+            if have:
+                continue
+            self._conn.execute(
+                "INSERT OR IGNORE INTO nested_walk_state(resource_type,parent_pco_id,row_count) "
+                f"SELECT ?, {r.parent_fk}, count(*) FROM {r.table} "
+                f"WHERE {r.parent_fk} IS NOT NULL GROUP BY {r.parent_fk}", (r.name,))
 
     def _reconcile_columns(self) -> list[str]:
         """Add columns the registry gained, and repair ones whose expression changed.

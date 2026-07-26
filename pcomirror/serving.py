@@ -106,6 +106,11 @@ def _coerce(r, col: str, val: str):
 
 
 class Application:
+    # How many un-walked parents one read may fill inline. A single nested read
+    # needs one; only a page-wide `include` of a walked collection can want more,
+    # and a hundred serial upstream requests is not a response, it is a timeout.
+    WALK_FILL_BUDGET = 25
+
     def __init__(self, db, writer, ingestor, client, webhooks, settings):
         self.db, self.writer, self.ingestor = db, writer, ingestor
         self.client, self.webhooks, self.s = client, webhooks, settings
@@ -196,9 +201,19 @@ class Application:
             if len(segs) == 1:
                 return self._collection(r, qs, environ)
             if len(segs) == 2:
+                if r.parent:
+                    # `/household_memberships/{id}` is a 404 upstream too: the row
+                    # is only addressable through its household.
+                    raise _HttpError(
+                        404, f"a {r.type} is addressed under its "
+                             f"{registry.by_name(r.parent).type}")
                 return self._single(r, segs[1], qs, environ, scopes)
             if len(segs) == 3:
                 return self._nested(r, segs[1], segs[2], qs, environ, scopes)
+            if len(segs) in (4, 5):
+                return self._nested_single(r, segs[1], segs[2], segs[3],
+                                           segs[4] if len(segs) == 5 else None,
+                                           qs, environ, scopes)
             raise _HttpError(404, "bad path")
         if method in ("POST", "PATCH", "DELETE"):
             self._require(scopes, apikeys.SCOPE_WRITE)
@@ -207,7 +222,75 @@ class Application:
 
     # -- reads -------------------------------------------------------------
     def _collection(self, r, qs, environ):
+        if r.parent:
+            # PCO does not expose this type at the top level — the rows only exist
+            # under their parent, and `GET /household_memberships` is a 404 there.
+            # Answering 200 would invent a collection the API being mirrored does
+            # not have, which is the one thing a drop-in must never do.
+            raise _HttpError(404, f"{r.type} is only served under a {registry.by_name(r.parent).type}")
         return self._list(r, qs, environ)
+
+    # -- "unknown" is not "empty" ------------------------------------------
+    def _ensure_walked(self, r, rel, rows):
+        """Make a `nested_walk` child collection knowable before serving it.
+
+        A child PCO only exposes one parent at a time is mirrored by a periodic
+        walk, so between a parent appearing and the walk reaching it the mirror
+        holds no rows for that parent. Those rows are not absent — they are
+        unknown, and an empty page says the opposite. Fill the gap for exactly
+        the parents this read touches (one upstream request each, once ever),
+        and refuse the read if that cannot be done.
+        """
+        tr = registry.by_name(rel.target)
+        if tr.method != "nested_walk" or rel.kind != "many":
+            return
+        walk_parent = registry.by_name(tr.parent)
+        budget = self.WALK_FILL_BUDGET
+        for row in rows:
+            if r.name == tr.parent:
+                parent_ids = [row["pco_id"]]
+            else:
+                # Reached from the other side — a person's memberships hang off
+                # that person's households. Walk each of them.
+                hop = next((v for v in r.relationships.values()
+                            if v.target == tr.parent), None)
+                if hop is None:
+                    return
+                parent_ids = self._rel_target_ids(hop, row)
+            for parent_id in parent_ids:
+                if self.ingestor.parent_walked(tr.name, parent_id):
+                    continue
+                if not self.db.query_one(
+                        f"SELECT 1 FROM {walk_parent.table} WHERE pco_id=? AND deleted_at IS NULL",
+                        (parent_id,)):
+                    continue  # the parent itself is not mirrored; nothing to walk
+                if budget <= 0:
+                    # A page-wide include of an un-walked collection would spend a
+                    # request per row and hold the response open for all of them.
+                    # Say the collection is not ready instead — which is true, and
+                    # is not the same sentence as "these households are empty".
+                    raise _HttpError(
+                        503, f"{tr.type} has not been walked for every "
+                             f"{walk_parent.type} on this page yet — retry once the "
+                             f"walk has run, or read one {walk_parent.type} at a time")
+                budget -= 1
+                try:
+                    self.ingestor.ensure_parent_walked(tr.name, parent_id)
+                except Exception as e:  # noqa: BLE001
+                    raise _HttpError(
+                        503, f"{tr.type} for {walk_parent.type} {parent_id} is not mirrored yet "
+                             f"and could not be fetched: {e}") from e
+
+    def _rel_target_ids(self, rel, row) -> list[str]:
+        """The ids on the far side of `rel` for one row, without serializing it."""
+        if rel.kind == "json":
+            return _json_ids(row["raw"], rel.json_path)
+        if rel.kind == "one":
+            return [row[rel.local_fk]] if row[rel.local_fk] else []
+        tr = registry.by_name(rel.target)
+        return [x["pco_id"] for x in self.db.query(
+            f"SELECT pco_id FROM {tr.table} WHERE {rel.child_fk}=? AND deleted_at IS NULL",
+            (row["pco_id"],))]
 
     def _org_parent(self):
         """`meta.parent` for a top-level collection: the organization, as PCO
@@ -340,12 +423,40 @@ class Application:
             if target is None:
                 raise _HttpError(404, "not found")
             return self._single(tr, target["pco_id"], qs, environ, scopes)
+        self._ensure_walked(r, rel, [row])
         restriction, params = self._rel_restriction(rel, row)
         # PCO gives a nested collection the same query surface as the top-level
         # one, so serve it the same way: where/order/include/pagination all work.
         # Its `meta.parent` is the record it hangs off, not the organization.
         return self._list(tr, qs, environ, restriction, params,
                           parent={"type": r.type, "id": pco_id})
+
+    def _nested_single(self, r, pco_id, rel_name, child_id, tail, qs, environ, scopes=None):
+        """One record addressed through its parent — `/households/{h}/household_memberships/{m}`,
+        and its own relationships one segment further, which PCO also serves.
+
+        The only way to read a membership at PCO, and therefore the link the mirror
+        publishes for one; publishing a link the router then refuses would be its
+        own bug. The child must genuinely belong to this parent, or the path is a
+        404 rather than a redirect to the same row under another parent.
+        """
+        rel = r.relationships.get(rel_name)
+        if rel is None or rel.kind != "many":
+            return self._passthrough("GET", environ.get("PATH_INFO"), qs, b"", scopes)
+        parent_row = self.db.query_one(
+            f"SELECT * FROM {r.table} WHERE pco_id=? AND deleted_at IS NULL", (pco_id,))
+        if parent_row is None:
+            raise _HttpError(404, "not found")
+        tr = registry.by_name(rel.target)
+        self._ensure_walked(r, rel, [parent_row])
+        restriction, params = self._rel_restriction(rel, parent_row)
+        row = self.db.query_one(
+            f"SELECT * FROM {tr.table} WHERE pco_id=? {restriction}", (child_id, *params))
+        if row is None:
+            raise _HttpError(404, "not found")
+        if tail:
+            return self._nested(tr, child_id, tail, qs, environ, scopes)
+        return self._single(tr, child_id, qs, environ, scopes)
 
     def _rel_restriction(self, rel, row):
         """The SQL restricting a relationship's target table to `row`'s side of it."""
@@ -594,6 +705,7 @@ class Application:
                 # `social_profiles`, …). Answering 200 with no `included` would look
                 # exactly like "this person has none", so say so instead.
                 raise _HttpError(400, f"cannot include {first!r}: not mirrored")
+            self._ensure_walked(r, rel, rows)
             level1 = self._related_rows(rel, rows)
             tr = registry.by_name(rel.target)
             for x in level1:
@@ -603,6 +715,7 @@ class Application:
             rel2 = tr.relationships.get(second)
             if rel2 is None:
                 continue
+            self._ensure_walked(tr, rel2, level1)
             tr2 = registry.by_name(rel2.target)
             for y in self._related_rows(rel2, level1):
                 add(tr2, y)
@@ -662,7 +775,8 @@ class Application:
         # Generated from the registry rather than echoed from `raw`: PCO returns a
         # different link map for a list page than for a single fetch, which made a
         # record's shape depend on how it was synced.
-        obj["links"] = links.link_map(r, row["pco_id"], (obj.get("links") or {}).get("html"))
+        obj["links"] = links.link_map(r, row["pco_id"], (obj.get("links") or {}).get("html"),
+                                      row[r.parent_fk] if r.parent_fk else None)
         for name, ids in (echo or {}).items():
             # PCO's own shape for a nested include; `related` is null there too.
             obj.setdefault("relationships", {})[name] = {"links": {"related": None}, "data": ids}
