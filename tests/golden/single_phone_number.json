@@ -1,0 +1,46 @@
+{
+  "name": "single_phone_number",
+  "request": {
+    "method": "GET",
+    "path": "/phone_numbers/100000001",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "data": {
+        "attributes": {
+          "carrier": null,
+          "country_code": "US",
+          "created_at": "2024-01-06T22:49:01Z",
+          "e164": "+15558411105",
+          "international": "+1 714-264-3144",
+          "location": "Mobile",
+          "national": "(714) 264-3144",
+          "number": "(555) 841-1105",
+          "primary": true,
+          "updated_at": "2024-01-06T22:49:01Z"
+        },
+        "id": "100000001",
+        "links": {
+          "self": "https://api.planningcenteronline.com/people/v2/phone_numbers/100000001"
+        },
+        "relationships": {
+          "person": {
+            "data": {
+              "id": "100000001",
+              "type": "Person"
+            }
+          }
+        },
+        "type": "PhoneNumber"
+      },
+      "meta": {
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        }
+      }
+    },
+    "status": 200
+  }
+}

@@ -751,6 +751,23 @@ the same decision as the generated `links` map and is strictly additive: nothing
 PCO would have sent is omitted, and nothing PCO does not have is invented. The
 golden suite asserts exactly those two properties rather than equality.
 
+**Filters may reach through relationships.** `where[<rel>][<attr>]`, to any depth
+the registry models, compiles to a chain of correlated `EXISTS` subqueries — one
+hop per relationship, each joined by the same rule the relationship is served
+with. PCO documents ~100 such filters and applies none of them (measured: a value
+that cannot match anything still returns the whole collection), so this is a
+deliberate divergence, recorded in `tests/golden/`.
+
+**Nothing given is silently ignored** (the rule behind that divergence and the
+`refuses` ones). An unsupported filter, order key, uncoercible value or
+unmirrored `include` is a `400`. PCO answers `200` having dropped it, which a
+caller cannot distinguish from a correct answer; between a loud error and a
+silently wrong page, the error is the safe failure.
+
+**To-one relationships are resources, not collections.** `/:type/:id/:rel` for a
+`one` relationship returns a single object and `404`s when the foreign key is
+unset, which is what PCO does — the earlier form answered with an empty page.
+
 **Nested collections get the top-level surface.** `/:type/:id/:rel` runs the same
 where/order/include/pagination path as the collection read, restricted to the
 relationship — because that is what PCO serves at

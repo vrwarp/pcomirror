@@ -1,0 +1,788 @@
+{
+  "name": "inc_all_relationships",
+  "request": {
+    "method": "GET",
+    "path": "/people",
+    "query": "include=emails,phone_numbers,addresses,field_data,households,primary_campus,marital_status&per_page=3"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "accounting_administrator": true,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": "2003-02-09",
+            "can_create_forms": true,
+            "can_email_lists": true,
+            "child": false,
+            "created_at": "2024-01-06T22:43:30Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Linnea0578",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Yardley425",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Linnea0578 Yardley425",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": "Manager",
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": true,
+            "status": "active",
+            "updated_at": "2024-12-12T23:58:46Z"
+          },
+          "id": "100000001",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000001",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000001"
+          },
+          "relationships": {
+            "addresses": {
+              "data": [
+                {
+                  "id": "100000026",
+                  "type": "Address"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/addresses"
+              }
+            },
+            "emails": {
+              "data": [
+                {
+                  "id": "10000001",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/emails"
+              }
+            },
+            "field_data": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/field_data"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000012",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/households"
+              }
+            },
+            "marital_status": {
+              "data": {
+                "id": "1000001",
+                "type": "MaritalStatus"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000001"
+              }
+            },
+            "phone_numbers": {
+              "data": [
+                {
+                  "id": "100000001",
+                  "type": "PhoneNumber"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": "1997-04-27",
+            "can_create_forms": true,
+            "can_email_lists": true,
+            "child": false,
+            "created_at": "2024-01-06T22:44:37Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Cassian0101",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Thackery357",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Cassian0101 Thackery357",
+            "nickname": "Quenby0788",
+            "passed_background_check": null,
+            "people_permissions": "Manager",
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": true,
+            "status": "active",
+            "updated_at": "2025-12-28T16:21:16Z"
+          },
+          "id": "100000002",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000002",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000002"
+          },
+          "relationships": {
+            "addresses": {
+              "data": [
+                {
+                  "id": "100000027",
+                  "type": "Address"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/addresses"
+              }
+            },
+            "emails": {
+              "data": [
+                {
+                  "id": "10000002",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/emails"
+              }
+            },
+            "field_data": {
+              "data": [
+                {
+                  "id": "100000001",
+                  "type": "FieldDatum"
+                },
+                {
+                  "id": "100000002",
+                  "type": "FieldDatum"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/field_data"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000012",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/households"
+              }
+            },
+            "marital_status": {
+              "data": {
+                "id": "1000001",
+                "type": "MaritalStatus"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000001"
+              }
+            },
+            "phone_numbers": {
+              "data": [
+                {
+                  "id": "100000002",
+                  "type": "PhoneNumber"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": true,
+            "can_email_lists": true,
+            "child": false,
+            "created_at": "2024-01-06T22:51:32Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Emory0204",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Sterling334",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Emory0204 Sterling334",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": "Manager",
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": true,
+            "status": "active",
+            "updated_at": "2025-12-06T07:17:09Z"
+          },
+          "id": "100000003",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000003",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000003"
+          },
+          "relationships": {
+            "addresses": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/addresses"
+              }
+            },
+            "emails": {
+              "data": [
+                {
+                  "id": "10000003",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/emails"
+              }
+            },
+            "field_data": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/field_data"
+              }
+            },
+            "households": {
+              "data": [
+                {
+                  "id": "10000023",
+                  "type": "Household"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/households"
+              }
+            },
+            "marital_status": {
+              "data": null
+            },
+            "phone_numbers": {
+              "data": [
+                {
+                  "id": "100000004",
+                  "type": "PhoneNumber"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/phone_numbers"
+              }
+            },
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        }
+      ],
+      "included": [
+        {
+          "attributes": {
+            "address": "ulric38@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:43:30Z",
+            "location": "Work",
+            "primary": true,
+            "updated_at": "2024-01-06T22:43:30Z"
+          },
+          "id": "10000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000001"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "carrier": null,
+            "country_code": "US",
+            "created_at": "2024-01-06T22:49:01Z",
+            "e164": "+15558411105",
+            "international": "+1 714-264-3144",
+            "location": "Mobile",
+            "national": "(714) 264-3144",
+            "number": "(555) 841-1105",
+            "primary": true,
+            "updated_at": "2024-01-06T22:49:01Z"
+          },
+          "id": "100000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/phone_numbers/100000001"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "PhoneNumber"
+        },
+        {
+          "attributes": {
+            "city": "Greer53",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-07T00:13:11Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Verity22 Nessa42 Ulric35",
+            "street_line_2": null,
+            "updated_at": "2024-01-07T00:13:11Z",
+            "zip": "00000"
+          },
+          "id": "100000026",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/addresses/100000026"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-20T23:47:09Z",
+            "member_count": 4,
+            "name": "Whitfield206",
+            "primary_contact_id": "100000001",
+            "primary_contact_name": "Kevin Zhang",
+            "updated_at": "2024-01-20T23:47:09Z"
+          },
+          "id": "10000012",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000012"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000002",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000001",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000072",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000140",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "value": "Single"
+          },
+          "id": "1000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000001"
+          },
+          "type": "MaritalStatus"
+        },
+        {
+          "attributes": {
+            "address": "alder68@d60.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:45:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:45:04Z"
+          },
+          "id": "10000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000002"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "carrier": null,
+            "country_code": "US",
+            "created_at": "2024-01-07T01:14:56Z",
+            "e164": "+15555670861",
+            "international": "+1 646-642-2368",
+            "location": "Mobile",
+            "national": "(646) 642-2368",
+            "number": "(555) 567-0861",
+            "primary": true,
+            "updated_at": "2024-01-07T01:14:56Z"
+          },
+          "id": "100000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/phone_numbers/100000002"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "PhoneNumber"
+        },
+        {
+          "attributes": {
+            "city": "Isolde87",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-09T00:16:24Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Briony58 Ulric78 Fenwick90",
+            "street_line_2": null,
+            "updated_at": "2024-01-09T00:16:24Z",
+            "zip": "00000"
+          },
+          "id": "100000027",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/addresses/100000027"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-29T05:57:50Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T05:57:50Z",
+            "value": "Fenwick72"
+          },
+          "id": "100000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000001"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100001",
+                "type": "FieldDefinition"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-29T05:57:50Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T05:57:50Z",
+            "value": "Alder81"
+          },
+          "id": "100000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000002"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100002",
+                "type": "FieldDefinition"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "address": "marlow93@d19.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:51:32Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:51:32Z"
+          },
+          "id": "10000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000003"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000003",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "carrier": null,
+            "country_code": "US",
+            "created_at": "2024-01-09T19:48:48Z",
+            "e164": "+15555639375",
+            "international": "+1 626-552-6547",
+            "location": "Mobile",
+            "national": "(626) 552-6547",
+            "number": "(555) 563-9375",
+            "primary": true,
+            "updated_at": "2024-01-09T19:48:48Z"
+          },
+          "id": "100000004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/phone_numbers/100000004"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000003",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "PhoneNumber"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-21T06:04:20Z",
+            "member_count": 4,
+            "name": "Radcliffe156",
+            "primary_contact_id": "100000003",
+            "primary_contact_name": "Daniel Tai",
+            "updated_at": "2026-05-03T16:38:58Z"
+          },
+          "id": "10000023",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000023"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000003",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000047",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000175",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000176",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000003",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/v2/people?include=emails%2Cphone_numbers%2Caddresses%2Cfield_data%2Chouseholds%2Cprimary_campus%2Cmarital_status&offset=3&per_page=3",
+        "self": "https://api.planningcenteronline.com/people/v2/people?include=emails%2Cphone_numbers%2Caddresses%2Cfield_data%2Chouseholds%2Cprimary_campus%2Cmarital_status&per_page=3"
+      },
+      "meta": {
+        "can_filter": [
+          "created_since",
+          "admins",
+          "organization_admins"
+        ],
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "can_order_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "created_at",
+          "updated_at",
+          "first_name",
+          "last_name",
+          "remote_id",
+          "membership",
+          "status"
+        ],
+        "can_query_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "medical_notes",
+          "membership",
+          "created_at",
+          "updated_at",
+          "search_name",
+          "search_name_or_email",
+          "search_name_or_email_or_phone_number",
+          "search_phone_number",
+          "search_phone_number_e164",
+          "mfa_configured",
+          "first_name",
+          "last_name",
+          "id",
+          "primary_campus_id",
+          "remote_id",
+          "status"
+        ],
+        "count": 3,
+        "next": {
+          "offset": 3
+        },
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 1915
+      }
+    },
+    "status": 200
+  }
+}

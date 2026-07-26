@@ -1,6 +1,6 @@
 # Golden corpus — real Planning Center responses, sanitized
 
-Forty request/response pairs captured from the **live** Planning Center People API and
+Eighty request/response pairs captured from the **live** Planning Center People API and
 then sanitized. `tests/test_golden.py` loads the resources out of them, replays
 the same requests against the serving layer, and asserts the mirror answers in
 the same shape and the same order as PCO did.
@@ -25,6 +25,11 @@ built to catch was invisible to the unit suite:
 | `fields[Type]` was honoured | It was ignored entirely — a caller asking for two attributes got all thirty-one. |
 | Any payload can warm the mirror | A `fields[]` response has no `updated_at`, and storing one replaced a person with a single attribute and a NULL timestamp that the monotonic guard could never repair. |
 | `include=field_definition` on a FieldDatum worked | The registry declared no relationship, so it silently sideloaded nothing. |
+| PCO applies the nested filters it documents | It **ignores** all of them. `where[emails][address]=nobody@nowhere.invalid` still returns the whole organization. |
+| The reference tables carry `updated_at` | None of them do — `marital_statuses`, `name_prefixes`, `name_suffixes`, `inactive_reasons` return a `value` and nothing else, so declaring them timestamped left the monotonic guard comparing against NULL. |
+| `grade` sorts like a number | It was projected as text, so `order=-grade` opened on the ninth graders rather than the twelfth. |
+| A household's membership had to be derived | PCO puts it on the Household itself, no `include` needed. Scanning every person for it only ever found the ones already fetched. |
+| A to-one nested read returns a collection | It returns a single resource, and **404**s when the relationship is unset. |
 
 ## What is in each file
 
@@ -71,6 +76,26 @@ what the corpus exists to test:
 
 Organization configuration — field definition names, marital statuses, campuses —
 is left real. It is not personal data, and keeping it makes the corpus legible.
+
+## Declared divergences
+
+Twelve recordings carry a `divergence` block naming a place where the mirror
+answers differently from PCO on purpose, with the reason. They are data rather
+than hidden exceptions: `test_declared_divergences_are_still_real` asserts each
+one still happens, so a divergence that is fixed — or that drifts — fails the
+suite and has to be reconciled with the code rather than quietly describing
+something that no longer occurs.
+
+Both kinds come from one rule: **the mirror never silently ignores a query
+parameter.** It applies it or refuses the request.
+
+* `filters` — PCO documents roughly a hundred `where[relationship][attribute]`
+  filters and applies none of them; the same request with a value that cannot
+  match anything still returns the whole collection. The mirror applies them.
+* `refuses` — PCO answers 200 for a parameter it cannot apply: an unknown filter
+  or `order` key, a value it cannot coerce, an `include` naming a type it offers
+  and the mirror does not hold. An answer that silently ignores what was asked is
+  indistinguishable from a correct one, so the mirror returns 400 instead.
 
 ## Refreshing
 

@@ -24,7 +24,9 @@ PEOPLE = [
 
 def _fixture():
     fake = FakePCO()
-    fake.add(res("Household", "h1", {"name": "Byron", "member_count": 2}))
+    fake.add(res("Household", "h1", {"name": "Byron", "member_count": 2},
+                 relationships={"people": {"data": [{"type": "Person", "id": "1"},
+                                                    {"type": "Person", "id": "4"}]}}))
     for pid, first, last, nick, child, grade in PEOPLE:
         person = fake.add_person(pid, first, last, "2026-01-01T00:00:00Z")
         person["attributes"].update(child=child, grade=grade, nickname=nick)
@@ -252,7 +254,9 @@ class TestRelationshipReads(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual([(i["type"], i["id"]) for i in body["included"]], [("Household", "h1")])
 
-    def test_the_reverse_edge_reads_the_same_array(self):
+    def test_the_other_side_of_the_edge_reads_the_household_payload(self):
+        # PCO puts the membership on the Household too, so each side is read from
+        # its own record rather than by scanning the other side's.
         status, _, body = wsgi_get(self.m.wsgi, "/people/v2/households/h1/people",
                                    "order=last_name")
         self.assertEqual(status, 200, body)

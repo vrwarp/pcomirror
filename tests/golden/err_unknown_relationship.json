@@ -1,0 +1,20 @@
+{
+  "name": "err_unknown_relationship",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000001/no_such_rel",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "errors": [
+        {
+          "detail": "The resource you requested could not be found",
+          "status": "404",
+          "title": "Not Found"
+        }
+      ]
+    },
+    "status": 404
+  }
+}

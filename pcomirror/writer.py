@@ -29,17 +29,20 @@ class Writer:
         return table
 
     # -- 7a. resources WITH updated_at -------------------------------------
-    def upsert(self, table: str, pco_id: str, raw: dict, source: str, now: str | None = None,
-               primary: bool = True) -> None:
-        """`primary=False` marks a sideloaded copy from `included[]`.
+    def upsert(self, table: str, pco_id: str, raw: dict, source: str, now: str | None = None) -> None:
+        """At an equal `updated_at`, a write may not make a record poorer.
 
-        At an equal `updated_at` the monotonic guard allows the write, which is
-        right for a correction and wrong for a sideload: PCO returns a resource in
-        `included[]` with only the relationships *that* document needed, so a
-        person sideloaded as a member of somebody else's household is a strictly
-        thinner record than the same person fetched directly. Letting it land
-        deleted their emails and phone numbers from the mirror until the next
-        sweep. A sideload may add and refresh; it may not make a record poorer.
+        Two payloads carrying the same timestamp describe the same state, so
+        neither is newer and "last one wins" is arbitrary — but they are not
+        equally complete. PCO returns a resource in `included[]` with only the
+        relationships that document needed, and returns different sets for
+        different requests, so a person sideloaded as a member of somebody else's
+        household, or fetched with a narrower `include=`, is a strictly thinner
+        record than the same person fetched with a wider one. Letting the thinner
+        one land deleted their emails and phone numbers until the next sweep.
+
+        A genuinely newer payload (`>`) always wins, so a relationship that really
+        was removed still lands — removing it moves `updated_at`.
         """
         t = self._table(table)
         now = now or now_iso()
@@ -50,7 +53,6 @@ class Writer:
                   last_synced_at=:now, source=excluded.source,
                   raw=CASE WHEN excluded.pco_updated_at>pco_updated_at THEN excluded.raw
                            WHEN excluded.pco_updated_at<pco_updated_at THEN raw
-                           WHEN :primary=1 THEN excluded.raw
                            WHEN (SELECT count(*) FROM json_each(excluded.raw,'$.relationships'))
                               >= (SELECT count(*) FROM json_each({t}.raw,'$.relationships'))
                                 THEN excluded.raw
@@ -64,8 +66,7 @@ class Writer:
                   tombstone_reason=CASE WHEN deleted_at IS NOT NULL AND tombstone_reason<>'merged'
                                       AND excluded.pco_updated_at>tombstone_uat THEN NULL ELSE tombstone_reason END""",
             {"pid": pco_id, "raw": json.dumps(raw, separators=(",", ":")),
-             "now": now, "source": source, "av": self.api_version,
-             "primary": 1 if primary else 0},
+             "now": now, "source": source, "av": self.api_version},
         )
         if t == "field_datum":
             self._project_field_datum(pco_id)
@@ -116,7 +117,7 @@ class Writer:
 
     # -- sideload router ---------------------------------------------------
     def route(self, resource: dict, source: str, owner_hint: dict | None = None,
-              primary: bool = True, synthesized: frozenset = frozenset()) -> None:
+              synthesized: frozenset = frozenset()) -> None:
         """Route one JSON:API resource (from data[] or included[]) to its table."""
         r = registry.by_type(resource.get("type", ""))
         if r is None:
@@ -151,7 +152,7 @@ class Writer:
                 stored = dict(resource)
                 stored["relationships"] = {k: v for k, v in rels.items() if k not in drop}
         if r.timestamped:
-            self.upsert(r.table, stored["id"], stored, source, primary=primary)
+            self.upsert(r.table, stored["id"], stored, source)
         else:
             self.upsert_untimed(r.table, stored["id"], stored, source)
 
@@ -177,8 +178,10 @@ class Writer:
         The primary resource is the one the request was about; it goes last.
         """
         n = 0
+        # `included[]` first, so that when two copies are equally complete the
+        # primary one — the resource the request was actually about — lands last.
         for inc in body.get("included", []) or []:
-            self.route(inc, source, primary=False, synthesized=synthesized)
+            self.route(inc, source, synthesized=synthesized)
         for item in body.get("data", []) if isinstance(body.get("data"), list) else [body.get("data")]:
             if item:
                 self.route(item, source, synthesized=synthesized)

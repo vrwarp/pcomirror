@@ -1,0 +1,20 @@
+{
+  "name": "nested_primary_campus",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000001/primary_campus",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "errors": [
+        {
+          "detail": "The resource you requested could not be found",
+          "status": "404",
+          "title": "Not Found"
+        }
+      ]
+    },
+    "status": 404
+  }
+}
