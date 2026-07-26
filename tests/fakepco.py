@@ -31,6 +31,7 @@ class FakePCO:
         self.mergers: list[dict] = []
         self._ids = itertools.count(1000)
         self.fail_next = None                         # (status, detail) to force a write failure
+        self.unreachable = False                      # every request fails, as in an outage
         self.request_log: list[tuple[str, str]] = []
 
     # -- population --------------------------------------------------------
@@ -82,6 +83,8 @@ class FakePCO:
         sub = path[i + len("/people/v2"):] if i >= 0 else path
         qs = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
         self.request_log.append((method, sub))
+        if self.unreachable:
+            raise ConnectionResetError("PCO is unreachable")
         segs = [s for s in sub.split("/") if s]
         if method == "GET":
             if segs and segs[0] == "person_mergers":

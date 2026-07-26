@@ -1,6 +1,6 @@
 # Golden corpus — real Planning Center responses, sanitized
 
-Eighty request/response pairs captured from the **live** Planning Center People API and
+Eighty-one request/response pairs captured from the **live** Planning Center People API and
 then sanitized. `tests/test_golden.py` loads the resources out of them, replays
 the same requests against the serving layer, and asserts the mirror answers in
 the same shape and the same order as PCO did.
@@ -21,7 +21,9 @@ built to catch was invisible to the unit suite:
 | Person has an `attributes.search_name` | There is no such attribute; the column projected from it was always NULL. |
 | Collections sort by id as text | They sort **numerically**. `/emails` carries both 8- and 9-digit ids, so every row of page one was in the wrong place. |
 | `order=last_name` sorts like SQLite | PCO folds case. SQLite's BINARY collation put every lowercase surname after every uppercase one. |
-| `/household_memberships` is a collection | It is a **404**. The rows exist only under `/households/{id}/household_memberships`, carry no `household` relationship, and are mirrored by a periodic per-household walk that parses the owning id out of `links.self`. |
+| `/household_memberships` is a collection | It is a **404**. The rows exist only under `/households/{id}/household_memberships`, carry no `household` relationship, and are mirrored by a periodic per-household walk that parses the owning id out of `links.self`. The mirror 404s it too, rather than offering a collection the API being mirrored does not have. |
+| A membership can be fetched by id | `GET /household_memberships/{id}` is a **404** as well. Only `/households/{h}/household_memberships/{m}` works, which is why that is the link the mirror publishes. |
+| A household with no mirrored memberships is an empty household | It is a household **nobody has walked yet**, and serving that as empty says the student has no parent. A parent with no walk record is filled on read, or the read fails — it never answers empty. |
 | `fields[Type]` was honoured | It was ignored entirely — a caller asking for two attributes got all thirty-one. |
 | Any payload can warm the mirror | A `fields[]` response has no `updated_at`, and storing one replaced a person with a single attribute and a NULL timestamp that the monotonic guard could never repair. |
 | `include=field_definition` on a FieldDatum worked | The registry declared no relationship, so it silently sideloaded nothing. |
