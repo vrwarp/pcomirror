@@ -714,6 +714,25 @@ the table stayed empty and every household relationship silently resolved to
 nothing. Backfill now raises on a non-OK page rather than recording an empty
 success.
 
+**The write path is verified against a live organization** — it cannot be
+verified anywhere else, since what is under test is what the mirror does with
+what PCO *answers*. `docs/mutation-testing.md` records the procedure, the safety
+model, and the last run's results: `POST` 201, `PATCH` 200 with every projection
+re-derived, `DELETE` 204 leaving a `destroyed` tombstone that reads back as `410`,
+and a rejected `PATCH` (422) that moved nothing — not the row, not
+`pco_updated_at`, not even `last_synced_at`. That last case is the
+fail-if-PCO-fails guarantee observed rather than assumed: the request tried to
+set two attributes and neither reached the mirror, because the writer is only
+ever handed PCO's response and only on success.
+
+**PCO's own validation is weaker than its schema suggests**, which matters for
+anything writing through the mirror. `birthdate: "not-a-date"`, `birthdate:
+"9999-99-99"` and `grade: "not-a-number"` are all accepted with **200** and the
+value silently discarded — nulling fields that previously held data. Only an
+out-of-range integer produced a 422. The mirror faithfully applies whatever PCO
+returns, including those nulls, so validation has to happen before the write, not
+after it.
+
 **A sideloaded copy may not make a record poorer.** A compound document can carry
 the same resource twice — `GET /people/X?include=households.people` returns X in
 `data` with every requested relationship resolved and again in `included`, as a
