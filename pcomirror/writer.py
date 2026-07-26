@@ -43,6 +43,21 @@ class Writer:
 
         A genuinely newer payload (`>`) always wins, so a relationship that really
         was removed still lands — removing it moves `updated_at`.
+
+        The test is a **superset first**, then a count. Two payloads can carry the
+        same number of relationships and different ones — `/lists/{id}/people`
+        returns a Person with `primary_campus` alone, and a narrower `include=`
+        returns a different set again — so counting alone let an equal-sized
+        payload drop the one relationship the caller needed.
+
+        The count is kept as the tiebreak because a superset on its own is a
+        one-way door: a flattened record holding `primary_campus` could never be
+        replaced by a richer payload that happens not to carry that one key, and
+        the record would be stuck wrong forever. Strictly-more-relationships is
+        allowed through, which is what lets a re-fetch repair one.
+
+        Either way `raw` stays verbatim — one of the two payloads is stored whole,
+        never a merge of both.
         """
         t = self._table(table)
         now = now or now_iso()
@@ -53,8 +68,12 @@ class Writer:
                   last_synced_at=:now, source=excluded.source,
                   raw=CASE WHEN excluded.pco_updated_at>pco_updated_at THEN excluded.raw
                            WHEN excluded.pco_updated_at<pco_updated_at THEN raw
+                           WHEN NOT EXISTS (SELECT 1 FROM json_each({t}.raw,'$.relationships') held
+                                            WHERE held.key NOT IN
+                                              (SELECT key FROM json_each(excluded.raw,'$.relationships')))
+                                THEN excluded.raw
                            WHEN (SELECT count(*) FROM json_each(excluded.raw,'$.relationships'))
-                              >= (SELECT count(*) FROM json_each({t}.raw,'$.relationships'))
+                              > (SELECT count(*) FROM json_each({t}.raw,'$.relationships'))
                                 THEN excluded.raw
                            ELSE raw END,
                   api_version=CASE WHEN excluded.pco_updated_at>=pco_updated_at THEN excluded.api_version ELSE api_version END,

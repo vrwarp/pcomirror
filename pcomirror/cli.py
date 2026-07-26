@@ -66,6 +66,32 @@ def cmd_backfill(args):
     m.ingestor.merger_poll()
 
 
+def cmd_repair(args):
+    """Re-fetch records the mirror holds thinner than PCO returns.
+
+    Runs on the scheduler too, but a mirror that was degraded before the guard
+    existed should not have to wait a quarter of an hour to be put right.
+    """
+    m = _mirror()
+    targets = [args.resource] if args.resource else [r.name for r in registry.full_and_lite()]
+    queued = 0
+    for name in targets:
+        n = m.ingestor.repair_incomplete(name)
+        if n:
+            print(f"{name}: {n} incomplete record(s) queued")
+        queued += n
+    if not queued:
+        print("nothing to repair — every record carries the relationships it was fetched with")
+        return
+    done = 0
+    while True:
+        n = m.ingestor.drain_hydration()
+        done += n
+        if n == 0:
+            break
+    print(f"re-fetched {done} record(s)")
+
+
 def cmd_reconcile(args):
     m = _mirror()
     targets = [args.resource] if args.resource else [r.name for r in registry.full_and_lite()]
@@ -162,6 +188,8 @@ def main(argv=None):
     rc = sub.add_parser("reconcile"); rc.add_argument("resource", nargs="?")
     rc.add_argument("--audit", action="store_true"); rc.set_defaults(func=cmd_reconcile)
     sub.add_parser("drift").set_defaults(func=cmd_drift)
+    rp = sub.add_parser("repair", help="re-fetch records held thinner than PCO returns")
+    rp.add_argument("resource", nargs="?"); rp.set_defaults(func=cmd_repair)
     s = sub.add_parser("serve")
     s.add_argument("--no-scheduler", action="store_true")
     s.add_argument("--backfill", action="store_true",
