@@ -57,9 +57,84 @@ class Ingestor:
             f"UPDATE mirror_sync_state SET {sets}, updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
             f"WHERE resource_type=:_n", cols)
 
+    # -- nested walk (a child collection PCO only exposes per parent) -------
+    def nested_walk(self, name: str, source: str = "reconcile") -> int:
+        """Refresh a child collection PCO will only serve one parent at a time.
+
+        `GET /household_memberships` is a 404; the rows exist only under
+        `/households/{id}/household_memberships`. There is no `updated_at` on the
+        child and no reliable one on the parent, so this is a **full walk** on a
+        periodic schedule rather than a watermark sweep — the treatment a
+        slowly-changing dimension wants. One request per parent.
+
+        Each parent's answer is authoritative for that parent, so anything the
+        mirror still holds for it and PCO no longer returns is tombstoned. That
+        is what makes a removal visible: without it a walk could only ever add.
+        """
+        r = registry.by_name(name)
+        parent = registry.by_name(r.parent)
+        parents = [row["pco_id"] for row in self.db.query(
+            f"SELECT pco_id FROM {parent.table} WHERE deleted_at IS NULL "
+            f"ORDER BY CAST(pco_id AS INTEGER), pco_id")]
+        applied, failed = 0, []
+        for parent_id in parents:
+            try:
+                applied += self._walk_one(r, parent, parent_id, source)
+            except Exception as e:  # noqa: BLE001
+                # One unreachable parent must not cost the whole walk. Its rows stay
+                # as they were — stale, not wrong — and the walk is not recorded as
+                # complete, so it runs again rather than leaving a gap nothing knows
+                # about.
+                failed.append(f"{parent_id}: {e}")
+        if failed:
+            self._set(name, consecutive_errors=len(failed),
+                      last_error=f"{len(failed)}/{len(parents)} parents failed: {failed[0][:120]}")
+            raise IngestError(
+                f"walk of {name} incomplete: {len(failed)}/{len(parents)} parents failed")
+        self._set(name, last_sweep_completed_at=now_iso(), consecutive_errors=0, last_error=None,
+                  mirror_count_last=self._live_count(r.table))
+        return applied
+
+    def _walk_one(self, r, parent, parent_id: str, source: str) -> int:
+        seen: set[str] = set()
+        offset = 0
+        while True:
+            resp = self.client.get(f"{parent.endpoint}/{parent_id}{r.parent_path}",
+                                   {"per_page": 100, "offset": offset}, priority="reconcile")
+            if resp.status == 404:
+                # The parent went away between listing it and walking it; the
+                # parent's own sweep will tombstone it.
+                return 0
+            if not resp.ok:
+                raise IngestError(
+                    f"walk {parent.endpoint}/{parent_id}{r.parent_path} failed: HTTP {resp.status}")
+            body = resp.json() or {}
+            data = body.get("data", [])
+            self.writer.route_page(body, source)
+            seen.update(d["id"] for d in data)
+            if len(data) < 100:
+                break
+            offset += 100
+        # Whatever this parent still has in the mirror and PCO did not return is
+        # gone. `links.self` is how the row knows which parent it belongs to.
+        stale = self.db.query(
+            f"SELECT pco_id FROM {r.table} WHERE {r.parent_fk}=? AND deleted_at IS NULL",
+            (parent_id,))
+        for row in stale:
+            if row["pco_id"] not in seen:
+                self.writer.tombstone(r.table, row["pco_id"], None, "destroyed")
+        return len(seen)
+
+    def _live_count(self, table: str) -> int:
+        return self.db.query_one(f"SELECT count(*) c FROM {table} WHERE deleted_at IS NULL")["c"]
+
     # -- backfill ----------------------------------------------------------
     def backfill(self, name: str) -> int:
         r = registry.by_name(name)
+        if r.method == "nested_walk":
+            n = self.nested_walk(name, source="backfill")
+            self._set(name, phase="streaming", backfill_completed_at=now_iso())
+            return n
         if r.method == "reference_periodic":
             n = self.reference_refresh(name)
             self._set(name, phase="streaming", backfill_completed_at=now_iso())
@@ -140,6 +215,8 @@ class Ingestor:
     # -- incremental sweep -------------------------------------------------
     def incremental_sweep(self, name: str) -> int:
         r = registry.by_name(name)
+        if r.method == "nested_walk":
+            return self.nested_walk(name)
         if r.method == "reference_periodic":
             return self.reference_refresh(name)
         if not r.supports_uat_filter:

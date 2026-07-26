@@ -48,6 +48,23 @@ class FakePCO:
                             relationships={"person": {"data": {"type": "Person", "id": str(person_id)}}},
                             updated=updated))
 
+    def add_membership(self, mid, household_id, person_id, role="child_or_dependent",
+                       pending=False):
+        """PCO's shape, faithfully: the household id appears *only* in `links.self`.
+
+        There is no `household` relationship on a real membership payload, which is
+        why the mirror parses the owning id back out of the link — so the fake must
+        not offer an easier route than the API does.
+        """
+        resource = res("HouseholdMembership", mid,
+                       {"household_role": role, "pending": pending,
+                        "person_name": f"member-{person_id}"},
+                       relationships={"person": {"data": {"type": "Person", "id": str(person_id)}}})
+        resource["links"] = {
+            "self": f"https://api.planningcenteronline.com/people/v2/households/"
+                    f"{household_id}/household_memberships/{mid}"}
+        return self.add(resource)
+
     def merge(self, keep, remove, created):
         self.mergers.append(res("PersonMerger", f"m{keep}{remove}",
                                 {"person_to_keep_id": str(keep), "person_to_remove_id": str(remove)},
@@ -73,9 +90,34 @@ class FakePCO:
                 return self._collection(segs[0], qs)
             if len(segs) == 2:
                 return self._single(segs[0], segs[1], qs)
+            if len(segs) == 3:
+                return self._nested(segs[0], segs[1], segs[2], qs)
         if method in ("POST", "PATCH", "DELETE"):
             return self._write(method, segs, body)
         return Response(404, {}, json.dumps({"errors": [{"code": "404"}]}).encode())
+
+    def _nested(self, seg, pco_id, rel, qs):
+        """Only what PCO actually serves this way.
+
+        `/households/{id}/household_memberships` is the one collection PCO will
+        not list wholesale, so it is the one the fake serves nested. Everything
+        else 404s here, exactly as PCO does — the mirror's pass-through for
+        relationships it does not hold depends on that.
+        """
+        if (seg, rel) != ("households", "household_memberships"):
+            return Response(404, {}, b'{"errors":[{"code":"404"}]}')
+        items = [r for r in self.data.get("HouseholdMembership", {}).values()
+                 if f"/households/{pco_id}/household_memberships/" in (r.get("links") or {}).get("self", "")]
+        per_page = int(qs.get("per_page", ["25"])[0])
+        offset = int(qs.get("offset", ["0"])[0])
+        page = items[offset:offset + per_page]
+        body = {"data": page, "meta": {"total_count": len(items), "count": len(page),
+                                       "parent": {"type": "Household", "id": pco_id}},
+                "links": {"self": f"/households/{pco_id}/household_memberships"}}
+        included = self._includes(page, qs.get("include", [None])[0])
+        if included:
+            body["included"] = included
+        return Response(200, {}, json.dumps(body).encode())
 
     # -- handlers ----------------------------------------------------------
     def _type_of(self, seg):

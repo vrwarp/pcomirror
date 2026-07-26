@@ -69,7 +69,7 @@ pcomirror/
   writer.py     # the 4 canonical writers (upsert / upsert_untimed / tombstone / confirm_live)
   ratelimit.py  # in-process, header-adaptive token bucket
   pcoclient.py  # PCO HTTP client (injectable transport), auth, version pin, 429 handling
-  ingest.py     # backfill, incremental sweep, merger poll, delete audit, drift, hydration
+  ingest.py     # backfill, incremental sweep, per-parent walk, merger poll, delete audit, drift, hydration
   webhooks.py   # HMAC verify, per-event inbox, dispatch, thin->hydrate, merge handling
   serving.py    # WSGI JSON:API drop-in: read/include/where/search/order/paginate, write-through, pass-through
   scheduler.py  # one background loop: drain inbox + hydration, run due sweeps, poll mergers, drift
@@ -180,14 +180,33 @@ from the mirror. `meta.can_query_by`, `can_order_by`, `can_search_by` and
 `can_include` advertise exactly what each endpoint honours, and `meta.parent`,
 `meta.next`/`prev` and `meta.can_filter` mirror PCO's own contract.
 
-**Household membership is deliberately not mirrored.** `GET /household_memberships`
-is a 404 — PCO exposes those rows only under `/households/{id}/household_memberships`,
-one household at a time, and the payload there carries no `household`
-relationship, so there is no bulk source and no incremental signal. Those two
-endpoints therefore pass through. The `households` edge itself *is* local: PCO
-returns a person's household identifiers inline on the Person, so
-`include=households`, `/people/{id}/households` and `/households/{id}/people` all
-answer from the mirror at no upstream cost.
+**Household membership is mirrored by walking.** `GET /household_memberships` is a
+404 — PCO exposes those rows only under `/households/{id}/household_memberships`,
+one household at a time, and the payload carries no `household` relationship, so
+the owning id is parsed out of `links.self`, the only place PCO puts it.
+
+There is no `updated_at` on a membership, and joining a household does not
+reliably move the household's own (measured: 6% of households hold a member
+created after the household was last touched). So the refresh is a **periodic full
+walk** rather than a watermark — the standard treatment for a slowly-changing
+dimension, and the same one the reference tables get. One request per household:
+at a few hundred households that is around three minutes daily, about a tenth of
+a percent of the rate budget. Each household's answer is authoritative for that
+household, so a membership PCO stops returning is tombstoned — without that a
+walk could only ever add, and a parent leaving would never be noticed.
+
+Worth the walk because `household_role` is the entire basis on which a caller
+decides which adult in a household is the parent to telephone, and that lookup
+sits on the path somebody waits on at a check-in door. With it mirrored, a client
+reading parent contact needs **no `passthrough` scope and makes no upstream
+request**: verified end to end by running Tally's own `getPersonDetails` against
+the mirror and against PCO for 40 students — identical answers, zero requests to
+PCO.
+
+The `households` edge is local too: PCO returns a person's household identifiers
+inline on the Person and the members inline on the Household, so
+`include=households`, `include=households.people`, `/people/{id}/households` and
+`/households/{id}/people` all answer from the mirror.
 
 **URLs in responses point back at the mirror.** A caller holds a pcomirror API
 key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
@@ -445,7 +464,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 197 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 204 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write

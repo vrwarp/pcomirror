@@ -698,40 +698,34 @@ materialized membership — mirroring it would serve a stale answer with no way 
 tell; live eval → pass-through), **household memberships**, permission-derived
 `filter=admins`, and all aggregates/reports/`/me`.
 
-**Household membership, specifically.** `GET /household_memberships` is a **404**:
-PCO exposes the rows only under `/households/{id}/household_memberships`, one
-household at a time, and the payload there carries no `household` relationship —
-the household id appears only inside `links.self`. So there is no bulk source and
-no incremental signal to drive a refresh, and the honest answer is pass-through.
-The `households` **edge** is a different matter and is served locally: PCO returns
-a person's household identifiers inline on the Person payload, so the registry
-models the relationship as a JSON array on `raw` (`Rel(kind="json")`) rather than
-through a join table, and `include=households`, `/people/{id}/households` and
-`/households/{id}/people` all answer from the mirror. The join table was
-previously declared as a mirrored resource with a `/household_memberships`
-endpoint; backfill read the 404 as an empty collection and recorded success, so
-the table stayed empty and every household relationship silently resolved to
-nothing. Backfill now raises on a non-OK page rather than recording an empty
-success.
+**Household membership, specifically: walked, not proxied.**
+`GET /household_memberships` is a **404** — PCO exposes the rows only under
+`/households/{id}/household_memberships`, one household at a time, and the payload
+carries no `household` relationship. The household id appears only inside
+`links.self`, so it is projected back out of the URL PCO sent rather than injected
+into `raw`, which stays verbatim.
 
-**The write path is verified against a live organization** — it cannot be
-verified anywhere else, since what is under test is what the mirror does with
-what PCO *answers*. `docs/mutation-testing.md` records the procedure, the safety
-model, and the last run's results: `POST` 201, `PATCH` 200 with every projection
-re-derived, `DELETE` 204 leaving a `destroyed` tombstone that reads back as `410`,
-and a rejected `PATCH` (422) that moved nothing — not the row, not
-`pco_updated_at`, not even `last_synced_at`. That last case is the
-fail-if-PCO-fails guarantee observed rather than assumed: the request tried to
-set two attributes and neither reached the mirror, because the writer is only
-ever handed PCO's response and only on success.
+The refresh is a **periodic full walk**, a new `method="nested_walk"`. There is no
+`updated_at` on a membership, and joining a household does not reliably move the
+household's own — measured: 6% of households hold a member created after the
+household was last touched — so no watermark can drive it. That rules out
+event-driven refresh, not mirroring: a scheduled full walk is the standard
+treatment for a slowly-changing dimension, and `reference_periodic` already
+applies it to the reference tables. The cost is one request per parent, which at a
+few hundred households is ~3 minutes daily and ~0.1% of the rate budget.
 
-**PCO's own validation is weaker than its schema suggests**, which matters for
-anything writing through the mirror. `birthdate: "not-a-date"`, `birthdate:
-"9999-99-99"` and `grade: "not-a-number"` are all accepted with **200** and the
-value silently discarded — nulling fields that previously held data. Only an
-out-of-range integer produced a 422. The mirror faithfully applies whatever PCO
-returns, including those nulls, so validation has to happen before the write, not
-after it.
+Two properties make the walk trustworthy. Each parent's answer is **authoritative
+for that parent**, so anything the mirror still holds for it and PCO no longer
+returns is tombstoned — otherwise a walk could only ever add, and a parent leaving
+a household would never be noticed. And a parent that cannot be reached does not
+abort the sweep or silently pass: its rows stay as they were, and the walk raises
+rather than recording completion, so it runs again instead of leaving a gap nothing
+knows about.
+
+The staleness window is therefore the sweep interval rather than unbounded, which
+is the trade this makes against pass-through: a day-old `household_role` against a
+parent's phone number being unavailable whenever PCO is. For the read a counselor
+waits on at a door, bounded staleness is the better failure.
 
 **A sideloaded copy may not make a record poorer.** A compound document can carry
 the same resource twice — `GET /people/X?include=households.people` returns X in
