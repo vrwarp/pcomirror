@@ -106,6 +106,24 @@ GROUP BY fd.person_pco_id;
 """
 
 
+def norm_text(value) -> str | None:
+    """Case- and whitespace-folded text, for PCO's `where[search_*]` matching.
+
+    NULL stays NULL so `instr(pcm_norm(col), ?)` is falsy for a missing column
+    rather than matching every row on the empty string.
+    """
+    if value is None:
+        return None
+    return " ".join(str(value).split()).lower()
+
+
+def norm_digits(value) -> str | None:
+    """Digits only — so `555-0100` and `(555) 0100` are the same phone number."""
+    if value is None:
+        return None
+    return "".join(ch for ch in str(value) if ch.isdigit())
+
+
 def _projection_sql(proj: registry.Projection) -> str:
     col, sqltype, kind, spec = proj
     if kind == "json":
@@ -150,6 +168,12 @@ class Database:
             self._conn.execute("PRAGMA journal_mode=WAL;")
             self._conn.execute("PRAGMA foreign_keys=ON;")
             self._conn.execute("PRAGMA busy_timeout=5000;")
+            # The normalisers behind `where[search_*]`. Python functions rather
+            # than SQL expressions so the serving layer folds the needle with the
+            # exact same code that folds the column — a search that disagrees with
+            # itself about whitespace is worse than one that does not exist.
+            self._conn.create_function("pcm_norm", 1, norm_text, deterministic=True)
+            self._conn.create_function("pcm_digits", 1, norm_digits, deterministic=True)
 
     def init_schema(self) -> None:
         with self._lock:

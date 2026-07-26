@@ -1,6 +1,7 @@
 """The local api_key plane (DESIGN §8.4): minting, verification, scope enforcement."""
 from __future__ import annotations
 
+import base64
 import unittest
 
 from base import build, wsgi_call, wsgi_get
@@ -35,6 +36,27 @@ class TestKeyLifecycle(unittest.TestCase):
     def test_bare_key_without_bearer_is_accepted(self):
         key = apikeys.create(self.m.db, "app")
         self.assertIsNotNone(apikeys.authenticate(self.m.db, key))
+
+    def test_http_basic_carries_the_key_in_either_field(self):
+        """Every existing PCO client authenticates with Basic `app_id:secret`.
+
+        The mirror's promise is a base-URL + credential swap; if Basic were
+        refused, pointing a PCO client at it would be a code change instead.
+        """
+        key = apikeys.create(self.m.db, "app", "read:*")
+        for raw in (f"{key}:unused", f"app_id:{key}"):
+            encoded = base64.b64encode(raw.encode()).decode()
+            row = apikeys.authenticate(self.m.db, f"Basic {encoded}")
+            self.assertIsNotNone(row, msg=raw)
+            self.assertEqual(row["name"], "app")
+
+    def test_basic_rejects_a_pco_pat_and_malformed_encodings(self):
+        # The two credential planes stay separate: a real PCO PAT is not a way in.
+        apikeys.create(self.m.db, "app")
+        pat = base64.b64encode(b"pco_app_id:pco_secret").decode()
+        for bad in (f"Basic {pat}", "Basic not-base64!", "Basic ",
+                    "Basic " + base64.b64encode(b"\xff\xfe").decode()):
+            self.assertIsNone(apikeys.authenticate(self.m.db, bad), msg=bad)
 
     def test_rejects_garbage_and_wrong_secret(self):
         key = apikeys.create(self.m.db, "app")
@@ -76,7 +98,17 @@ class TestEnforcement(unittest.TestCase):
     def test_no_key_is_401_with_challenge(self):
         status, headers, body = wsgi_get(self.m.wsgi, "/people/v2/people")
         self.assertEqual(status, 401)
+        # Both accepted schemes are offered, so a Basic client is not left guessing.
         self.assertIn("Bearer", headers.get("WWW-Authenticate", ""))
+        self.assertIn("Basic", headers.get("WWW-Authenticate", ""))
+
+    def test_a_basic_key_works_through_the_whole_stack(self):
+        key = apikeys.create(self.m.db, "tally", "read:*")
+        encoded = base64.b64encode(f"{key}:unused".encode()).decode()
+        status, _, body = wsgi_get(self.m.wsgi, "/people/v2/people",
+                                   headers={"Authorization": f"Basic {encoded}"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["meta"]["total_count"], 1)
 
     def test_fresh_install_401_explains_itself(self):
         _, _, body = wsgi_get(self.m.wsgi, "/people/v2/people")
