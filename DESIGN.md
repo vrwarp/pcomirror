@@ -701,8 +701,18 @@ tell; live eval → pass-through), **household memberships**, permission-derived
 **Household membership, specifically.** `GET /household_memberships` is a **404**:
 PCO exposes the rows only under `/households/{id}/household_memberships`, one
 household at a time, and the payload there carries no `household` relationship —
-the household id appears only inside `links.self`. So there is no bulk source and
-no incremental signal to drive a refresh, and the honest answer is pass-through.
+the household id appears only inside `links.self`. So there is no bulk source.
+
+A per-household walk would be affordable (515 requests once, and memberships
+change rarely), so the question is only whether a refresh could be driven. It
+cannot: across those 515 households, **6% hold a member whose `created_at` is
+later than the household's own `updated_at`**, which means the household was not
+touched when that person joined it. An `updated_at`-driven re-walk would miss
+those changes, and the mirror would serve a household with a member missing —
+silently, since nothing about the row would look stale. This is the same argument
+that keeps List membership out of the mirror, and it applies harder here, because
+the field it feeds is the parent's phone number a counselor reads at a door.
+Pass-through is the honest answer.
 The `households` **edge** is a different matter and is served locally: PCO returns
 a person's household identifiers inline on the Person payload, so the registry
 models the relationship as a JSON array on `raw` (`Rel(kind="json")`) rather than

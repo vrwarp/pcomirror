@@ -180,14 +180,29 @@ from the mirror. `meta.can_query_by`, `can_order_by`, `can_search_by` and
 `can_include` advertise exactly what each endpoint honours, and `meta.parent`,
 `meta.next`/`prev` and `meta.can_filter` mirror PCO's own contract.
 
-**Household membership is deliberately not mirrored.** `GET /household_memberships`
-is a 404 — PCO exposes those rows only under `/households/{id}/household_memberships`,
-one household at a time, and the payload there carries no `household`
-relationship, so there is no bulk source and no incremental signal. Those two
-endpoints therefore pass through. The `households` edge itself *is* local: PCO
-returns a person's household identifiers inline on the Person, so
-`include=households`, `/people/{id}/households` and `/households/{id}/people` all
-answer from the mirror at no upstream cost.
+**Household membership is deliberately not mirrored, and the reason is measured.**
+`GET /household_memberships` is a 404 — PCO exposes those rows only under
+`/households/{id}/household_memberships`, one household at a time, and the
+payload there carries no `household` relationship. That rules out a bulk load.
+What rules out a per-household walk is the refresh: across 515 households, **6%
+had a member whose `created_at` is later than the household's own `updated_at`**,
+so joining a household does not reliably touch it. There is no signal to drive a
+re-walk, and mirrored membership would go stale silently. For the field it feeds —
+a parent's phone number at a check-in door — stale is worse than proxied, so both
+endpoints pass through.
+
+The `households` edge itself *is* local: PCO returns a person's household
+identifiers inline on the Person and the members inline on the Household, so
+`include=households`, `include=households.people`, `/people/{id}/households` and
+`/households/{id}/people` all answer from the mirror at no upstream cost.
+
+> **A caller that reads parent contact needs the `passthrough` scope.** Tally's
+> `getPersonDetails` fetches the person from the mirror and then calls
+> `/households/{id}/household_memberships` for the `household_role` that decides
+> which adult is the parent. Without the scope that call is a `403`, and because
+> the client does not catch it the *whole* detail read fails — including the
+> allergies the mirror holds locally. Grant `read:*,passthrough`, and expect one
+> upstream request per household per detail view.
 
 **URLs in responses point back at the mirror.** A caller holds a pcomirror API
 key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
@@ -445,7 +460,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 197 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 202 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write
