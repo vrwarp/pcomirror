@@ -1,0 +1,476 @@
+{
+  "name": "people_nested_field_data",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000095/field_data",
+    "query": "include=field_definition&per_page=25"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "created_at": "2024-01-29T19:31:51Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T19:31:51Z",
+            "value": "Nessa38"
+          },
+          "id": "100000006",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000006"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100001",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100001"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-29T19:31:51Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T19:31:51Z",
+            "value": "Nessa90"
+          },
+          "id": "100000007",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000007"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100002",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100002"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-29T19:31:52Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T19:31:52Z",
+            "value": "Delphine79"
+          },
+          "id": "100000008",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000008"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100001",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100001"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-29T19:31:52Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-29T19:31:52Z",
+            "value": "Yolande41"
+          },
+          "id": "100000009",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100000009"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100002",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100002"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-30T06:41:32Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-30T06:41:32Z",
+            "value": "Oriel19"
+          },
+          "id": "100004039",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100004039"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100003",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100003"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-30T06:41:32Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-30T06:41:32Z",
+            "value": "Oriel19"
+          },
+          "id": "100004040",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100004040"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100004",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100004"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-30T06:41:32Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-30T06:41:32Z",
+            "value": "Alder65"
+          },
+          "id": "100004041",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100004041"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100005",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100005"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        },
+        {
+          "attributes": {
+            "created_at": "2024-01-30T06:41:33Z",
+            "file": {
+              "url": null
+            },
+            "file_content_type": null,
+            "file_name": null,
+            "file_size": null,
+            "updated_at": "2024-01-30T06:41:33Z",
+            "value": "Fenwick90"
+          },
+          "id": "100004042",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_data/100004042"
+          },
+          "relationships": {
+            "customizable": {
+              "data": {
+                "id": "100000095",
+                "type": "Person"
+              }
+            },
+            "field_definition": {
+              "data": {
+                "id": "100006",
+                "type": "FieldDefinition"
+              },
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/field_definitions/100006"
+              }
+            }
+          },
+          "type": "FieldDatum"
+        }
+      ],
+      "included": [
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Chinese Last Name",
+            "sequence": 1,
+            "slug": "chinese_last_name",
+            "tab_id": 183466
+          },
+          "id": "100001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100001"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Chinese First Name",
+            "sequence": 2,
+            "slug": "chinese_first_name",
+            "tab_id": 183466
+          },
+          "id": "100002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100002"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "boolean",
+            "deleted_at": null,
+            "name": "Baptized",
+            "sequence": 3,
+            "slug": "baptized",
+            "tab_id": 183466
+          },
+          "id": "100003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100003"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "boolean",
+            "deleted_at": null,
+            "name": "Believer",
+            "sequence": 5,
+            "slug": "believer",
+            "tab_id": 183466
+          },
+          "id": "100004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100004"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "select",
+            "deleted_at": null,
+            "name": "Congregation",
+            "sequence": 6,
+            "slug": "congregation",
+            "tab_id": 183466
+          },
+          "id": "100005",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100005"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Attendees UUID",
+            "sequence": 7,
+            "slug": "attendees_uuid",
+            "tab_id": 183466
+          },
+          "id": "100006",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100006"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/people/100000095/field_data?include=field_definition&per_page=25"
+      },
+      "meta": {
+        "can_include": [
+          "field_definition",
+          "field_option",
+          "tab"
+        ],
+        "can_order_by": [
+          "value",
+          "file",
+          "file_size",
+          "file_content_type",
+          "file_name",
+          "created_at",
+          "updated_at"
+        ],
+        "can_query_by": [
+          "value",
+          "file",
+          "file_size",
+          "file_content_type",
+          "file_name",
+          "created_at",
+          "updated_at",
+          "field_definition_id"
+        ],
+        "count": 8,
+        "parent": {
+          "id": "100000095",
+          "type": "Person"
+        },
+        "total_count": 8
+      }
+    },
+    "status": 200
+  }
+}

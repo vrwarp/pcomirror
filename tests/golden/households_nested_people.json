@@ -45,7 +45,7 @@
           "id": "100000001",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000001",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000001"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000001"
           },
           "relationships": {
             "households": {
@@ -56,7 +56,7 @@
                 }
               ],
               "links": {
-                "related": "https://api.planningcenteronline.com/people/XX2/people/100000001/households"
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/households"
               }
             },
             "primary_campus": {
@@ -102,7 +102,7 @@
           "id": "100000002",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000002",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000002"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000002"
           },
           "relationships": {
             "households": {
@@ -113,7 +113,7 @@
                 }
               ],
               "links": {
-                "related": "https://api.planningcenteronline.com/people/XX2/people/100000002/households"
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/households"
               }
             },
             "primary_campus": {
@@ -159,7 +159,7 @@
           "id": "100000072",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000072",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000072"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000072"
           },
           "relationships": {
             "households": {
@@ -170,7 +170,7 @@
                 }
               ],
               "links": {
-                "related": "https://api.planningcenteronline.com/people/XX2/people/100000072/households"
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000072/households"
               }
             },
             "primary_campus": {
@@ -216,7 +216,7 @@
           "id": "100000140",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000140",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000140"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000140"
           },
           "relationships": {
             "households": {
@@ -227,7 +227,7 @@
                 }
               ],
               "links": {
-                "related": "https://api.planningcenteronline.com/people/XX2/people/100000140/households"
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000140/households"
               }
             },
             "primary_campus": {
@@ -250,7 +250,7 @@
           },
           "id": "10000012",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000012"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000012"
           },
           "relationships": {
             "people": {
@@ -284,7 +284,7 @@
         }
       ],
       "links": {
-        "self": "https://api.planningcenteronline.com/people/XX2/households/10000012/people?include=households"
+        "self": "https://api.planningcenteronline.com/people/v2/households/10000012/people?include=households"
       },
       "meta": {
         "can_filter": [

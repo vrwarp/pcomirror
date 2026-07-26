@@ -1,0 +1,195 @@
+{
+  "name": "ref_field_definitions_ordered",
+  "request": {
+    "method": "GET",
+    "path": "/field_definitions",
+    "query": "order=name&per_page=10"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Attendees UUID",
+            "sequence": 7,
+            "slug": "attendees_uuid",
+            "tab_id": 183466
+          },
+          "id": "100006",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100006"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "boolean",
+            "deleted_at": null,
+            "name": "Baptized",
+            "sequence": 3,
+            "slug": "baptized",
+            "tab_id": 183466
+          },
+          "id": "100003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100003"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "boolean",
+            "deleted_at": null,
+            "name": "Believer",
+            "sequence": 5,
+            "slug": "believer",
+            "tab_id": 183466
+          },
+          "id": "100004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100004"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Chinese First Name",
+            "sequence": 2,
+            "slug": "chinese_first_name",
+            "tab_id": 183466
+          },
+          "id": "100002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100002"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "string",
+            "deleted_at": null,
+            "name": "Chinese Last Name",
+            "sequence": 1,
+            "slug": "chinese_last_name",
+            "tab_id": 183466
+          },
+          "id": "100001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100001"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        },
+        {
+          "attributes": {
+            "config": null,
+            "data_type": "select",
+            "deleted_at": null,
+            "name": "Congregation",
+            "sequence": 6,
+            "slug": "congregation",
+            "tab_id": 183466
+          },
+          "id": "100005",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/field_definitions/100005"
+          },
+          "relationships": {
+            "tab": {
+              "data": {
+                "id": "962323",
+                "type": "Tab"
+              }
+            }
+          },
+          "type": "FieldDefinition"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/field_definitions?order=name&per_page=10"
+      },
+      "meta": {
+        "can_filter": [
+          "include_deleted"
+        ],
+        "can_include": [
+          "field_options",
+          "tab"
+        ],
+        "can_order_by": [
+          "data_type",
+          "name",
+          "sequence",
+          "slug",
+          "config",
+          "deleted_at",
+          "tab_id"
+        ],
+        "can_query_by": [
+          "data_type",
+          "name",
+          "sequence",
+          "slug",
+          "config",
+          "deleted_at",
+          "tab_id"
+        ],
+        "count": 6,
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 6
+      }
+    },
+    "status": 200
+  }
+}

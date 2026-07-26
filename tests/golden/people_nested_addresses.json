@@ -1,0 +1,76 @@
+{
+  "name": "people_nested_addresses",
+  "request": {
+    "method": "GET",
+    "path": "/people/100000140/addresses",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "city": "Greer53",
+            "country_code": "US",
+            "country_name": "United States",
+            "created_at": "2024-01-28T17:19:47Z",
+            "location": "Home",
+            "primary": true,
+            "state": "CA",
+            "street_line_1": "Verity22 Nessa42 Ulric35",
+            "street_line_2": null,
+            "updated_at": "2024-01-28T17:19:47Z",
+            "zip": "00000"
+          },
+          "id": "100000029",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/addresses/100000029"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000140",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Address"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/people/100000140/addresses"
+      },
+      "meta": {
+        "can_order_by": [
+          "city",
+          "state",
+          "zip",
+          "country_code",
+          "location",
+          "primary",
+          "created_at",
+          "updated_at",
+          "street_line_1",
+          "street_line_2"
+        ],
+        "can_query_by": [
+          "city",
+          "state",
+          "zip",
+          "country_code",
+          "location",
+          "primary",
+          "street_line_1",
+          "street_line_2"
+        ],
+        "count": 1,
+        "parent": {
+          "id": "100000140",
+          "type": "Person"
+        },
+        "total_count": 1
+      }
+    },
+    "status": 200
+  }
+}

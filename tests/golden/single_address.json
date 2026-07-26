@@ -1,0 +1,48 @@
+{
+  "name": "single_address",
+  "request": {
+    "method": "GET",
+    "path": "/addresses/100000001",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "data": {
+        "attributes": {
+          "city": "Greer53",
+          "country_code": "US",
+          "country_name": "United States",
+          "created_at": "2024-01-06T23:46:01Z",
+          "location": "Home",
+          "primary": true,
+          "state": "CA",
+          "street_line_1": "Greer28 Hollis49 Yolande46",
+          "street_line_2": null,
+          "updated_at": "2024-01-06T23:46:01Z",
+          "zip": "00000"
+        },
+        "id": "100000001",
+        "links": {
+          "country": "https://api.planningcenteronline.com/people/v2/addresses/100000001/country",
+          "self": "https://api.planningcenteronline.com/people/v2/addresses/100000001"
+        },
+        "relationships": {
+          "person": {
+            "data": {
+              "id": "100000019",
+              "type": "Person"
+            }
+          }
+        },
+        "type": "Address"
+      },
+      "meta": {
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        }
+      }
+    },
+    "status": 200
+  }
+}

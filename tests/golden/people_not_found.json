@@ -1,0 +1,20 @@
+{
+  "name": "people_not_found",
+  "request": {
+    "method": "GET",
+    "path": "/people/948521736",
+    "query": ""
+  },
+  "response": {
+    "body": {
+      "errors": [
+        {
+          "detail": "The resource you requested could not be found",
+          "status": "404",
+          "title": "Not Found"
+        }
+      ]
+    },
+    "status": 404
+  }
+}

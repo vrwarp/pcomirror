@@ -20,7 +20,7 @@
           },
           "id": "10000001",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000001"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000001"
           },
           "relationships": {
             "people": {
@@ -64,7 +64,7 @@
           },
           "id": "10000002",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000002"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000002"
           },
           "relationships": {
             "people": {
@@ -100,7 +100,7 @@
           },
           "id": "10000003",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000003"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000003"
           },
           "relationships": {
             "people": {
@@ -136,7 +136,7 @@
           },
           "id": "10000004",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000004"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000004"
           },
           "relationships": {
             "people": {
@@ -180,7 +180,7 @@
           },
           "id": "10000005",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000005"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000005"
           },
           "relationships": {
             "people": {
@@ -220,7 +220,7 @@
           },
           "id": "10000006",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000006"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000006"
           },
           "relationships": {
             "people": {
@@ -264,7 +264,7 @@
           },
           "id": "10000007",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000007"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000007"
           },
           "relationships": {
             "people": {
@@ -312,7 +312,7 @@
           },
           "id": "10000008",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000008"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000008"
           },
           "relationships": {
             "people": {
@@ -348,7 +348,7 @@
           },
           "id": "10000009",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000009"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000009"
           },
           "relationships": {
             "people": {
@@ -396,7 +396,7 @@
           },
           "id": "10000010",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000010"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000010"
           },
           "relationships": {
             "people": {
@@ -444,7 +444,7 @@
           },
           "id": "10000011",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000011"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000011"
           },
           "relationships": {
             "people": {
@@ -488,7 +488,7 @@
           },
           "id": "10000012",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000012"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000012"
           },
           "relationships": {
             "people": {
@@ -532,7 +532,7 @@
           },
           "id": "10000013",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000013"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000013"
           },
           "relationships": {
             "people": {
@@ -576,7 +576,7 @@
           },
           "id": "10000014",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000014"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000014"
           },
           "relationships": {
             "people": {
@@ -616,7 +616,7 @@
           },
           "id": "10000015",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000015"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000015"
           },
           "relationships": {
             "people": {
@@ -656,7 +656,7 @@
           },
           "id": "10000016",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000016"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000016"
           },
           "relationships": {
             "people": {
@@ -704,7 +704,7 @@
           },
           "id": "10000017",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000017"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000017"
           },
           "relationships": {
             "people": {
@@ -748,7 +748,7 @@
           },
           "id": "10000018",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000018"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000018"
           },
           "relationships": {
             "people": {
@@ -784,7 +784,7 @@
           },
           "id": "10000019",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000019"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000019"
           },
           "relationships": {
             "people": {
@@ -836,7 +836,7 @@
           },
           "id": "10000020",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000020"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000020"
           },
           "relationships": {
             "people": {
@@ -880,7 +880,7 @@
           },
           "id": "10000021",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000021"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000021"
           },
           "relationships": {
             "people": {
@@ -924,7 +924,7 @@
           },
           "id": "10000022",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000022"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000022"
           },
           "relationships": {
             "people": {
@@ -972,7 +972,7 @@
           },
           "id": "10000023",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000023"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000023"
           },
           "relationships": {
             "people": {
@@ -1016,7 +1016,7 @@
           },
           "id": "10000024",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000024"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000024"
           },
           "relationships": {
             "people": {
@@ -1060,7 +1060,7 @@
           },
           "id": "10000025",
           "links": {
-            "self": "https://api.planningcenteronline.com/people/XX2/households/10000025"
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000025"
           },
           "relationships": {
             "people": {
@@ -1090,8 +1090,8 @@
         }
       ],
       "links": {
-        "next": "https://api.planningcenteronline.com/people/XX2/households?offset=25&per_page=25",
-        "self": "https://api.planningcenteronline.com/people/XX2/households?per_page=25"
+        "next": "https://api.planningcenteronline.com/people/v2/households?offset=25&per_page=25",
+        "self": "https://api.planningcenteronline.com/people/v2/households?per_page=25"
       },
       "meta": {
         "can_include": [
@@ -1116,7 +1116,7 @@
           "offset": 25
         },
         "parent": {
-          "id": "100001",
+          "id": "907332",
           "type": "Organization"
         },
         "total_count": 515

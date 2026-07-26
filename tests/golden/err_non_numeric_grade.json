@@ -1,0 +1,104 @@
+{
+  "divergence": {
+    "kind": "refuses",
+    "reason": "PCO ignores a query parameter it cannot apply and answers 200 as though it had been given \u2014 unfiltered rows for a filter, no `included` for an include naming a type PCO offers and the mirror does not hold. The mirror refuses the request instead: an answer that silently ignores what was asked is indistinguishable from a correct one, and worse."
+  },
+  "name": "err_non_numeric_grade",
+  "request": {
+    "method": "GET",
+    "path": "/people",
+    "query": "where[grade]=abc&per_page=5"
+  },
+  "response": {
+    "body": {
+      "data": [],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/people?per_page=5&where[grade]=abc"
+      },
+      "meta": {
+        "can_filter": [
+          "created_since",
+          "admins",
+          "organization_admins"
+        ],
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "can_order_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "created_at",
+          "updated_at",
+          "first_name",
+          "last_name",
+          "remote_id",
+          "membership",
+          "status"
+        ],
+        "can_query_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "medical_notes",
+          "membership",
+          "created_at",
+          "updated_at",
+          "search_name",
+          "search_name_or_email",
+          "search_name_or_email_or_phone_number",
+          "search_phone_number",
+          "search_phone_number_e164",
+          "mfa_configured",
+          "first_name",
+          "last_name",
+          "id",
+          "primary_campus_id",
+          "remote_id",
+          "status"
+        ],
+        "count": 0,
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 0
+      }
+    },
+    "status": 200
+  }
+}

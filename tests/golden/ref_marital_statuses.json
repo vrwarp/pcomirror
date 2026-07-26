@@ -1,0 +1,63 @@
+{
+  "name": "ref_marital_statuses",
+  "request": {
+    "method": "GET",
+    "path": "/marital_statuses",
+    "query": "per_page=10"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "value": "Single"
+          },
+          "id": "1000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000001"
+          },
+          "type": "MaritalStatus"
+        },
+        {
+          "attributes": {
+            "value": "Married"
+          },
+          "id": "1000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000002"
+          },
+          "type": "MaritalStatus"
+        },
+        {
+          "attributes": {
+            "value": "Widowed"
+          },
+          "id": "1000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/marital_statuses/1000003"
+          },
+          "type": "MaritalStatus"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/marital_statuses?per_page=10"
+      },
+      "meta": {
+        "can_order_by": [
+          "value",
+          "sequence"
+        ],
+        "can_query_by": [
+          "value"
+        ],
+        "count": 3,
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 3
+      }
+    },
+    "status": 200
+  }
+}

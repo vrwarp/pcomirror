@@ -45,7 +45,7 @@
           "id": "100000001",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000001",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000001"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000001"
           },
           "relationships": {
             "primary_campus": {
@@ -91,7 +91,7 @@
           "id": "100000002",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000002",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000002"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000002"
           },
           "relationships": {
             "primary_campus": {
@@ -137,7 +137,7 @@
           "id": "100000003",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000003",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000003"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000003"
           },
           "relationships": {
             "primary_campus": {
@@ -183,7 +183,7 @@
           "id": "100000004",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000004",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000004"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000004"
           },
           "relationships": {
             "primary_campus": {
@@ -229,7 +229,7 @@
           "id": "100000005",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000005",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000005"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000005"
           },
           "relationships": {
             "primary_campus": {
@@ -275,7 +275,7 @@
           "id": "100000006",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000006",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000006"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000006"
           },
           "relationships": {
             "primary_campus": {
@@ -321,7 +321,7 @@
           "id": "100000007",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000007",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000007"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000007"
           },
           "relationships": {
             "primary_campus": {
@@ -342,7 +342,7 @@
             "created_at": "2024-01-06T23:24:22Z",
             "demographic_avatar_url": null,
             "directory_status": null,
-            "first_name": "Calloway048",
+            "first_name": "Delphine0154",
             "gender": "Male",
             "given_name": null,
             "grade": null,
@@ -353,7 +353,7 @@
             "medical_notes": null,
             "membership": "Full Member",
             "middle_name": null,
-            "name": "Calloway048 Ellery075",
+            "name": "Delphine0154 Ellery075",
             "nickname": "Alder0002",
             "passed_background_check": null,
             "people_permissions": null,
@@ -367,7 +367,7 @@
           "id": "100000008",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000008",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000008"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000008"
           },
           "relationships": {
             "primary_campus": {
@@ -413,7 +413,7 @@
           "id": "100000009",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000009",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000009"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000009"
           },
           "relationships": {
             "primary_campus": {
@@ -459,7 +459,7 @@
           "id": "100000010",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000010",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000010"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000010"
           },
           "relationships": {
             "primary_campus": {
@@ -505,7 +505,7 @@
           "id": "100000011",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000011",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000011"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000011"
           },
           "relationships": {
             "primary_campus": {
@@ -551,7 +551,7 @@
           "id": "100000012",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000012",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000012"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000012"
           },
           "relationships": {
             "primary_campus": {
@@ -597,7 +597,7 @@
           "id": "100000013",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000013",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000013"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000013"
           },
           "relationships": {
             "primary_campus": {
@@ -643,7 +643,7 @@
           "id": "100000014",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000014",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000014"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000014"
           },
           "relationships": {
             "primary_campus": {
@@ -689,7 +689,7 @@
           "id": "100000015",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000015",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000015"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000015"
           },
           "relationships": {
             "primary_campus": {
@@ -735,7 +735,7 @@
           "id": "100000016",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000016",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000016"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000016"
           },
           "relationships": {
             "primary_campus": {
@@ -781,7 +781,7 @@
           "id": "100000017",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000017",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000017"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000017"
           },
           "relationships": {
             "primary_campus": {
@@ -827,7 +827,7 @@
           "id": "100000018",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000018",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000018"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000018"
           },
           "relationships": {
             "primary_campus": {
@@ -873,7 +873,7 @@
           "id": "100000019",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000019",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000019"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000019"
           },
           "relationships": {
             "primary_campus": {
@@ -919,7 +919,7 @@
           "id": "100000020",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000020",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000020"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000020"
           },
           "relationships": {
             "primary_campus": {
@@ -965,7 +965,7 @@
           "id": "100000021",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000021",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000021"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000021"
           },
           "relationships": {
             "primary_campus": {
@@ -1011,7 +1011,7 @@
           "id": "100000022",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000022",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000022"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000022"
           },
           "relationships": {
             "primary_campus": {
@@ -1057,7 +1057,7 @@
           "id": "100000023",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000023",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000023"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000023"
           },
           "relationships": {
             "primary_campus": {
@@ -1103,7 +1103,7 @@
           "id": "100000024",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000024",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000024"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000024"
           },
           "relationships": {
             "primary_campus": {
@@ -1149,7 +1149,7 @@
           "id": "100000025",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000025",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000025"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000025"
           },
           "relationships": {
             "primary_campus": {
@@ -1160,8 +1160,8 @@
         }
       ],
       "links": {
-        "next": "https://api.planningcenteronline.com/people/XX2/people?offset=25",
-        "self": "https://api.planningcenteronline.com/people/XX2/people"
+        "next": "https://api.planningcenteronline.com/people/v2/people?offset=25",
+        "self": "https://api.planningcenteronline.com/people/v2/people"
       },
       "meta": {
         "can_filter": [
@@ -1244,7 +1244,7 @@
           "offset": 25
         },
         "parent": {
-          "id": "100001",
+          "id": "907332",
           "type": "Organization"
         },
         "total_count": 1915

@@ -54,6 +54,18 @@ def _records():
                 yield json.load(fh)
 
 
+def _diverges(record):
+    """The declared divergence kind for a recording, or None.
+
+    A handful of requests are answered differently on purpose, because PCO's own
+    answer is one no caller can act on — it documents a nested relationship filter
+    and then ignores it, and it ignores a query parameter it cannot apply rather
+    than saying so. Each such recording carries the reason with it; see
+    `tests/golden/README.md`.
+    """
+    return (record.get("divergence") or {}).get("kind")
+
+
 def _load_order(record):
     """Include-bearing payloads last.
 
@@ -140,12 +152,54 @@ class GoldenReplay(unittest.TestCase):
     # -- the assertions ---------------------------------------------------
     def test_status_matches(self):
         for record in self.records:
+            if _diverges(record):
+                continue
             with self.subTest(record["name"]):
                 status, _, _ = self.replay(record)
                 self.assertEqual(status, record["response"]["status"])
 
+    def test_declared_divergences_are_still_real(self):
+        """A divergence is a claim about behaviour, so it has to keep being true.
+
+        If one is fixed — or drifts — this fails and the corpus has to be updated
+        along with the code, rather than quietly describing something that no
+        longer happens.
+        """
+        for record in self.records:
+            kind = _diverges(record)
+            if not kind:
+                continue
+            with self.subTest(record["name"]):
+                status, _, body = self.replay(record)
+                if kind == "refuses":
+                    self.assertEqual(record["response"]["status"], 200,
+                                     "PCO is recorded as answering this one")
+                    self.assertEqual(status, 400,
+                                     f"{record['name']}: the mirror no longer refuses this")
+                elif kind == "filters":
+                    self.assertEqual(status, 200)
+                    # PCO's recorded answer is the whole collection — it ignored the
+                    # filter. The check that matters is that the mirror narrows
+                    # *within its own data*, which does not depend on how much of
+                    # the organization the corpus sampled.
+                    import urllib.parse
+                    unfiltered = urllib.parse.urlencode(
+                        [(k, v) for k, vals in
+                         urllib.parse.parse_qs(record["request"]["query"]).items()
+                         if not k.startswith("where[") for v in vals], safe="[]")
+                    _, _, whole = wsgi_get(self.mirror.wsgi,
+                                           "/people/v2" + record["request"]["path"], unfiltered)
+                    narrowed = (body.get("meta") or {}).get("total_count")
+                    everything = (whole.get("meta") or {}).get("total_count")
+                    self.assertLess(
+                        narrowed, everything,
+                        f"{record['name']}: the mirror no longer narrows this filter "
+                        f"({narrowed} of {everything})")
+
     def test_attribute_keys_match_pco_exactly(self):
         for record in self.records:
+            if _diverges(record) == "refuses":
+                continue                       # a 400 has no body to compare
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
                 theirs, their_inc = _flatten(record["response"]["body"])
@@ -161,6 +215,8 @@ class GoldenReplay(unittest.TestCase):
 
     def test_no_relationship_pco_sent_is_lost(self):
         for record in self.records:
+            if _diverges(record) == "refuses":
+                continue                       # a 400 has no body to compare
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
                 theirs, their_inc = _flatten(record["response"]["body"])
@@ -178,6 +234,8 @@ class GoldenReplay(unittest.TestCase):
     def test_no_relationship_is_invented(self):
         vocab = _corpus_relationship_vocabulary()
         for record in self.records:
+            if _diverges(record) == "refuses":
+                continue                       # a 400 has no body to compare
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
                 ours, our_inc = _flatten(mine)
@@ -194,6 +252,8 @@ class GoldenReplay(unittest.TestCase):
 
     def test_meta_keys_cover_pcos(self):
         for record in self.records:
+            if _diverges(record) == "refuses":
+                continue                       # a 400 has no body to compare
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
                 expected = set((record["response"]["body"].get("meta") or {}).keys())
@@ -217,7 +277,7 @@ class GoldenReplay(unittest.TestCase):
         import urllib.parse
         for record in self.records:
             theirs, _ = _flatten(record["response"]["body"])
-            if len(theirs) < 2:
+            if len(theirs) < 2 or _diverges(record):
                 continue
             with self.subTest(record["name"]):
                 query = urllib.parse.parse_qs(record["request"]["query"])
@@ -229,17 +289,23 @@ class GoldenReplay(unittest.TestCase):
                                       "/people/v2" + record["request"]["path"], flat)
                 recorded = [i["id"] for i in theirs]
                 actual = [i["id"] for i in _flatten(mine)[0]]
-                missing = [i for i in recorded if i not in set(actual)]
-                self.assertEqual(missing, [],
-                                 f"{record['name']}: rows PCO returned that the mirror "
-                                 f"does not hold at all")
-                self.assertEqual([i for i in actual if i in set(recorded)], recorded,
+                # Restricted to the rows the mirror actually holds: the corpus is a
+                # sample, so a page deep into a 1,915-person organization — or one
+                # recorded through a sparse fieldset, whose rows are deliberately
+                # not storable — covers rows that were never captured. Their
+                # relative order is what has to hold.
+                held = set(actual)
+                expected = [i for i in recorded if i in held]
+                if len(expected) < 2:
+                    continue
+                self.assertEqual([i for i in actual if i in set(expected)], expected,
                                  f"{record['name']}: same rows, different order than PCO")
 
     def test_single_and_nested_reads_match_exactly(self):
         for record in self.records:
             if "collection" in record["name"] or "order" in record["name"] \
-                    or "where" in record["name"] or "filter" in record["name"]:
+                    or "where" in record["name"] or "filter" in record["name"] \
+                    or _diverges(record) or record["name"].startswith(("nf_", "multi_", "page_", "ord_", "err_", "ref_")):
                 continue
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
@@ -249,6 +315,8 @@ class GoldenReplay(unittest.TestCase):
 
     def test_included_sets_match(self):
         for record in self.records:
+            if _diverges(record):
+                continue
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
                 theirs, their_inc = _flatten(record["response"]["body"])
@@ -269,11 +337,17 @@ class GoldenReplay(unittest.TestCase):
         is one PCO really has, and that none of them sends a caller to PCO, where
         their pcomirror key would not work.
         """
+        # A link is legitimate if PCO either advertises it or exposes the same
+        # relationship — PCO's own link maps are inconsistent (it offers
+        # `include=field_definition` on a FieldDatum and serves
+        # `/field_data/{id}/field_definition`, while listing only `self` in that
+        # resource's links), which is why the mirror generates its own.
         pco_links = {}
         for record in _records():
             items, included = _flatten(record["response"]["body"])
             for item in items + included:
-                pco_links.setdefault(item["type"], set()).update((item.get("links") or {}).keys())
+                pco_links.setdefault(item["type"], set()).update(
+                    set(item.get("links") or {}) | set(item.get("relationships") or {}))
         for record in self.records:
             with self.subTest(record["name"]):
                 _, _, mine = self.replay(record)
@@ -308,22 +382,38 @@ class GoldenCorpusHygiene(unittest.TestCase):
     # shape of the values rather than against the sanitizer's own map — so it
     # still fails if the sanitizer is the thing that is broken.
     FORBIDDEN = {
-        "an email outside example.org": r"[\w.+-]+@(?!example\.org)[\w.-]+\.\w+",
         "a phone number outside the 555 range": r"\+1(?!555)\d{10}",
         "an un-redacted avatar URL": r"avatars\.planningcenteronline\.com/(?!uploads/redacted)",
-        "a real account code in a web link": r"/people/(?!XX)[A-Za-z]{1,4}\d+",
+        # `/people/v2` is the API version sitting in the same position, so a record
+        # id is distinguished by being at least three digits long.
+        "a real account code in a web link": r"/people/(?!XX)[A-Za-z]{1,4}\d{3,}",
         "a populated medical note": r'"medical_notes": "[^"]',
-        "an un-synthetic record id": r"\b(?!1000|10000)\d{8,9}\b",
+        # Synthetic record ids are minted as 1000… counting up from the low end of
+        # each width; ids for records that never existed (the 404 case) come from a
+        # reserved 9… block that cannot collide with them. Anything else in that
+        # width is a real Planning Center id.
+        "an un-synthetic record id": r"\b(?!1000\d{4,5}\b|9\d{8}\b)\d{8,9}\b",
     }
 
     def test_no_recording_carries_real_data(self):
         import re
-        for record in _records():
+        # The manifest too: it repeats every path and query, and was the one file
+        # the recordings-only scan never looked at.
+        with open(os.path.join(GOLDEN, "manifest.json")) as fh:
+            everything = [*_records(), json.load(fh)]
+        for record in everything:
             blob = json.dumps(record)
             for label, pattern in self.FORBIDDEN.items():
                 hits = set(re.findall(pattern, blob))
                 self.assertEqual(hits, set(),
-                                 f"{record['name']} contains {label}")
+                                 f"{record.get('name', 'manifest')} contains {label}")
+            # Emails carry a synthetic sub-domain per real provider, so that
+            # "everyone at one provider" stays a distinguishable set. Whatever the
+            # sub-domain, it must sit under example.org.
+            for address in re.findall(r"[\w.+-]+@[\w.-]+\.\w+", blob):
+                self.assertTrue(address.split("@", 1)[1].endswith("example.org"),
+                                f"{record.get('name', 'manifest')} has an email "
+                                f"outside example.org")
 
     def test_manifest_describes_the_corpus(self):
         with open(os.path.join(GOLDEN, "manifest.json")) as fh:

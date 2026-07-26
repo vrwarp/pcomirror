@@ -42,6 +42,24 @@ _MATCHERS = {
 }
 
 
+def _sparse_fields(qs) -> dict[str, set[str]]:
+    """Parse `fields[Type]=a,b` into `{Type: {"a", "b"}}`.
+
+    JSON:API sparse fieldsets, which PCO honours exactly: a named set limits both
+    attributes *and* relationships for that type, applies to sideloaded resources
+    by their own type, leaves `links` alone, and treats an unknown field name as
+    simply selecting nothing rather than as an error.
+    """
+    out = {}
+    for key, vals in qs.items():
+        if not key.startswith("fields[") or not key.endswith("]"):
+            continue
+        rtype = key[len("fields["):-1]
+        names = {n.strip() for v in vals for n in v.split(",") if n.strip()}
+        out[rtype] = out.get(rtype, set()) | names
+    return out
+
+
 def _json_ids(raw: str, path: str) -> list[str]:
     """Resource ids out of a JSON:API relationship array stored on `raw`."""
     node = json.loads(raw)
@@ -208,15 +226,18 @@ class Application:
         where_sql = extra_sql + where_sql
         params = [*extra_params, *params]
         order_sql = self._build_order(r, qs)
-        per_page = max(1, min(100, self._int(qs, "per_page", 25)))
+        # PCO honours `per_page=0` as "no rows, but tell me the total", so the
+        # floor is zero rather than one.
+        per_page = max(0, min(100, self._int(qs, "per_page", 25)))
         offset = max(0, self._int(qs, "offset", 0))
         total = self.db.query_one(
             f"SELECT count(*) c FROM {r.table} WHERE deleted_at IS NULL{where_sql}", params)["c"]
         rows = self.db.query(
             f"SELECT * FROM {r.table} WHERE deleted_at IS NULL{where_sql} {order_sql} "
             f"LIMIT ? OFFSET ?", (*params, per_page, offset))
+        fields = _sparse_fields(qs)
         included, echo = self._build_includes(r, rows, qs)
-        data = [self._serialize(r, row, echo.get(row["pco_id"])) for row in rows]
+        data = [self._serialize(r, row, echo.get(row["pco_id"]), fields) for row in rows]
         oldest = min((row["last_synced_at"] for row in rows), default=None)
         meta = {"total_count": total, "count": len(data),
                 "can_query_by": list(r.can_query_by), "can_order_by": list(r.can_order_by),
@@ -288,7 +309,7 @@ class Application:
                 headers["Location"] = f"/people/v2/{r.endpoint.strip('/')}/{row['merged_into_pco_id']}"
             return 410, headers, body
         included, echo = self._build_includes(r, [row], qs)
-        data = self._serialize(r, row, echo.get(row["pco_id"]))
+        data = self._serialize(r, row, echo.get(row["pco_id"]), _sparse_fields(qs))
         body = {"data": data,
                 "meta": {"can_include": list(r.relationships.keys()),
                          "parent": self._org_parent()}}
@@ -308,6 +329,17 @@ class Application:
         if row is None:
             raise _HttpError(404, "not found")
         tr = registry.by_name(rel.target)
+        if rel.kind == "one":
+            # A to-one relationship is a resource, not a collection: PCO answers
+            # `/field_data/{id}/field_definition` with an object, and 404s when the
+            # foreign key is unset rather than handing back an empty page.
+            target_id = row[rel.local_fk]
+            target = self.db.query_one(
+                f"SELECT * FROM {tr.table} WHERE pco_id=? AND deleted_at IS NULL",
+                (target_id,)) if target_id else None
+            if target is None:
+                raise _HttpError(404, "not found")
+            return self._single(tr, target["pco_id"], qs, environ, scopes)
         restriction, params = self._rel_restriction(rel, row)
         # PCO gives a nested collection the same query surface as the top-level
         # one, so serve it the same way: where/order/include/pagination all work.
@@ -322,10 +354,6 @@ class Application:
             if not ids:
                 return " AND 0", ()
             return f" AND pco_id IN ({','.join('?' * len(ids))})", tuple(ids)
-        if rel.kind == "json_reverse":
-            tr = registry.by_name(rel.target)
-            return (f" AND EXISTS (SELECT 1 FROM json_each({tr.table}.raw, ?) j "
-                    f"WHERE j.value ->> '$.id' = ?)", (rel.json_path, row["pco_id"]))
         if rel.kind == "one":
             target_id = row[rel.local_fk]
             # An unset foreign key is an empty collection, not an error — and it
@@ -383,42 +411,101 @@ class Application:
                 continue
             inner = key[len("where["):].rstrip("]")
             parts = inner.split("][")
-            attr = parts[0]
-            op = parts[1] if len(parts) > 1 else "eq"
             val = vals[0]
 
-            search = r.search_filters.get(attr)
+            search = r.search_filters.get(parts[0])
             if search is not None:
-                if op != "eq":
-                    raise _HttpError(400, f"{attr} is a search filter and takes no {op!r} operator")
+                if len(parts) > 1:
+                    raise _HttpError(400, f"{parts[0]} is a search filter and takes no "
+                                          f"{parts[1]!r} operator")
                 clause, ps = self._search_clause(r, search, val)
                 if clause:                      # an empty needle filters nothing, as at PCO
                     clauses.append(clause)
                     params.extend(ps)
                 continue
 
-            if attr not in r.can_query_by:
-                raise _HttpError(400, f"unsupported filter: {attr}")
-            col = _col_for(r, attr)
-            if op == "eq":
-                if isinstance(val, str) and "%" in val:
-                    clauses.append(f"{col} LIKE ?")
-                    params.append(val)
-                else:
-                    coerced = _coerce(r, col, val)
-                    if isinstance(coerced, str):
-                        clauses.append(f"lower({col})=lower(?)")
-                    else:
-                        clauses.append(f"{col}=?")
-                    params.append(coerced)
-            elif op in ("gt", "gte", "lt", "lte"):
-                sym = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-                clauses.append(f"{col}{sym}?")
-                params.append(_coerce(r, col, val))
-            else:
-                raise _HttpError(400, f"unsupported operator: {op}")
+            # `where[emails][address]`, `where[field_data][field_definition][name]`:
+            # PCO lets a filter reach through a relationship, to any depth its
+            # documentation lists. Everything up to the attribute is a chain of
+            # relationship names.
+            chain = []
+            target = r
+            while parts and parts[0] in target.relationships:
+                chain.append(parts[0])
+                target = registry.by_name(target.relationships[parts[0]].target)
+                parts = parts[1:]
+            if chain:
+                if not parts:
+                    raise _HttpError(400, f"{'.'.join(chain)} needs an attribute to filter on")
+                clause, ps = self._rel_exists(r, r.table, chain, parts, val)
+                clauses.append(clause)
+                params.extend(ps)
+                continue
+
+            clause, ps = self._leaf_where(r, r.table, parts, val)
+            clauses.append(clause)
+            params.extend(ps)
         sql = (" AND " + " AND ".join(clauses)) if clauses else ""
         return sql, params
+
+    def _leaf_where(self, r, ref, parts, val):
+        """One `attr` / `attr][op` comparison against `ref`'s table."""
+        attr = parts[0]
+        op = parts[1] if len(parts) > 1 else "eq"
+        if attr not in r.can_query_by:
+            raise _HttpError(400, f"unsupported filter: {attr}")
+        col = f"{ref}.{_col_for(r, attr)}"
+        bare = _col_for(r, attr)
+        if op == "eq":
+            if isinstance(val, str) and "%" in val:
+                return f"{col} LIKE ?", [val]
+            coerced = _coerce(r, bare, val)
+            if isinstance(coerced, str):
+                return f"lower({col})=lower(?)", [coerced]
+            # Numeric columns are compared through a CAST so the answer does not
+            # depend on whether this database was created before the column was
+            # declared numeric — SQLite would otherwise compare 8 against '8' and
+            # find them unequal.
+            return f"CAST({col} AS INTEGER)=?", [coerced]
+        if op in ("gt", "gte", "lt", "lte"):
+            sym = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
+            coerced = _coerce(r, bare, val)
+            if isinstance(coerced, str):
+                return f"{col}{sym}?", [coerced]
+            return f"CAST({col} AS INTEGER){sym}?", [coerced]
+        raise _HttpError(400, f"unsupported operator: {op}")
+
+    def _rel_exists(self, r, ref, chain, parts, val):
+        """`EXISTS` chain for a filter that reaches through relationships.
+
+        Built outside-in, one correlated subquery per hop, so
+        `where[field_data][field_definition][name]` becomes an EXISTS over this
+        person's field data containing an EXISTS over that datum's definition.
+        """
+        rel = r.relationships[chain[0]]
+        tr = registry.by_name(rel.target)
+        alias = f"n{len(chain)}_{abs(hash(chain[0])) % 1000}"
+        frm, cond, params = self._rel_hop(rel, ref, tr, alias)
+        if len(chain) > 1:
+            inner, ps = self._rel_exists(tr, alias, chain[1:], parts, val)
+        else:
+            inner, ps = self._leaf_where(tr, alias, parts, val)
+        return f"EXISTS (SELECT 1 FROM {frm} WHERE {cond} AND {inner})", [*params, *ps]
+
+    def _rel_hop(self, rel, ref, tr, alias):
+        """One hop: how the target table is joined back to `ref`."""
+        live = f"{alias}.deleted_at IS NULL"
+        if rel.kind == "one":
+            return f"{tr.table} {alias}", f"{alias}.pco_id={ref}.{rel.local_fk} AND {live}", []
+        if rel.kind == "json":
+            return (f"json_each({ref}.raw, ?) j_{alias} JOIN {tr.table} {alias} "
+                    f"ON {alias}.pco_id = j_{alias}.value ->> '$.id'", live, [rel.json_path])
+        if rel.via:
+            join = registry.by_name(rel.via)
+            return (f"{tr.table} {alias}",
+                    f"{live} AND {alias}.pco_id IN (SELECT {rel.via_target_fk} FROM {join.table} "
+                    f"WHERE {rel.via_local_fk}={ref}.pco_id AND deleted_at IS NULL)", [])
+        return f"{tr.table} {alias}", f"{alias}.{rel.child_fk}={ref}.pco_id AND {live}", []
 
     def _search_clause(self, r, search, needle: str):
         """PCO's `where[search_*]`, one arm at a time.
@@ -465,11 +552,15 @@ class Application:
             if attr not in r.can_order_by:
                 raise _HttpError(400, f"unsupported order: {attr}")
             col = _col_for(r, attr)
-            # PCO sorts names case-insensitively. SQLite's default BINARY collation
-            # puts every capital ahead of every lowercase letter, so a surname
-            # entered in lower case jumped to the end of the roster.
-            collate = "" if registry.col_type(r, col) in ("INTEGER", "REAL") else " COLLATE NOCASE"
-            cols.append(f"{col}{collate} {'DESC' if desc else 'ASC'}")
+            if registry.col_type(r, col) in ("INTEGER", "REAL"):
+                # `grade` holds numbers. Sorted as text, 9 comes after 12 — so
+                # `order=-grade` opened on the ninth graders instead of the twelfth.
+                cols.append(f"CAST({col} AS INTEGER) {'DESC' if desc else 'ASC'}")
+            else:
+                # PCO sorts names case-insensitively. SQLite's default BINARY
+                # collation puts every capital ahead of every lowercase letter, so a
+                # surname entered in lower case jumped to the end of the roster.
+                cols.append(f"{col} COLLATE NOCASE {'DESC' if desc else 'ASC'}")
         cols.append(_ID_ORDER)
         return "ORDER BY " + ", ".join(cols)
 
@@ -487,18 +578,22 @@ class Application:
         if not inc_param:
             return [], {}
         out, seen, echo = [], set(), {}
+        fields = _sparse_fields(qs)
 
         def add(res, row):
             key = (res.type, row["pco_id"])
             if key not in seen:
                 seen.add(key)
-                out.append(self._serialize(res, row))
+                out.append(self._serialize(res, row, None, fields))
 
         for token in inc_param.split(","):
             first, _, second = token.partition(".")
             rel = r.relationships.get(first)
             if rel is None:
-                continue
+                # PCO offers includes for types the mirror does not hold (`school`,
+                # `social_profiles`, …). Answering 200 with no `included` would look
+                # exactly like "this person has none", so say so instead.
+                raise _HttpError(400, f"cannot include {first!r}: not mirrored")
             level1 = self._related_rows(rel, rows)
             tr = registry.by_name(rel.target)
             for x in level1:
@@ -536,11 +631,6 @@ class Application:
             ph2 = ",".join("?" * len(targets))
             return self.db.query(
                 f"SELECT * FROM {tr.table} WHERE pco_id IN ({ph2}) AND deleted_at IS NULL", targets)
-        if rel.kind == "json_reverse":
-            return self.db.query(
-                f"SELECT * FROM {tr.table} WHERE deleted_at IS NULL AND EXISTS "
-                f"(SELECT 1 FROM json_each({tr.table}.raw, ?) j "
-                f"WHERE j.value ->> '$.id' IN ({ph}))", (rel.json_path, *ids))
         if rel.kind == "many" and rel.via is None:
             return self.db.query(
                 f"SELECT * FROM {tr.table} WHERE {rel.child_fk} IN ({ph}) AND deleted_at IS NULL", ids)
@@ -565,7 +655,7 @@ class Application:
         return []
 
     # -- serialization -----------------------------------------------------
-    def _serialize(self, r, row, echo=None):
+    def _serialize(self, r, row, echo=None, fields=None):
         obj = json.loads(row["raw"])
         obj.setdefault("id", row["pco_id"])
         obj.setdefault("type", r.type)
@@ -577,6 +667,15 @@ class Application:
             # PCO's own shape for a nested include; `related` is null there too.
             obj.setdefault("relationships", {})[name] = {"links": {"related": None}, "data": ids}
         links.rewrite_relationships(obj, self.s)
+        keep = (fields or {}).get(r.type)
+        if keep is not None:
+            # Relationships are fields too, so one that was not named goes as well —
+            # even one PCO synthesized for a nested include.
+            obj["attributes"] = {k: v for k, v in (obj.get("attributes") or {}).items()
+                                 if k in keep}
+            rels = {k: v for k, v in (obj.get("relationships") or {}).items() if k in keep}
+            if rels or "relationships" in obj:
+                obj["relationships"] = rels
         obj["meta"] = {"mirror": {"last_synced_at": row["last_synced_at"],
                                   "pco_updated_at": row["pco_updated_at"],
                                   "source": row["source"], "deleted_at": row["deleted_at"]}}

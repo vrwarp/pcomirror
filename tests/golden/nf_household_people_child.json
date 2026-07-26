@@ -1,0 +1,251 @@
+{
+  "divergence": {
+    "kind": "filters",
+    "reason": "PCO documents this nested relationship filter and then ignores it: the same request with a value that cannot match anything still returns the whole collection. The mirror applies it. The mirror never silently returns unfiltered data for a filter it was given."
+  },
+  "name": "nf_household_people_child",
+  "request": {
+    "method": "GET",
+    "path": "/households",
+    "query": "where[people][grade]=8&per_page=5"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-06T23:46:05Z",
+            "member_count": 4,
+            "name": "Vance194",
+            "primary_contact_id": "100000063",
+            "primary_contact_name": "Roy Yeh",
+            "updated_at": "2024-01-20T22:50:36Z"
+          },
+          "id": "10000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000001"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000063",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000759",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000029",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000030",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000063",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-09T02:09:47Z",
+            "member_count": 2,
+            "name": "Radcliffe154",
+            "primary_contact_id": "100000048",
+            "primary_contact_name": "David Sun",
+            "updated_at": "2024-01-09T02:10:00Z"
+          },
+          "id": "10000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000002"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000048",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000023",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000048",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-20T20:26:38Z",
+            "member_count": 2,
+            "name": "Ellery043",
+            "primary_contact_id": "100000020",
+            "primary_contact_name": "Angel Fuentes",
+            "updated_at": "2024-01-20T20:26:56Z"
+          },
+          "id": "10000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000003"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000051",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000020",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000020",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-20T22:51:57Z",
+            "member_count": 4,
+            "name": "Bellweather012",
+            "primary_contact_id": "100000061",
+            "primary_contact_name": "Yaneth Cabeza-Rosales",
+            "updated_at": "2024-01-20T22:51:57Z"
+          },
+          "id": "10000004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000004"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000061",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000019",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000020",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000031",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000061",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        },
+        {
+          "attributes": {
+            "avatar": null,
+            "created_at": "2024-01-20T22:54:11Z",
+            "member_count": 3,
+            "name": "Larkspur100",
+            "primary_contact_id": "100000053",
+            "primary_contact_name": "Jian Lin",
+            "updated_at": "2026-06-03T03:18:20Z"
+          },
+          "id": "10000005",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/households/10000005"
+          },
+          "relationships": {
+            "people": {
+              "data": [
+                {
+                  "id": "100000053",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000027",
+                  "type": "Person"
+                },
+                {
+                  "id": "100000066",
+                  "type": "Person"
+                }
+              ]
+            },
+            "primary_contact": {
+              "data": {
+                "id": "100000053",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Household"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/v2/households?offset=5&per_page=5&where[people][grade]=8",
+        "self": "https://api.planningcenteronline.com/people/v2/households?per_page=5&where[people][grade]=8"
+      },
+      "meta": {
+        "can_include": [
+          "people"
+        ],
+        "can_order_by": [
+          "name",
+          "member_count",
+          "primary_contact_name",
+          "created_at",
+          "updated_at"
+        ],
+        "can_query_by": [
+          "name",
+          "member_count",
+          "primary_contact_name",
+          "created_at",
+          "updated_at"
+        ],
+        "count": 5,
+        "next": {
+          "offset": 5
+        },
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 515
+      }
+    },
+    "status": 200
+  }
+}

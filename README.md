@@ -138,6 +138,33 @@ advanced — `where`, `order` and `include` included — and `meta.next.offset` 
 the same thing for clients that read it there. Following the link walks every
 matching row exactly once.
 
+**Sparse fieldsets work.** `fields[Person]=first_name,last_name` limits attributes
+*and* relationships for that type, `fields[Email]=address` applies to sideloaded
+emails, and an unknown field name selects nothing rather than erroring — the same
+JSON:API semantics PCO implements. `include=` still sideloads a relationship even
+when the fieldset does not name it.
+
+**Filters reach through relationships.** `where[emails][address]`,
+`where[addresses][city]`, `where[field_data][field_definition][name]` and the rest
+of PCO's documented nested filters are applied. PCO documents them and then
+ignores them — the same request with a value that cannot match anything still
+returns the whole collection — so this is one of the few places the mirror is
+deliberately stricter than the API it mirrors.
+
+**Nothing given is silently ignored.** An unknown filter or `order` key, a value
+that cannot be coerced, an `include` naming a type the mirror does not hold: each
+is a `400`. PCO answers `200` and quietly drops them, which is indistinguishable
+from having applied them. The divergence is recorded and asserted in
+[`tests/golden/`](tests/golden/README.md).
+
+**A record has one shape, whatever the request.** PCO varies which relationships
+it puts on a resource — a bare `/people` read carries only `primary_campus`, and
+`emails` appears only when you `include` it. The mirror serves the fullest
+representation it holds, so a plain read carries `emails`, `households`,
+`addresses` and the rest as well. That is the same decision as the generated
+`links` map below, and it is strictly additive: the mirror never omits a
+relationship PCO would have sent, and never invents one PCO does not have.
+
 **Ordering follows PCO's, not SQLite's.** Ids sort numerically, because they are
 text columns holding numbers of different lengths and `/emails` carries both
 8- and 9-digit ones. Text sorts case-insensitively, because PCO folds case and
@@ -415,7 +442,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 169 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 179 end-to-end tests + 11 writer-semantics assertions
 ```
 
 The suite drives backfill, sideloading, incremental sweep, merger poll, delete
@@ -428,7 +455,7 @@ every `where[search_*]` filter, typed/boolean filters, nested collections with
 includes, and a full walk of `links.next` asserting each row is visited exactly
 once.
 
-[`tests/golden/`](tests/golden/README.md) holds request/response pairs captured
+[`tests/golden/`](tests/golden/README.md) holds **80** request/response pairs captured
 from the **live** Planning Center API and sanitized; `tests/test_golden.py`
 replays them against the serving layer and asserts the mirror answers in PCO's
 shape and PCO's order. That corpus is the only part of the suite that cannot be

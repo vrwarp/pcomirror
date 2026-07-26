@@ -1,0 +1,20 @@
+{
+  "name": "err_unknown_collection",
+  "request": {
+    "method": "GET",
+    "path": "/no_such_collection",
+    "query": "per_page=5"
+  },
+  "response": {
+    "body": {
+      "errors": [
+        {
+          "detail": "The resource you requested could not be found",
+          "status": "404",
+          "title": "Not Found"
+        }
+      ]
+    },
+    "status": 404
+  }
+}

@@ -1,0 +1,559 @@
+{
+  "name": "people_sparse_fieldset",
+  "request": {
+    "method": "GET",
+    "path": "/people",
+    "query": "fields[Person]=first_name,last_name,emails&include=emails&per_page=10"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "first_name": "Linnea0578",
+            "last_name": "Yardley425"
+          },
+          "id": "100000001",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000001",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000001"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000001",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000001/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Cassian0101",
+            "last_name": "Thackery357"
+          },
+          "id": "100000002",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000002",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000002"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000002",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000002/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Emory0204",
+            "last_name": "Sterling334"
+          },
+          "id": "100000003",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000003",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000003"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000003",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000003/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Alder0045",
+            "last_name": "Kingsley201"
+          },
+          "id": "100000004",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000004",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000004"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000016",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000004/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Emory0204",
+            "last_name": "Bellweather025"
+          },
+          "id": "100000005",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000005",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000005"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000241",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000005/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Cassian0136",
+            "last_name": "Larkspur212"
+          },
+          "id": "100000006",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000006",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000006"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000170",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000006/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Linnea0578",
+            "last_name": "Underhill378"
+          },
+          "id": "100000007",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000007",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000007"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000004",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000007/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Delphine0154",
+            "last_name": "Ellery075"
+          },
+          "id": "100000008",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000008",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000008"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000136",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000008/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Alder0016",
+            "last_name": "Radcliffe323"
+          },
+          "id": "100000009",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000009",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000009"
+          },
+          "relationships": {
+            "emails": {
+              "data": [
+                {
+                  "id": "10000193",
+                  "type": "Email"
+                }
+              ],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000009/emails"
+              }
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "first_name": "Briony0097",
+            "last_name": "Thackery360"
+          },
+          "id": "100000010",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000010",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000010"
+          },
+          "relationships": {
+            "emails": {
+              "data": [],
+              "links": {
+                "related": "https://api.planningcenteronline.com/people/v2/people/100000010/emails"
+              }
+            }
+          },
+          "type": "Person"
+        }
+      ],
+      "included": [
+        {
+          "attributes": {
+            "address": "ulric38@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:43:30Z",
+            "location": "Work",
+            "primary": true,
+            "updated_at": "2024-01-06T22:43:30Z"
+          },
+          "id": "10000001",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000001"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000001",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "alder68@d60.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:45:04Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:45:04Z"
+          },
+          "id": "10000002",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000002"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000002",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "marlow93@d19.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T22:51:32Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T22:51:32Z"
+          },
+          "id": "10000003",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000003"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000003",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "sable27@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-07T22:15:57Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-07T22:15:57Z"
+          },
+          "id": "10000016",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000016"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000004",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "perrin96@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-30T06:39:11Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-30T06:39:11Z"
+          },
+          "id": "10000241",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000241"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000005",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "ulric59@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-30T06:38:34Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-30T06:38:34Z"
+          },
+          "id": "10000170",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000170"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000006",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "perrin54@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-06T23:38:49Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-06T23:38:49Z"
+          },
+          "id": "10000004",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000004"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000007",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "quenby44@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-30T06:38:17Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-30T06:38:17Z"
+          },
+          "id": "10000136",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000136"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000008",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        },
+        {
+          "attributes": {
+            "address": "isolde96@d35.example.org",
+            "blocked": false,
+            "created_at": "2024-01-30T06:38:46Z",
+            "location": "Home",
+            "primary": true,
+            "updated_at": "2024-01-30T06:38:46Z"
+          },
+          "id": "10000193",
+          "links": {
+            "self": "https://api.planningcenteronline.com/people/v2/emails/10000193"
+          },
+          "relationships": {
+            "person": {
+              "data": {
+                "id": "100000009",
+                "type": "Person"
+              }
+            }
+          },
+          "type": "Email"
+        }
+      ],
+      "links": {
+        "next": "https://api.planningcenteronline.com/people/v2/people?fields[Person]=first_name%2Clast_name%2Cemails&include=emails&offset=10&per_page=10",
+        "self": "https://api.planningcenteronline.com/people/v2/people?fields[Person]=first_name%2Clast_name%2Cemails&include=emails&per_page=10"
+      },
+      "meta": {
+        "can_filter": [
+          "created_since",
+          "admins",
+          "organization_admins"
+        ],
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "can_order_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "created_at",
+          "updated_at",
+          "first_name",
+          "last_name",
+          "remote_id",
+          "membership",
+          "status"
+        ],
+        "can_query_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "medical_notes",
+          "membership",
+          "created_at",
+          "updated_at",
+          "search_name",
+          "search_name_or_email",
+          "search_name_or_email_or_phone_number",
+          "search_phone_number",
+          "search_phone_number_e164",
+          "mfa_configured",
+          "first_name",
+          "last_name",
+          "id",
+          "primary_campus_id",
+          "remote_id",
+          "status"
+        ],
+        "count": 10,
+        "next": {
+          "offset": 10
+        },
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 1915
+      }
+    },
+    "status": 200
+  }
+}

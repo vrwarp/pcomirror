@@ -1,0 +1,653 @@
+{
+  "name": "people_search_name",
+  "request": {
+    "method": "GET",
+    "path": "/people",
+    "query": "where[search_name]=Whitfield416&per_page=25"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-06T23:33:36Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Linnea0571",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Linnea0571 Whitfield416",
+            "nickname": "Marlow0573",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-30T07:16:56Z"
+          },
+          "id": "100000011",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000011",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000011"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-06T23:47:07Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Tamsin0961",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Tamsin0961 Whitfield416",
+            "nickname": "Linnea0529",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-30T07:20:38Z"
+          },
+          "id": "100000044",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000044",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000044"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-01-21T06:45:47Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Perrin0778",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Perrin0778 Whitfield416",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-07-02T05:24:04Z"
+          },
+          "id": "100000106",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000106",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000106"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:38:59Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Emory0238",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Emory0238 Whitfield416",
+            "nickname": "Linnea0568",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:38:00Z"
+          },
+          "id": "100000579",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000579",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000579"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:39:12Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Jasper0455",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Jasper0455 Whitfield416",
+            "nickname": "Marlow0574",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:37:56Z"
+          },
+          "id": "100000660",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000660",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000660"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:39:12Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Fenwick0268",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Fenwick0268 Whitfield416",
+            "nickname": "Linnea0562",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:37:56Z"
+          },
+          "id": "100000662",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000662",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000662"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:39:13Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Isolde0435",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Isolde0435 Whitfield416",
+            "nickname": "Linnea0567",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:37:56Z"
+          },
+          "id": "100000663",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000663",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000663"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:39:13Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Quenby0826",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": "2024-01-30T08:00:00Z",
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Full Member",
+            "middle_name": null,
+            "name": "Quenby0826 Whitfield416",
+            "nickname": "Linnea0532",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "inactive",
+            "updated_at": "2024-01-31T07:21:07Z"
+          },
+          "id": "100000667",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000667",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000667"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:39:14Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Emory0222",
+            "gender": "Male",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Emory0222 Whitfield416",
+            "nickname": "Marlow0570",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:37:56Z"
+          },
+          "id": "100000668",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100000668",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000668"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": false,
+            "created_at": "2024-01-30T06:40:20Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Delphine0195",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": "Visitor",
+            "middle_name": null,
+            "name": "Delphine0195 Whitfield416",
+            "nickname": "Linnea0565",
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-01-31T06:37:33Z"
+          },
+          "id": "100001081",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001081",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100001081"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2024-07-02T05:24:19Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Isolde0404",
+            "gender": null,
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Isolde0404 Whitfield416",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2024-07-02T05:24:19Z"
+          },
+          "id": "100001573",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001573",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100001573"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        },
+        {
+          "attributes": {
+            "accounting_administrator": false,
+            "anniversary": null,
+            "avatar": null,
+            "birthdate": null,
+            "can_create_forms": false,
+            "can_email_lists": false,
+            "child": true,
+            "created_at": "2025-07-08T22:32:34Z",
+            "demographic_avatar_url": null,
+            "directory_status": null,
+            "first_name": "Perrin0757",
+            "gender": "Female",
+            "given_name": null,
+            "grade": null,
+            "graduation_year": null,
+            "inactivated_at": null,
+            "last_name": "Whitfield416",
+            "login_identifier": null,
+            "medical_notes": null,
+            "membership": null,
+            "middle_name": null,
+            "name": "Perrin0757 Whitfield416",
+            "nickname": null,
+            "passed_background_check": null,
+            "people_permissions": null,
+            "remote_id": null,
+            "resource_permission_flags": null,
+            "school_type": null,
+            "site_administrator": false,
+            "status": "active",
+            "updated_at": "2025-07-08T22:32:34Z"
+          },
+          "id": "100001732",
+          "links": {
+            "html": "https://people.planningcenteronline.com/people/XX100001732",
+            "self": "https://api.planningcenteronline.com/people/v2/people/100001732"
+          },
+          "relationships": {
+            "primary_campus": {
+              "data": null
+            }
+          },
+          "type": "Person"
+        }
+      ],
+      "links": {
+        "self": "https://api.planningcenteronline.com/people/v2/people?per_page=25&where[search_name]=Whitfield416"
+      },
+      "meta": {
+        "can_filter": [
+          "created_since",
+          "admins",
+          "organization_admins"
+        ],
+        "can_include": [
+          "addresses",
+          "emails",
+          "field_data",
+          "households",
+          "inactive_reason",
+          "marital_status",
+          "name_prefix",
+          "name_suffix",
+          "organization",
+          "person_apps",
+          "phone_numbers",
+          "platform_notifications",
+          "primary_campus",
+          "school",
+          "social_profiles"
+        ],
+        "can_order_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "created_at",
+          "updated_at",
+          "first_name",
+          "last_name",
+          "remote_id",
+          "membership",
+          "status"
+        ],
+        "can_query_by": [
+          "accounting_administrator",
+          "anniversary",
+          "birthdate",
+          "child",
+          "given_name",
+          "grade",
+          "graduation_year",
+          "middle_name",
+          "nickname",
+          "people_permissions",
+          "site_administrator",
+          "gender",
+          "inactivated_at",
+          "medical_notes",
+          "membership",
+          "created_at",
+          "updated_at",
+          "search_name",
+          "search_name_or_email",
+          "search_name_or_email_or_phone_number",
+          "search_phone_number",
+          "search_phone_number_e164",
+          "mfa_configured",
+          "first_name",
+          "last_name",
+          "id",
+          "primary_campus_id",
+          "remote_id",
+          "status"
+        ],
+        "count": 12,
+        "parent": {
+          "id": "907332",
+          "type": "Organization"
+        },
+        "total_count": 12
+      }
+    },
+    "status": 200
+  }
+}

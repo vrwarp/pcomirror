@@ -45,7 +45,7 @@
           "id": "100000024",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000024",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000024"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000024"
           },
           "relationships": {
             "primary_campus": {
@@ -91,7 +91,7 @@
           "id": "100000025",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000025",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000025"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000025"
           },
           "relationships": {
             "primary_campus": {
@@ -137,7 +137,7 @@
           "id": "100000030",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000030",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000030"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000030"
           },
           "relationships": {
             "primary_campus": {
@@ -183,7 +183,7 @@
           "id": "100000031",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000031",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000031"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000031"
           },
           "relationships": {
             "primary_campus": {
@@ -229,7 +229,7 @@
           "id": "100000033",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000033",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000033"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000033"
           },
           "relationships": {
             "primary_campus": {
@@ -275,7 +275,7 @@
           "id": "100000035",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000035",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000035"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000035"
           },
           "relationships": {
             "primary_campus": {
@@ -321,7 +321,7 @@
           "id": "100000042",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000042",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000042"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000042"
           },
           "relationships": {
             "primary_campus": {
@@ -344,7 +344,7 @@
             "directory_status": null,
             "first_name": "Linnea0586",
             "gender": "Male",
-            "given_name": "Wren17",
+            "given_name": "Perrin5",
             "grade": 8,
             "graduation_year": null,
             "inactivated_at": null,
@@ -367,7 +367,7 @@
           "id": "100000259",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100000259",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100000259"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100000259"
           },
           "relationships": {
             "primary_campus": {
@@ -413,7 +413,7 @@
           "id": "100001510",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100001510",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100001510"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100001510"
           },
           "relationships": {
             "primary_campus": {
@@ -459,7 +459,7 @@
           "id": "100001693",
           "links": {
             "html": "https://people.planningcenteronline.com/people/XX100001693",
-            "self": "https://api.planningcenteronline.com/people/XX2/people/100001693"
+            "self": "https://api.planningcenteronline.com/people/v2/people/100001693"
           },
           "relationships": {
             "primary_campus": {
@@ -470,7 +470,7 @@
         }
       ],
       "links": {
-        "self": "https://api.planningcenteronline.com/people/XX2/people?per_page=25&where[grade]=8"
+        "self": "https://api.planningcenteronline.com/people/v2/people?per_page=25&where[grade]=8"
       },
       "meta": {
         "can_filter": [
@@ -550,7 +550,7 @@
         ],
         "count": 10,
         "parent": {
-          "id": "100001",
+          "id": "907332",
           "type": "Organization"
         },
         "total_count": 10

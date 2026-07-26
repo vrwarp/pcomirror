@@ -140,6 +140,426 @@
       "query": "per_page=25",
       "records": 25,
       "status": 200
+    },
+    {
+      "name": "people_updated_at_after",
+      "path": "/people",
+      "query": "where[updated_at][gt]=2026-05-17T19:47:57Z&order=updated_at&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_created_at_since",
+      "path": "/people",
+      "query": "where[created_at][gte]=2026-05-17T19:23:23Z&order=created_at&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_birthdate_range",
+      "path": "/people",
+      "query": "where[birthdate][gte]=2013-09-23&where[birthdate][lte]=2021-09-22&order=birthdate&per_page=25",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "people_where_id",
+      "path": "/people",
+      "query": "where[id]=100000001",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_where_status_inactive",
+      "path": "/people",
+      "query": "where[status]=inactive&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_where_gender",
+      "path": "/people",
+      "query": "where[gender]=Male&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_where_membership",
+      "path": "/people",
+      "query": "where[membership]=Visitor&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_updated_at_desc",
+      "path": "/people",
+      "query": "order=-updated_at&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_birthdate",
+      "path": "/people",
+      "query": "order=birthdate&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_grade",
+      "path": "/people",
+      "query": "order=grade&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_order_two_keys",
+      "path": "/people",
+      "query": "order=last_name,first_name&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_sparse_fieldset",
+      "path": "/people",
+      "query": "fields[Person]=first_name,last_name,emails&include=emails&per_page=10",
+      "records": 10,
+      "status": 200
+    },
+    {
+      "name": "people_per_page_over_max",
+      "path": "/people",
+      "query": "per_page=500",
+      "records": 100,
+      "status": 200
+    },
+    {
+      "name": "people_offset_beyond_total",
+      "path": "/people",
+      "query": "per_page=25&offset=99999",
+      "records": 0,
+      "status": 200
+    },
+    {
+      "name": "people_not_found",
+      "path": "/people/948521736",
+      "query": "",
+      "records": 1,
+      "status": 404
+    },
+    {
+      "name": "people_search_name",
+      "path": "/people",
+      "query": "where[search_name]=Whitfield416&per_page=25",
+      "records": 12,
+      "status": 200
+    },
+    {
+      "name": "people_search_name_or_email",
+      "path": "/people",
+      "query": "where[search_name_or_email]=%40d32.example.org&include=emails&per_page=25",
+      "records": 25,
+      "status": 200
+    },
+    {
+      "name": "people_nested_addresses",
+      "path": "/people/100000140/addresses",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "people_nested_field_data",
+      "path": "/people/100000095/field_data",
+      "query": "include=field_definition&per_page=25",
+      "records": 8,
+      "status": 200
+    },
+    {
+      "name": "field_data_where_definition",
+      "path": "/field_data",
+      "query": "where[field_definition_id]=100001&per_page=25",
+      "records": 4,
+      "status": 200
+    },
+    {
+      "name": "nf_emails_address",
+      "path": "/people",
+      "query": "where[emails][address]=ulric38%40d35.example.org&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_emails_primary",
+      "path": "/people",
+      "query": "where[emails][blocked]=true&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_phone_number",
+      "path": "/people",
+      "query": "where[phone_numbers][number]=%28555%29%20841-1105&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_addresses_city",
+      "path": "/people",
+      "query": "where[addresses][city]=Greer53&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_addresses_state",
+      "path": "/people",
+      "query": "where[addresses][state]=CA&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_households_name",
+      "path": "/people",
+      "query": "where[households][name]=Whitfield206&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_fielddef_name",
+      "path": "/people",
+      "query": "where[field_data][field_definition][name]=Chinese+Last+Name&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "nf_household_people_child",
+      "path": "/households",
+      "query": "where[people][grade]=8&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "multi_child_and_grade",
+      "path": "/people",
+      "query": "where[child]=true&where[grade]=8&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "multi_status_gender_order",
+      "path": "/people",
+      "query": "where[status]=active&where[gender]=Female&order=last_name&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "multi_updated_window",
+      "path": "/people",
+      "query": "where[updated_at][gte]=2026-01-25T17:29:26Z&where[updated_at][lt]=2026-06-07T20:14:00Z&order=updated_at&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "multi_child_and_search",
+      "path": "/people",
+      "query": "where[child]=true&where[search_name]=Whitfield416&per_page=5",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "multi_everything",
+      "path": "/people",
+      "query": "where[child]=true&order=-birthdate&include=emails&fields[Person]=first_name,grade&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "inc_all_relationships",
+      "path": "/people",
+      "query": "include=emails,phone_numbers,addresses,field_data,households,primary_campus,marital_status&per_page=3",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "inc_two_nested_paths",
+      "path": "/people",
+      "query": "include=households.people,field_data.field_definition&per_page=3",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "inc_duplicate_token",
+      "path": "/people",
+      "query": "include=emails,emails&per_page=3",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "inc_nested_with_fieldset",
+      "path": "/people",
+      "query": "include=field_data.field_definition&fields[FieldDefinition]=name&per_page=3",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "inc_unmirrored_relationship",
+      "path": "/people",
+      "query": "include=school&per_page=3",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "ord_grade_desc",
+      "path": "/people",
+      "query": "order=-grade&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "ord_three_keys",
+      "path": "/people",
+      "query": "order=first_name,last_name,birthdate&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "ord_status",
+      "path": "/people",
+      "query": "order=status&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "ord_nickname",
+      "path": "/people",
+      "query": "order=nickname&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "page_first_single",
+      "path": "/people",
+      "query": "per_page=1&offset=0&order=last_name",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "page_last_row",
+      "path": "/people",
+      "query": "per_page=1&offset=1914&order=last_name",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "page_exactly_at_end",
+      "path": "/people",
+      "query": "per_page=5&offset=1915&order=last_name",
+      "records": 0,
+      "status": 200
+    },
+    {
+      "name": "page_deep_offset",
+      "path": "/people",
+      "query": "per_page=5&offset=1000&order=last_name",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "page_per_page_zero",
+      "path": "/people",
+      "query": "per_page=0",
+      "records": 0,
+      "status": 200
+    },
+    {
+      "name": "err_unknown_filter",
+      "path": "/people",
+      "query": "where[no_such_field]=x&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "err_unknown_order",
+      "path": "/people",
+      "query": "order=no_such_field&per_page=5",
+      "records": 5,
+      "status": 200
+    },
+    {
+      "name": "err_unknown_relationship",
+      "path": "/people/100000001/no_such_rel",
+      "query": "",
+      "records": 1,
+      "status": 404
+    },
+    {
+      "name": "err_unknown_collection",
+      "path": "/no_such_collection",
+      "query": "per_page=5",
+      "records": 1,
+      "status": 404
+    },
+    {
+      "name": "err_non_numeric_grade",
+      "path": "/people",
+      "query": "where[grade]=abc&per_page=5",
+      "records": 0,
+      "status": 200
+    },
+    {
+      "name": "single_email",
+      "path": "/emails/10000001",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "single_phone_number",
+      "path": "/phone_numbers/100000001",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "single_address",
+      "path": "/addresses/100000001",
+      "query": "",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "single_field_datum",
+      "path": "/field_data/100000001",
+      "query": "include=field_definition",
+      "records": 1,
+      "status": 200
+    },
+    {
+      "name": "nested_primary_campus",
+      "path": "/people/100000001/primary_campus",
+      "query": "",
+      "records": 1,
+      "status": 404
+    },
+    {
+      "name": "ref_marital_statuses",
+      "path": "/marital_statuses",
+      "query": "per_page=10",
+      "records": 3,
+      "status": 200
+    },
+    {
+      "name": "ref_campuses_empty",
+      "path": "/campuses",
+      "query": "per_page=10",
+      "records": 0,
+      "status": 200
+    },
+    {
+      "name": "ref_field_definitions_ordered",
+      "path": "/field_definitions",
+      "query": "order=name&per_page=10",
+      "records": 6,
+      "status": 200
     }
   ],
   "note": "Sanitized. Ids, names, contact details and dates are synthetic; id ordering and case-folded name ordering are preserved so ordering assertions remain meaningful.",

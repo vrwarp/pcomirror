@@ -25,15 +25,16 @@ Projection = tuple[str, str, str, str | None]
 class Rel:
     """A relationship the serving layer can `include` by joining local tables."""
     target: str            # target resource name (registry key)
-    kind: str              # "many" (child fk -> us) or "one" (we hold the fk)
+    kind: str              # "many" (child fk -> us) | "one" (we hold the fk) | "json"
     local_fk: str | None = None   # for kind="one": our column holding the target id
     child_fk: str | None = None   # for kind="many": the child column pointing back at us
     via: str | None = None        # optional join table resource (e.g. household_membership)
     via_local_fk: str | None = None
     via_target_fk: str | None = None
-    # for kind="json"/"json_reverse": a JSON path on `raw` holding resource
-    # identifiers. PCO returns a person's households inline on the Person payload
-    # and offers no bulk endpoint for the join rows, so the array *is* the edge.
+    # for kind="json": a JSON path on `raw` holding resource identifiers. PCO
+    # returns a person's households inline on the Person payload and a household's
+    # members inline on the Household, and offers no bulk endpoint for the join
+    # rows, so each side's array *is* the edge.
     json_path: str | None = None
 
 
@@ -127,7 +128,7 @@ _reg(Resource(
         ("status", "TEXT", "json", "$.attributes.status"),
         ("membership", "TEXT", "json", "$.attributes.membership"),
         ("gender", "TEXT", "json", "$.attributes.gender"),
-        ("grade", "TEXT", "json", "$.attributes.grade"),
+        ("grade", "INTEGER", "json", "$.attributes.grade"),
         ("birthdate", "TEXT", "json", "$.attributes.birthdate"),
         ("anniversary", "TEXT", "json", "$.attributes.anniversary"),
         ("remote_id", "TEXT", "json", "$.attributes.remote_id"),
@@ -242,8 +243,16 @@ _reg(Resource(
         ("value_date", "TEXT", "plain", None),
         ("value_bool", "INTEGER", "plain", None),
     ),
-    can_query_by=("created_at", "updated_at"),
-    can_order_by=("created_at", "updated_at"),
+    relationships={
+        # PCO serves `/field_data/{id}/field_definition` and offers
+        # `include=field_definition`, even though it puts no such entry in the
+        # resource's own `links` map. `customizable` is deliberately absent: it is
+        # polymorphic (Person or Organization) and a Rel names one target.
+        "field_definition": Rel("field_definition", "one", local_fk="field_definition_id"),
+    },
+    can_query_by=("created_at", "updated_at", "field_definition_id", "value", "file"),
+    can_order_by=("created_at", "updated_at", "value", "file"),
+    col_aliases={"file": "file_url"},
 ))
 _reg(Resource(
     name="field_definition", type="FieldDefinition", table="field_definition",
@@ -255,7 +264,8 @@ _reg(Resource(
         ("data_type", "TEXT", "json", "$.attributes.data_type"),
         ("tab_id", "TEXT", "json", "$.relationships.tab.data.id"),
     ),
-    can_query_by=("slug",), can_order_by=(),
+    can_query_by=("name", "slug", "data_type", "tab_id"),
+    can_order_by=("name", "slug", "data_type", "tab_id"),
 ))
 
 # --- households (many-to-many) ---
@@ -268,8 +278,13 @@ _reg(Resource(
         ("primary_contact_id", "TEXT", "json", "$.relationships.primary_contact.data.id"),
     ),
     relationships={
-        "people": Rel("person", "json_reverse",
-                      json_path="$.relationships.households.data"),
+        # PCO puts the membership on the Household itself, with no `include`
+        # needed, so each side of the edge is read from its own payload. Deriving
+        # it by scanning every person instead only ever found the members whose
+        # own record had been fetched — a person sideloaded from somebody else's
+        # household carries no households array to scan.
+        "people": Rel("person", "json", json_path="$.relationships.people.data"),
+        "primary_contact": Rel("person", "one", local_fk="primary_contact_id"),
     },
     can_query_by=("created_at", "updated_at", "name"),
     can_order_by=("created_at", "updated_at", "name"),
@@ -309,7 +324,12 @@ for _name, _type, _ep in [
 ]:
     _reg(Resource(
         name=_name, type=_type, table=_name, endpoint=_ep,
-        tier="lite", method="reference_periodic", incr_interval_s=86400, priority=3,
+        # PCO returns these with a `value` and nothing else — no `updated_at`, so
+        # they cannot carry the monotonic guard and must be written untimed.
+        # Declaring them timestamped left `pco_updated_at` NULL, which made every
+        # comparison in that guard false.
+        tier="lite", method="reference_periodic", timestamped=False,
+        supports_uat_filter=False, incr_interval_s=86400, priority=3,
         projections=(
             ("name", "TEXT", "json", "$.attributes.name"),
             ("value", "TEXT", "json", "$.attributes.value"),

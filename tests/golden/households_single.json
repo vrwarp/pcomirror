@@ -19,9 +19,9 @@
         },
         "id": "10000012",
         "links": {
-          "household_memberships": "https://api.planningcenteronline.com/people/XX2/households/10000012/household_memberships",
-          "people": "https://api.planningcenteronline.com/people/XX2/households/10000012/people",
-          "self": "https://api.planningcenteronline.com/people/XX2/households/10000012"
+          "household_memberships": "https://api.planningcenteronline.com/people/v2/households/10000012/household_memberships",
+          "people": "https://api.planningcenteronline.com/people/v2/households/10000012/people",
+          "self": "https://api.planningcenteronline.com/people/v2/households/10000012"
         },
         "relationships": {
           "people": {
@@ -58,7 +58,7 @@
           "people"
         ],
         "parent": {
-          "id": "100001",
+          "id": "907332",
           "type": "Organization"
         }
       }
