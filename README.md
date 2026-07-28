@@ -347,6 +347,44 @@ Recording never fails a request — if it cannot write, the page says the log is
 incomplete rather than quietly showing a short one. The table is capped at
 `PCOMIRROR_DIAGNOSTIC_KEEP` rows (default 1000; `0` switches recording off).
 
+### Pseudonyms
+
+[`pcomirror/pseudonym/`](pcomirror/pseudonym/) replaces the people in a payload
+with believable strangers, so a log can be read by somebody and handed to
+somebody. It is the building block the divergence log is stored through.
+
+Every real value becomes a plausible fake one, and *the same* fake one every
+time, so what survives is the structure: which records share a surname, which
+people are in which household, whether two responses differ in a flag. A family
+still reads as a family. What does not survive is who they are.
+
+| Kind | Becomes |
+|---|---|
+| names — first, last, nickname, `name` | a name from the pools, consistently: a person's `name` always agrees with their `first_name` and `last_name`, and `Reed Household` follows `Reed` |
+| email | a different valid address; two identical addresses stay identical |
+| phone | the same digit count and punctuation, dialling code kept — both phone filters turn on those |
+| address | a plausible street, city, state and postcode |
+| dates | the same year, a shifted month and day, so age and grade logic still lands |
+| booleans, numbers, timestamps, ids, relationships | **untouched** — this is what a divergence is made of |
+| free text (`medical_notes`, field values) | `«redacted»`, never fabricated |
+| anything unclassified | `«redacted»` |
+
+Two properties are worth stating outright, because the package is worthless
+without either:
+
+- **Unclassified attributes are redacted, never passed through.** PCO adds
+  fields; the day it adds one this package has not heard of, the failure has to
+  be a redaction rather than a leak.
+- **Selection is keyed.** A plain hash over a thousand-name pool is a lookup
+  table anybody can rebuild. Selection is an HMAC under a secret minted per
+  install and kept in `mirror_meta`, which never appears in an export — so a log
+  on its own says nothing about who anybody is, while the same install
+  pseudonymises the same person identically for ever.
+
+Record **ids are kept**, deliberately: they are how two responses are lined up
+against each other, and they identify nobody without access to the organization
+they came from.
+
 Session hardening: `HttpOnly` + `SameSite=Strict` cookies (`Secure` too when the
 request arrives over HTTPS, including via `X-Forwarded-Proto` from a reverse
 proxy), 12-hour expiry, tokens stored only as a SHA-256 digest, CSRF tokens on
