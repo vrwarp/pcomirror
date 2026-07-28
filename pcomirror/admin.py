@@ -8,12 +8,14 @@ is for the human running the mirror.
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 
-from . import adminauth, adminstats, apikeys, diagnostics
+from . import adminauth, adminstats, apikeys, diagnostics, divergence
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
-         "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics")
+         "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics",
+         "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear")
 
 
 def handles(path: str) -> bool:
@@ -153,6 +155,12 @@ class AdminApp:
             return self._revoke_key(method, body, session)
         if path == "/admin/diagnostics":
             return self._diagnostics_page(qs)
+        if path == "/admin/divergence":
+            return self._divergence_page(qs, session)
+        if path == "/admin/divergence/download":
+            return self._divergence_download()
+        if path == "/admin/divergence/clear":
+            return self._divergence_clear(method, body, session)
         return self._dashboard(session, qs)
 
     # -- login ------------------------------------------------------------
@@ -285,10 +293,12 @@ class AdminApp:
         return 200, _headers(), _page("Admin", "".join([
             "<p class=sub>operator console</p>", banners,
             self._stats_section(st), self._diagnostics_section(),
-            self._keys_section(csrf), self._webhooks_section(st),
+            self._divergence_section(), self._keys_section(csrf),
+            self._webhooks_section(st),
         ]), nav=f"<nav><form method=post action=/admin/logout style='display:inline'>"
                 f"<button class=link type=submit>sign out</button></form> · "
                 f"<a href=/admin/diagnostics>diagnostics</a> · "
+                f"<a href=/admin/divergence>divergence</a> · "
                 f"<a href=/admin/password>password</a></nav>")
 
     def _stats_section(self, st) -> str:
@@ -461,6 +471,103 @@ class AdminApp:
   query values are never recorded — only which filters were in play. Raise
   <code>PCOMIRROR_DIAGNOSTIC_KEEP</code> to keep more history.</p>""",
             nav="<nav><a href=/>back</a></nav>")
+
+
+    # -- divergence -------------------------------------------------------
+    def _divergence_section(self) -> str:
+        """The dashboard's line on it — mostly, whether it is even running."""
+        s = divergence.summary(self.db)
+        if not getattr(self.s, "shadow_per_minute", 0):
+            return ("<h2>Divergence</h2><p class=muted>Off. Set "
+                    "<code>PCOMIRROR_SHADOW_PER_MINUTE</code> to have the mirror "
+                    "re-ask Planning Center about the reads it serves and record "
+                    "anything they disagree about. It spends PCO budget, so it is "
+                    "meant to be switched on while chasing something.</p>")
+        cards = [("divergences", f"{s['divergence']:,}"),
+                 ("stale (self-healing)", f"{s['staleness']:,}"),
+                 ("shapes seen", f"{s['shapes']:,}"),
+                 ("shapes checked", f"{s['checked']:,}")]
+        cards_html = "".join(
+            f"<div class=card><b class={'warn' if k == 'divergences' and v != '0' else ''}>"
+            f"{E(v)}</b><span>{E(k)}</span></div>" for k, v in cards)
+        alarm = ("<p class='msg err'>A <b>divergence</b> is a difference at the same "
+                 "<code>updated_at</code>: the sweep filters that record out and the "
+                 "monotonic writer would refuse it, so nothing converges on it on its "
+                 "own. Stale rows need no action.</p>" if s["divergence"] else "")
+        return f"""
+<h2>Divergence</h2>
+<div class=cards>{cards_html}</div>{alarm}
+<p class=muted>last checked {_esc(s['last_checked'], 'never')} ·
+  {s['requests_seen']:,} reads observed · <a href=/admin/divergence>full log</a></p>"""
+
+    _REPORT_HEAD = ("<tr><th>when<th>verdict<th>request<th>status"
+                    "<th>differences<th>pco request id</tr>")
+
+    def _report_rows(self, reports) -> str:
+        rows = []
+        for r in reports:
+            diffs = json.loads(r["differences"] or "[]")
+            shown = "".join(
+                f"<div><code>{E(d['pointer'])}</code> "
+                f"mirror=<b>{E(json.dumps(d['mirror']))}</b> "
+                f"pco=<b>{E(json.dumps(d['pco']))}</b>"
+                f"{' — ' + E(d['note']) if d.get('note') else ''}</div>"
+                for d in diffs[:6])
+            if len(diffs) > 6:
+                shown += f"<div class=muted>…and {len(diffs) - 6} more</div>"
+            klass = "warn" if r["verdict"] == "divergence" else "muted"
+            rows.append(
+                f"<tr><td>{_esc(r['at'])}</td><td class={klass}>{E(r['verdict'])}</td>"
+                f"<td>{_esc(r['path'])}</td>"
+                f"<td>{_esc(r['mirror_status'])} vs {_esc(r['pco_status'])}</td>"
+                f"<td style='white-space:normal'>{shown}</td>"
+                f"<td>{('<code>' + E(r['pco_request_id']) + '</code>') if r['pco_request_id'] else '—'}"
+                f"</td></tr>")
+        return "".join(rows)
+
+    def _divergence_page(self, qs, session):
+        verdict = (qs.get("verdict", [""])[0] or "").strip()
+        if verdict not in ("", "divergence", "staleness"):
+            verdict = ""
+        reports = divergence.recent(self.db, limit=200, verdict=verdict)
+        s = divergence.summary(self.db)
+        csrf = E(session["csrf"])
+        tabs = " · ".join(
+            f"<a href='/admin/divergence{('?verdict=' + v) if v else ''}'>"
+            f"{('<b>' + E(label) + '</b>') if v == verdict else E(label)}</a>"
+            for v, label in (("", "everything"), ("divergence", "divergences"),
+                             ("staleness", "stale")))
+        body = (f"<table>{self._REPORT_HEAD}{self._report_rows(reports)}</table>"
+                if reports else "<p class=muted>Nothing recorded — the mirror has "
+                                "agreed with Planning Center on everything checked.</p>")
+        return 200, _headers(), _page("Divergence", f"""
+<p class=sub>where the mirror and Planning Center disagree</p>
+<p class=muted>show: {tabs}</p>
+{body}
+<p class=muted>Showing {len(reports):,} of {s['total']:,} kept.
+  Values are pseudonymised — consistent per organization, reversible by nobody —
+  so this is safe to send on. Record ids and structure are real.</p>
+<form method=get action=/admin/divergence/download style='display:inline'>
+  <button type=submit>Download the log</button></form>
+<form method=post action=/admin/divergence/clear style='display:inline'>
+  <input type=hidden name=csrf value="{csrf}">
+  <button type=submit>Clear it</button></form>""",
+            nav="<nav><a href=/>back</a></nav>")
+
+    def _divergence_download(self):
+        payload = divergence.export(self.db)
+        return 200, _headers({
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": 'attachment; filename="pcomirror-divergence.json"',
+        }), payload
+
+    def _divergence_clear(self, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/divergence")
+        if not adminauth.check_csrf(session, _form(body).get("csrf")):
+            return self._divergence_page({}, session)
+        divergence.clear(self.db)
+        return _redirect("/admin/divergence")
 
     def _webhooks_section(self, st) -> str:
         w = st["webhooks"]

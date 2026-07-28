@@ -7,7 +7,7 @@ import unittest
 import urllib.parse
 
 from base import build, wsgi_call, wsgi_get
-from pcomirror import adminauth, apikeys, diagnostics
+from pcomirror import adminauth, apikeys, diagnostics, divergence
 
 SECRET = "sec"                      # base.build() sets pco_secret="sec"
 GOOD_PASSWORD = "a-long-enough-password"
@@ -348,6 +348,80 @@ class TestDiagnosticsPage(AdminCase):
         cookie = self.configured_login()
         _, _, page = self.get("/admin/diagnostics", cookie=cookie)
         self.assertIn(b"log is incomplete", page)
+
+
+class TestDivergencePage(AdminCase):
+    """View, download, clear — and never without a session."""
+
+    def setUp(self):
+        super().setUp()
+        self.m.settings.shadow_per_minute = 5
+
+    def _a_divergence(self):
+        self.fake.add_person("1", "Ada", "Lovelace", "2026-01-01T00:00:00Z")
+        self.m.ingestor.backfill("person")
+        self.fake.data["Person"]["1"]["attributes"]["first_name"] = "Grace"
+        self.m.divergence.check("/people/v2/people/{id}", "/people/v2/people/1", {})
+
+    def test_every_route_needs_a_session(self):
+        for path in ("/admin/divergence", "/admin/divergence/download"):
+            status, headers, _ = self.get(path)
+            self.assertEqual(status, 303, path)
+            self.assertEqual(headers["Location"], "/")
+        self.assertEqual(self.post("/admin/divergence/clear")[0], 303)
+
+    def test_the_page_shows_a_divergence(self):
+        self._a_divergence()
+        cookie = self.configured_login()
+        status, _, page = self.get("/admin/divergence", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"divergence", page)
+        self.assertIn(b"first_name", page)
+
+    def test_the_page_never_shows_a_real_value(self):
+        self._a_divergence()
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/divergence", cookie=cookie)
+        self.assertNotIn(b"Lovelace", page)
+        self.assertNotIn(b"Grace", page)
+
+    def test_the_dashboard_says_when_it_is_off(self):
+        self.m.settings.shadow_per_minute = 0
+        cookie = self.configured_login()
+        _, _, page = self.get("/", cookie=cookie)
+        self.assertIn(b"PCOMIRROR_SHADOW_PER_MINUTE", page)
+
+    def test_the_download_is_a_json_attachment_with_nothing_real_in_it(self):
+        self._a_divergence()
+        cookie = self.configured_login()
+        status, headers, payload = self.get("/admin/divergence/download", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("application/json", headers["Content-Type"])
+        self.assertIn("attachment", headers["Content-Disposition"])
+        rendered = json.dumps(payload)
+        self.assertNotIn("Lovelace", rendered)
+        self.assertNotIn("Grace", rendered)
+        self.assertEqual(len(payload["reports"]), 1)
+
+    def test_clearing_needs_the_csrf_token(self):
+        self._a_divergence()
+        cookie = self.configured_login()
+        self.post("/admin/divergence/clear", _form(csrf="wrong"), cookie=cookie)
+        self.assertEqual(len(divergence.recent(self.m.db)), 1)
+
+    def test_clearing_empties_the_log(self):
+        self._a_divergence()
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/divergence", cookie=cookie)
+        csrf = re.search(rb'name=csrf value="([^"]+)"', page).group(1).decode()
+        status, headers, _ = self.post("/admin/divergence/clear", _form(csrf=csrf), cookie=cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(divergence.recent(self.m.db), [])
+
+    def test_the_page_keeps_the_no_script_policy(self):
+        cookie = self.configured_login()
+        _, headers, _ = self.get("/admin/divergence", cookie=cookie)
+        self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
 
 
 if __name__ == "__main__":

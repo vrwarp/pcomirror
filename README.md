@@ -347,6 +347,58 @@ Recording never fails a request — if it cannot write, the page says the log is
 incomplete rather than quietly showing a short one. The table is capped at
 `PCOMIRROR_DIAGNOSTIC_KEEP` rows (default 1000; `0` switches recording off).
 
+### Divergence checking
+
+`/admin/divergence` records where the mirror and Planning Center disagree, so a
+wrong answer stops being something only a user notices. Off unless
+`PCOMIRROR_SHADOW_PER_MINUTE` is set above zero — it spends real PCO budget, so
+it is meant to be switched on while chasing something.
+
+**Why it has to exist.** Every freshness mechanism in this design rests on
+`updated_at` being truthful, and there is now a measured case where it is not:
+PCO demotes a previous primary email **without moving it**
+([`docs/mutation-testing.md`](docs/mutation-testing.md)). The sweep filters on
+that timestamp so the record never comes back; the monotonic writer would refuse
+it as not-newer if something did fetch it; drift counts rows and the count does
+not change. Nothing converges on it, ever. Asking PCO is the only way to see it.
+
+**How it works.** Reads served from the mirror record their *shape* — the path
+with ids and paging removed, plus the query keys. The scheduler drains that queue
+under the rate cap, and for each shape replays the query against the mirror *and*
+PCO, back to back, then compares. Replaying both sides at comparison time is what
+keeps them near-simultaneous: an edit landing between a stored response and a
+later upstream read is indistinguishable from a bug.
+
+Sampling by shape rather than uniformly is deliberate. A uniform sampler spends
+the whole budget on a thousand copies of the roster read; taking the
+least-recently-checked shape covers the API *surface* for the same cost — and the
+surface is where the bugs were, in search filters, includes, ordering and nested
+reads.
+
+**Two verdicts, and the difference is the point:**
+
+| | means | action |
+|---|---|---|
+| **staleness** | PCO's `updated_at` is newer — the mirror is simply behind | none; the sweep collects it |
+| **divergence** | they differ at the *same* `updated_at` | somebody has to look — nothing will fix this on its own |
+
+Burying the second under the first is how this feature would fail quietly, so
+they are counted and filtered separately.
+
+**What is *not* a difference** is the part that takes the work. The mirror
+differs from PCO on purpose — `links` are generated from the registry and
+rewritten relative, `meta.can_filter` is deliberately empty, `meta.mirror` is its
+own — and a naive comparison reports 100% divergence and teaches you nothing.
+Those rules live in [`pcomirror/divergence/rules.py`](pcomirror/divergence/rules.py),
+lifted out of `tests/test_golden.py` so the live check and the 81-response corpus
+cannot drift apart. Live it is *stricter* in one respect: `meta.total_count` must
+match, because the mirror holds the whole organization where the corpus is a
+sample.
+
+Both responses are stored **pseudonymised**, so the log is safe to hand to
+somebody. Download it as JSON or clear it from the page; the store is capped by
+`PCOMIRROR_SHADOW_KEEP` (default 200 reports).
+
 ### Pseudonyms
 
 [`pcomirror/pseudonym/`](pcomirror/pseudonym/) replaces the people in a payload
@@ -524,7 +576,8 @@ and exits, rather than surfacing a SQLite traceback:
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
-  `PCOMIRROR_DIAGNOSTIC_KEEP`, and the container-friendly defaults
+  `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
+  `PCOMIRROR_SHADOW_KEEP`, and the container-friendly defaults
   `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.

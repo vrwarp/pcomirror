@@ -128,6 +128,31 @@ CREATE TABLE IF NOT EXISTS diagnostic_event (
 );
 CREATE INDEX IF NOT EXISTS diagnostic_event_kind_idx ON diagnostic_event (kind, event_id);
 CREATE INDEX IF NOT EXISTS diagnostic_event_sev_idx  ON diagnostic_event (severity, event_id);
+-- One row per distinct *shape* of read the mirror has served, so the divergence
+-- checker covers the API surface rather than a thousand copies of the busiest
+-- query. `shape` has ids and paging removed; `path`/`query` are a concrete
+-- example of it, kept so the check has something real to replay.
+CREATE TABLE IF NOT EXISTS shadow_probe (
+  shape TEXT PRIMARY KEY,
+  path TEXT NOT NULL, query TEXT NOT NULL DEFAULT '{}',
+  seen INTEGER NOT NULL DEFAULT 0,
+  first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  last_checked_at TEXT, last_agreed_at TEXT
+);
+-- Where the mirror and PCO disagreed. Both bodies are stored **pseudonymised**;
+-- there is no unpseudonymised copy anywhere, so an export cannot forget to strip
+-- one. `verdict` separates lag the sweep will fix from divergence nothing will.
+CREATE TABLE IF NOT EXISTS shadow_report (
+  report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  shape TEXT NOT NULL, path TEXT NOT NULL,
+  verdict TEXT NOT NULL,                          -- divergence | staleness
+  difference_count INTEGER NOT NULL DEFAULT 0, differences TEXT NOT NULL DEFAULT '[]',
+  mirror_status INTEGER, pco_status INTEGER,
+  mirror_body TEXT, pco_body TEXT,
+  pco_request_id TEXT
+);
+CREATE INDEX IF NOT EXISTS shadow_report_verdict_idx ON shadow_report (verdict, report_id);
 CREATE VIEW IF NOT EXISTS person_custom_fields AS
 SELECT fd.person_pco_id,
        json_group_object(def.slug,

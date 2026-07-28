@@ -52,6 +52,13 @@ class Scheduler:
         if not any_backfilled:
             return
 
+        # Costs PCO budget, so it sits with the other upstream work and behind
+        # the same backfill gate: comparing against an empty mirror would report
+        # the whole organization as missing.
+        checker = getattr(self.m, "divergence", None)
+        if checker is not None and checker.enabled:
+            self._guard("divergence", checker.run_once)
+
         now = now_iso()
         for r in registry.full_and_lite():
             st = ing.state(r.name)
