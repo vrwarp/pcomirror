@@ -448,5 +448,92 @@ class TestAWriteRefreshesWhatItChanged(unittest.TestCase):
                     if method == "GET" and "household_memberships" in path)
         self.assertEqual(before, after)
 
+class TestNestedWritesLeaveTheMirrorAgreeing(unittest.TestCase):
+    """A write under a parent moves more than the row PCO hands back.
+
+    Found by sweeping every write shape the mirror serves after one of them —
+    a parent joining a household — turned out to leave the mirror disagreeing
+    with PCO in a way no read would repair.
+    """
+
+    def setUp(self):
+        self.fake = FakePCO()
+        self.fake.add_person("100", "Kid", "Reed", "2026-01-01T00:00:00Z",
+                             households={"data": [{"type": "Household", "id": "900"}]})
+        self.fake.add_person("200", "Dana", "Reed", "2026-01-01T00:00:00Z")
+        self.fake.add(res("Household", "900", {"name": "Reed Household"},
+                          relationships={"people": {"data": [{"type": "Person", "id": "100"}]}},
+                          updated="2026-01-01T00:00:00Z"))
+        self.fake.add_membership("500", "900", "100")
+        self.fake.add_child("Email", "e1", "200", {"address": "old@x.org", "primary": True},
+                            "2026-01-01T00:00:00Z")
+        self.m, _ = build(self.fake)
+        for name in ("person", "household", "email", "phone_number"):
+            self.m.ingestor.backfill(name)
+        wsgi_get(self.m.wsgi, "/people/v2/households/900/household_memberships")
+
+    def _post(self, path, attributes, rtype):
+        return wsgi_call(self.m.wsgi, "POST", path, body=json.dumps(
+            {"data": {"type": rtype, "attributes": attributes}}).encode())
+
+    # -- the owner is in the URL, whether or not the reply repeats it --------
+    def test_a_child_lands_attached_even_when_the_reply_omits_its_owner(self):
+        self.fake.echo_owner = False
+        self._post("/people/v2/people/200/phone_numbers",
+                   {"number": "555-0100", "primary": True}, "PhoneNumber")
+        _, _, page = wsgi_get(self.m.wsgi, "/people/v2/people/200/phone_numbers")
+        self.assertEqual(len(page["data"]), 1)
+        self.assertEqual(page["data"][0]["attributes"]["number"], "555-0100")
+
+    def test_a_childs_owner_is_never_guessed_for_a_sideloaded_resource(self):
+        """The hint is the URL's, so it may only ever reach the primary resource;
+        an `included[]` row belongs to somebody else by definition."""
+        self.fake.echo_owner = False
+        self._post("/people/v2/people/200/emails", {"address": "new@x.org"}, "Email")
+        owners = {r["pco_id"]: r["person_pco_id"] for r in
+                  self.m.db.query("SELECT pco_id, person_pco_id FROM email")}
+        self.assertEqual(owners["e1"], "200")            # untouched, still its own
+        self.assertTrue(all(v == "200" for v in owners.values()))
+
+    # -- siblings PCO changed without saying so ------------------------------
+    def test_the_previous_primary_is_demoted_with_pco(self):
+        self._post("/people/v2/people/200/emails",
+                   {"address": "new@x.org", "primary": True}, "Email")
+        _, _, page = wsgi_get(self.m.wsgi, "/people/v2/people/200/emails")
+        primaries = sorted(d["attributes"]["address"] for d in page["data"]
+                           if d["attributes"].get("primary"))
+        upstream = sorted(e["attributes"]["address"] for e in self.fake.data["Email"].values()
+                          if e["attributes"].get("primary"))
+        self.assertEqual(primaries, upstream)
+        self.assertEqual(primaries, ["new@x.org"])
+
+    # -- a delete addresses the record in the path, not the first segment ----
+    def test_deleting_a_child_does_not_tombstone_its_owner(self):
+        status, _, _ = wsgi_call(self.m.wsgi, "DELETE", "/people/v2/people/200/emails/e1")
+        self.assertIn(status, (200, 204))
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
+        self.assertIsNone(
+            self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='200'")["deleted_at"])
+        self.assertEqual(wsgi_get(self.m.wsgi, "/people/v2/people/200")[0], 200)
+
+    def test_a_top_level_delete_still_tombstones_the_record_itself(self):
+        wsgi_call(self.m.wsgi, "DELETE", "/people/v2/people/200")
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='200'")["deleted_at"])
+
+    # -- both ends of an edge stored on both sides ---------------------------
+    def test_a_new_member_reaches_the_household_now_and_the_person_on_the_sweep(self):
+        self._post("/people/v2/households/900/household_memberships",
+                   {"person_id": "200", "household_role": "parent_guardian"},
+                   "HouseholdMembership")
+        _, _, page = wsgi_get(self.m.wsgi, "/people/v2/households/900/household_memberships")
+        self.assertEqual(len(page["data"]), 2)           # immediately, for the caller
+        self.m.ingestor.drain_hydration()
+        _, _, doc = wsgi_get(self.m.wsgi, "/people/v2/people/200", "include=households")
+        self.assertIn(("Household", "900"),
+                      {(i["type"], i["id"]) for i in doc.get("included", [])})
+
+
 if __name__ == "__main__":
     unittest.main()

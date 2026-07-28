@@ -517,10 +517,34 @@ class Application:
             out[k] = links.to_mirror_path(v, self.s) if k.lower() == "location" else v
         return out
 
+    def _resolve_write(self, r, segs):
+        """What a write path actually addresses, at any of its four depths.
+
+        `/people`                      -> (person, None,    no parent)
+        `/people/{id}`                 -> (person, {id},    no parent)
+        `/people/{id}/emails`          -> (email,  None,    person {id})
+        `/people/{id}/emails/{e}`      -> (email,  {e},     person {id})
+
+        Read off the whole path rather than its first segment, which is what the
+        `DELETE` handler used to do: `DELETE /people/{id}/emails/{e}` tombstoned
+        `person {id}` — the owner of the record being removed — and the person
+        then read back as `410 Gone`. Deleting somebody's email address is not a
+        statement about the person, and losing a family from the mirror is not
+        something a contact edit may do.
+        """
+        if len(segs) < 3:
+            return r, (segs[1] if len(segs) >= 2 else None), None, None
+        rel = r.relationships.get(segs[2])
+        child = registry.by_name(rel.target) if rel else _SEG.get(segs[2])
+        if child is None:
+            return r, (segs[1] if len(segs) >= 2 else None), None, None
+        return child, (segs[3] if len(segs) >= 4 else None), r, segs[1]
+
     def _write_through(self, method, path, r, segs, body):
         pco_path = path[len("/people/v2"):]  # same path, host-swapped
         json_body = json.loads(body) if body else None
         target = diagnostics.redact_target(pco_path)
+        written, written_id, parent, parent_id = self._resolve_write(r, segs)
         try:
             # The outcome is recorded below, with the record id and whether the
             # mirror then accepted it — things the client cannot know.
@@ -565,81 +589,128 @@ class Application:
                     resp.body or {"errors": [{"code": str(resp.status)}]})
         # Everything below here runs AFTER Planning Center has applied the write.
         if method == "DELETE":
-            target_id = segs[1] if len(segs) >= 2 else None
-            if target_id:
-                self._record_locally(lambda: self.writer.tombstone(r.table, target_id, None, "destroyed"),
-                                     method, target, target_id, resp)
+            if written_id:
+                self._record_locally(
+                    lambda: self.writer.tombstone(written.table, written_id, None, "destroyed"),
+                    method, target, written_id, resp)
             self.diagnostics.write_outcome(
                 diagnostics.WRITE_APPLIED, diagnostics.INFO, method, target,
                 status=resp.status, duration_ms=resp.duration_ms, attempts=resp.attempts,
-                pco_request_id=resp.request_id, pco_id=target_id,
-                detail="deleted upstream and tombstoned locally")
+                pco_request_id=resp.request_id, pco_id=written_id,
+                detail=f"deleted the {written.type} upstream and tombstoned it locally")
+            # A DELETE carries no body either way, so the record it removed is
+            # named only by the path — which `_members_touched` cannot read. The
+            # far end of the edge is repaired by the sweep.
+            self._refresh_affected(r, segs, method, target, None, json_body)
             return resp.status or 204, {}, b""
         out = resp.json() or {}
         applied_id = ((out.get("data") or {}).get("id")
                       if isinstance(out.get("data"), dict) else None)
-        self._record_locally(lambda: self.writer.route_page(out, "passthrough"),
-                             method, target, applied_id, resp)
-        self._refresh_affected(r, segs, method, target)
+        # The owner is in the URL whether or not PCO's reply repeats it.
+        hint = ({"type": parent.type, "id": parent_id}
+                if parent is not None and written.owner_rel else None)
+        self._record_locally(
+            lambda: self.writer.route_page(out, "passthrough", data_owner_hint=hint),
+            method, target, applied_id, resp)
+        self._refresh_affected(r, segs, method, target, out, json_body)
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
         return resp.status, self._relay_headers(resp.headers), links.rewrite_document(out, self.s)
 
-    def _refresh_affected(self, r, segs, method: str, target: str) -> None:
+    def _refresh_affected(self, r, segs, method, target, out=None, sent=None) -> None:
         """Re-read what the write changed but PCO's answer did not describe.
 
         `route_page` applies the resource PCO *returned*, which is the one the
-        request created — and for a nested write that is not the only record that
-        moved. `POST /households/{h}/household_memberships` comes back as a
-        membership; the household it joined is now wrong in two ways the response
-        says nothing about, and neither self-repairs on read:
+        request addressed — and for a nested write that is never the only record
+        that moved. The others do not self-repair on read, and they are exactly
+        the ones a caller reads back:
 
-          * Its `relationships.people` array — which the mirror serves for
-            `include=households.people` — still lists the old members. Nothing
-            but a household fetch ever rewrites it.
-          * Its membership collection is a `nested_walk`, and the walk ledger
-            already says this household was walked, so `_ensure_walked` will not
-            re-fetch it. Whether the new row is visible then depends on whether
-            PCO's create response happened to carry the owning household id.
+          * **A `nested_walk` collection.** `POST /households/{h}/household_memberships`
+            returns a membership. The household's membership collection is only
+            servable under its parent, and the walk ledger already says this
+            household was walked, so a read will not re-fetch it. Whether the new
+            row is visible at all then rests on whether PCO's create reply echoed
+            the owning household id, which lives only in `links.self`.
+          * **The siblings of a child row.** Setting `primary: true` on a new
+            phone number demotes the old one at PCO, silently, and the response
+            describes only the new row — so the mirror kept two primaries, and a
+            caller asking for "the" number could get the one nobody answers.
+          * **Both ends of a household edge.** It is stored twice, on the
+            household's `people` array and on each member's own `households`
+            array, neither derived from the other. Refreshing only the household
+            left a parent who had just joined a family still looking
+            householdless to anything reading from their side.
 
-        Both were live: a parent added to an existing household stayed invisible
-        to the app that added them, which read back the family and found only the
-        child. Read-your-writes (DESIGN §8.4) has to mean the records the write
-        *affected*, not only the one it returned.
+        All of these were live. Read-your-writes (DESIGN §8.4) has to mean the
+        records the write *affected*, not only the one it returned.
 
-        So the walk is redone here, synchronously — one request, on a path that
-        has just made a round trip anyway — rather than by dropping the ledger
-        row and letting the next read discover it. Dropping it would turn every
-        household read into a 503 for as long as PCO was unreachable, trading a
-        staleness bug for an availability one. Failing to re-walk leaves the rows
-        that are already there: stale beats absent, and the sweep still converges.
+        The re-reads that the caller's next request depends on happen here,
+        synchronously — one request, on a path that has just made a round trip
+        anyway. The rest go to the hydration queue the scheduler already drains.
+        Re-reading rather than invalidating is deliberate: dropping a walk-ledger
+        row would make the next read discover the gap and turn every household
+        read into a `503` for as long as PCO was unreachable, which trades a
+        staleness bug for an availability one. A re-read that fails leaves the
+        rows already held — stale beats absent, and the sweep still converges.
         """
-        if method not in ("POST", "DELETE") or len(segs) < 3:
+        if method not in ("POST", "PATCH", "DELETE") or len(segs) < 3:
             return
         rel = r.relationships.get(segs[2])
         if rel is None or rel.kind != "many":
             return
-        target_resource = registry.by_name(rel.target)
-        if target_resource.method != "nested_walk":
-            return
+        child = registry.by_name(rel.target)
         parent_id = segs[1]
-        try:
-            self.ingestor.walk_parent(target_resource.name, parent_id, "passthrough")
-        except Exception as e:  # noqa: BLE001
-            etype, edetail = diagnostics.describe_error(e)
-            self.diagnostics.record(
-                diagnostics.WRITE_MIRROR_FAILED, diagnostics.WARNING,
-                method=method, target=target, pco_id=parent_id,
-                detail=f"the write was applied, but {target_resource.type} could not be "
-                       f"re-read for {r.type} {parent_id}; the collection may be stale "
-                       f"until the next sweep",
-                error_type=etype, error_detail=edetail)
-        # The parent's own payload — the `people` array on a Household — is only
-        # rewritten by fetching the parent. That is not on the critical path for
-        # the caller, so it goes to the queue the scheduler already drains.
-        try:
-            self.ingestor.enqueue_hydration(r.name, parent_id, reason="write_through")
-        except Exception:  # noqa: BLE001
-            pass
+
+        def repair(what, run) -> None:
+            try:
+                run()
+            except Exception as e:  # noqa: BLE001
+                etype, edetail = diagnostics.describe_error(e)
+                self.diagnostics.record(
+                    diagnostics.WRITE_MIRROR_FAILED, diagnostics.WARNING,
+                    method=method, target=target, pco_id=parent_id,
+                    detail=f"the write was applied, but {what} for {r.type} {parent_id} "
+                           f"could not be re-read; it may be stale until the next sweep",
+                    error_type=etype, error_detail=edetail)
+
+        if child.owner_rel and child.method != "nested_walk":
+            # One request re-reads the owner with every child included, which
+            # settles the siblings and, via `_include_diff`, anything PCO has
+            # stopped returning. It is the same call the queue would make later.
+            repair(f"its {segs[2]}", lambda: self.ingestor.hydrate(r.name, parent_id))
+            return
+
+        if child.method == "nested_walk":
+            repair(child.type,
+                   lambda: self.ingestor.walk_parent(child.name, parent_id, "passthrough"))
+
+        # The parent's own payload, and the far end of the edge. Neither is on the
+        # critical path for this response, so both go to the queue.
+        for name, pco_id in [(r.name, parent_id),
+                             *(("person", p) for p in self._members_touched(out, sent))]:
+            try:
+                self.ingestor.enqueue_hydration(name, pco_id, reason="write_through")
+            except Exception:  # noqa: BLE001
+                pass
+
+    @staticmethod
+    def _members_touched(out, sent) -> list:
+        """The people a membership write moved into or out of a household.
+
+        Read from PCO's answer where it says so, and from the request body where
+        it does not — `person_id` is how PCO documents the create, and a reply
+        that omits the relationship is exactly the case this whole method exists
+        for.
+        """
+        found = []
+        data = (out or {}).get("data")
+        if isinstance(data, dict):
+            person = ((data.get("relationships") or {}).get("person") or {}).get("data") or {}
+            if person.get("id"):
+                found.append(str(person["id"]))
+        attrs = ((sent or {}).get("data") or {}).get("attributes") or {}
+        if attrs.get("person_id"):
+            found.append(str(attrs["person_id"]))
+        return list(dict.fromkeys(found))
 
     def _record_locally(self, apply, method: str, target: str, pco_id, resp) -> None:
         """Update the mirror after a write PCO has already accepted.

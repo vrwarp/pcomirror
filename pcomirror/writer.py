@@ -182,7 +182,8 @@ class Writer:
             return frozenset()
         return frozenset(tok.partition(".")[2] for tok in include.split(",") if "." in tok)
 
-    def route_page(self, body: dict, source: str, synthesized: frozenset = frozenset()) -> int:
+    def route_page(self, body: dict, source: str, synthesized: frozenset = frozenset(),
+                   data_owner_hint: dict | None = None) -> int:
         """Apply a JSON:API list response's data[] + included[] to the mirror.
 
         `included[]` is applied *first*, so the primary representation wins.
@@ -203,7 +204,14 @@ class Writer:
             self.route(inc, source, synthesized=synthesized)
         for item in body.get("data", []) if isinstance(body.get("data"), list) else [body.get("data")]:
             if item:
-                self.route(item, source, synthesized=synthesized)
+                # The hint applies to the primary resource only. `POST
+                # /people/{id}/emails` names the owner in the URL and PCO's reply
+                # need not repeat it; without the hint the email lands with a NULL
+                # `person_pco_id` and is invisible under the person who has it.
+                # An `included[]` resource is somebody else's by definition, so it
+                # must never inherit this — that would attach one person's contact
+                # details to another.
+                self.route(item, source, owner_hint=data_owner_hint, synthesized=synthesized)
                 n += 1
         return n
 

@@ -34,6 +34,7 @@ class FakePCO:
         self.unreachable = False                      # every request fails, as in an outage
         self.request_log: list[tuple[str, str]] = []
         self.echo_self_link = True   # see _create_membership
+        self.echo_owner = True       # see _create_child
 
     # -- population --------------------------------------------------------
     def add(self, resource: dict):
@@ -169,6 +170,11 @@ class FakePCO:
     def _write(self, method, segs, body):
         if method == "POST" and len(segs) == 3 and segs[2] == "household_memberships":
             return self._create_membership(segs[1], body)
+        if method == "POST" and len(segs) == 3:
+            return self._create_child(segs[1], segs[2], body)
+        if method == "DELETE" and len(segs) == 4:
+            self.destroy(self._type_of(segs[2]), segs[3])
+            return Response(204, {}, b"")
         if self.fail_next is not None:
             status, detail = self.fail_next
             self.fail_next = None
@@ -194,6 +200,37 @@ class FakePCO:
         return Response(405, {}, b'{"errors":[{"code":"405"}]}')
 
 
+    def _create_child(self, person_id, seg, body):
+        """`POST /people/{id}/emails` and friends, with PCO's side effects.
+
+        Two things a create reply does not describe, and both bit the mirror:
+        whether it repeats the owning `person` relationship (`echo_owner` — the
+        owner is in the URL, so a mirror must not need the echo), and that
+        setting `primary` demotes whatever held it before.
+
+        The demotion deliberately leaves `updated_at` alone, because that is what
+        the live API does — measured, 2026-07-28, in `docs/mutation-testing.md`.
+        It is the whole difficulty: a change PCO makes without moving the
+        timestamp is one the sweep will never re-fetch and the monotonic writer
+        would refuse anyway, so nothing converges on it unless the write path
+        goes and looks.
+        """
+        rtype = self._type_of(seg)
+        if rtype is None:
+            return Response(404, {}, b'{"errors":[{"code":"404"}]}')
+        attrs = (json.loads(body).get("data") or {}).get("attributes") or {}
+        cid = str(next(self._ids))
+        item = self.add_child(rtype, cid, person_id, attrs, "2026-06-01T00:00:00Z")
+        if attrs.get("primary"):
+            for other in self.data.get(rtype, {}).values():
+                owner = ((other.get("relationships") or {}).get("person") or {}).get("data") or {}
+                if other["id"] != cid and owner.get("id") == str(person_id):
+                    other["attributes"]["primary"] = False
+        returned = dict(item)
+        if not self.echo_owner:
+            returned.pop("relationships", None)
+        return Response(201, {}, json.dumps({"data": returned}).encode())
+
     def _create_membership(self, household_id, body):
         """`POST /households/{id}/household_memberships`, shaped as PCO shapes it.
 
@@ -208,12 +245,21 @@ class FakePCO:
         mid = str(next(self._ids))
         item = self.add_membership(mid, household_id, person_id,
                                    role=attrs.get("household_role", "child_or_dependent"))
+        # The edge is stored on both sides at PCO, and both move together. A fake
+        # that updated only the household would have let a mirror that refreshes
+        # only the household look correct.
         household = self.data.get("Household", {}).get(str(household_id))
         if household is not None:
             members = household.setdefault("relationships", {}).setdefault(
                 "people", {"data": []})["data"]
             if not any(m["id"] == person_id for m in members):
                 members.append({"type": "Person", "id": person_id})
+        person = self.data.get("Person", {}).get(person_id)
+        if person is not None:
+            households = person.setdefault("relationships", {}).setdefault(
+                "households", {"data": []})["data"]
+            if not any(h["id"] == str(household_id) for h in households):
+                households.append({"type": "Household", "id": str(household_id)})
         returned = dict(item)
         if not self.echo_self_link:
             returned.pop("links", None)
