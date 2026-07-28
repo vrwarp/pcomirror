@@ -137,7 +137,12 @@ CREATE TABLE IF NOT EXISTS shadow_probe (
   path TEXT NOT NULL, query TEXT NOT NULL DEFAULT '{}',
   seen INTEGER NOT NULL DEFAULT 0,
   first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  last_checked_at TEXT, last_agreed_at TEXT
+  last_checked_at TEXT, last_agreed_at TEXT,
+  -- Where in the *data* this shape got to. A shape collapses every record it
+  -- could address into one row, so without a cursor it would re-check the same
+  -- person for ever — and every divergence found so far lived in one record, not
+  -- in the query. Holds the last record id checked, or the last page offset.
+  cursor TEXT
 );
 -- Where the mirror and PCO disagreed. Both bodies are stored **pseudonymised**;
 -- there is no unpseudonymised copy anywhere, so an export cannot forget to strip

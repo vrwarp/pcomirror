@@ -41,12 +41,18 @@ import json
 import re
 import time
 
+from .. import registry
 from ..config import now_iso
 from .rules import Difference, classify, compare
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
-           "MAX_PER_MINUTE", "OVERRIDE_KEY"]
+           "MAX_PER_MINUTE", "OVERRIDE_KEY", "PAGE_SIZE"]
+
+#: Rows per page when a collection shape walks its data. Big enough that a
+#: whole organization is a couple of dozen requests, small enough that one
+#: comparison is readable when it fails.
+PAGE_SIZE = 100
 
 #: Where an operator's choice is kept. Absent means "whatever the environment
 #: said", which is what a fresh install and a `docker run -e …` both expect.
@@ -171,6 +177,87 @@ class ShadowChecker:
         except Exception:  # noqa: BLE001
             pass
 
+
+    # -- rotating the window onto the data ---------------------------------
+    #
+    # A shape deliberately collapses every record it could address into one row:
+    # `/people/1` and `/people/99999` are the same *question*. But the answers
+    # are not, and the mirror is a copy of the answers — every divergence found
+    # so far lived in one record and would have been invisible in another.
+    # Checking a shape against whichever record happened to be in the last
+    # request would re-verify that one person for ever and never look at anybody
+    # else.
+    #
+    # So each shape carries a cursor through its own data, and every check moves
+    # it on: a `{id}` shape walks the mirrored ids in order, a collection shape
+    # walks its pages. Coverage of the *surface* comes from picking shapes
+    # round-robin; coverage of the *data* comes from here.
+
+    def _id_resource(self, shape: str):
+        """The resource whose id a `{id}` shape addresses, if it is one."""
+        segments = [s for s in shape.split("?")[0].split("/") if s]
+        try:
+            marker = segments.index("{id}")
+        except ValueError:
+            return None
+        from ..serving import _SEG
+        return _SEG.get(segments[marker - 1]) if marker else None
+
+    def _next_id(self, resource, cursor):
+        """The next live id after the cursor, wrapping at the end.
+
+        Ordered the way PCO orders ids — numerically — so a walk covers the
+        organization once rather than jumping about, and so the wrap is
+        detectable rather than looking like an ordinary step.
+        """
+        row = self.db.query_one(
+            f"SELECT pco_id FROM {resource.table} WHERE deleted_at IS NULL "
+            f"AND CAST(pco_id AS INTEGER) > CAST(? AS INTEGER) "
+            f"ORDER BY CAST(pco_id AS INTEGER) LIMIT 1", (cursor or "0",))
+        if row:
+            return row["pco_id"]
+        first = self.db.query_one(
+            f"SELECT pco_id FROM {resource.table} WHERE deleted_at IS NULL "
+            f"ORDER BY CAST(pco_id AS INTEGER) LIMIT 1")
+        return first["pco_id"] if first else None
+
+    def _next_offset(self, path: str, cursor) -> int:
+        """The next page of a collection, wrapping once the end is passed."""
+        segments = [s for s in path.split("?")[0].split("/") if s]
+        from ..serving import _SEG
+        resource = _SEG.get(segments[-1]) if segments else None
+        if resource is None:
+            return 0
+        held = self.db.query_one(
+            f"SELECT count(*) c FROM {resource.table} WHERE deleted_at IS NULL")["c"]
+        try:
+            nxt = int(cursor or -PAGE_SIZE) + PAGE_SIZE
+        except (TypeError, ValueError):
+            nxt = 0
+        return 0 if nxt >= max(1, held) else nxt
+
+    def target_for(self, probe) -> tuple:
+        """`(path, params, cursor)` — the shape aimed at the next slice of data."""
+        path, cursor = probe["path"], probe["cursor"]
+        params = dict(json.loads(probe["query"] or "{}"))
+        params.pop("offset", None)
+        params.pop("per_page", None)
+
+        resource = self._id_resource(probe["shape"])
+        if resource is not None:
+            nxt = self._next_id(resource, cursor)
+            if nxt is None:
+                return path, params, cursor          # nothing mirrored yet
+            segments = probe["shape"].split("?")[0].split("/")
+            concrete = [nxt if s == "{id}" else s for s in segments]
+            return "/".join(concrete), params, nxt
+
+        offset = self._next_offset(path, cursor)
+        params["per_page"] = PAGE_SIZE
+        if offset:
+            params["offset"] = offset
+        return path, params, str(offset)
+
     # -- draining ----------------------------------------------------------
     def due(self, limit: int):
         """Least-recently-checked shapes first, so coverage spreads."""
@@ -187,12 +274,16 @@ class ShadowChecker:
             return 0
         checked = 0
         for probe in self.due(budget):
+            path, params, cursor = self.target_for(probe)
             try:
-                self.check(probe["shape"], probe["path"], json.loads(probe["query"] or "{}"))
+                self.check(probe["shape"], path, params)
             except Exception as e:  # noqa: BLE001
                 self._note_failure(probe["shape"], e)
-            self.db.execute("UPDATE shadow_probe SET last_checked_at=? WHERE shape=?",
-                            (now_iso(), probe["shape"]))
+            # The cursor advances whether or not the check succeeded, so one
+            # record PCO keeps failing on cannot stall the walk behind it.
+            self.db.execute(
+                "UPDATE shadow_probe SET last_checked_at=?, cursor=? WHERE shape=?",
+                (now_iso(), cursor, probe["shape"]))
             checked += 1
         if limit is None:
             self._spend(checked)

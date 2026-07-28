@@ -372,8 +372,22 @@ later upstream read is indistinguishable from a bug.
 Sampling by shape rather than uniformly is deliberate. A uniform sampler spends
 the whole budget on a thousand copies of the roster read; taking the
 least-recently-checked shape covers the API *surface* for the same cost — and the
-surface is where the bugs were, in search filters, includes, ordering and nested
-reads.
+surface is where several of the bugs were, in search filters, includes, ordering
+and nested reads.
+
+**But a shape collapses records, and the mirror is a copy of records.** Every
+divergence found so far lived in *one* record and would have been invisible in
+another — a demoted `primary` on one email, a stale `people` array on one
+household. So each shape also carries a cursor through its own data and every
+check moves it on: a `/people/{id}` shape walks the mirrored ids in order, a
+collection shape walks its pages, both wrapping at the end. Coverage of the
+surface comes from picking shapes round-robin; coverage of the *data* comes from
+the cursor. A record nobody has ever asked the mirror for still gets verified,
+which is the case that matters, because a record nobody reads is a record nobody
+notices is wrong.
+
+The cursor advances whether or not a check succeeded, so one record PCO keeps
+failing on cannot stall the walk behind it.
 
 **Two verdicts, and the difference is the point:**
 
