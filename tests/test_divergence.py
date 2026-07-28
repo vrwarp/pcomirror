@@ -302,5 +302,116 @@ class TestWhatGetsStored(ShadowCase):
         self.assertEqual(divergence.recent(self.m.db), [])
 
 
+class TestTheRateMeansPerMinute(ShadowCase):
+    """The scheduler ticks every few seconds; the setting says *per minute*.
+
+    Spending the whole allowance on every pass — which a plain per-pass limit
+    does — makes the number mean twelve times what it claims, and the operator
+    who typed it has no way to find that out.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.clock = [0.0]
+        self.m.divergence._now = lambda: self.clock[0]
+        self.m.divergence._last_refill = -60.0
+        # Genuinely *distinct* shapes. Twenty different values of one filter
+        # collapse to one shape, which is the point of shape sampling and was
+        # briefly the reason this test measured nothing.
+        for key in ("where[grade]", "where[child]", "where[status]", "order",
+                    "include", "where[first_name]", "where[last_name]",
+                    "where[created_at]", "where[updated_at]", "where[gender]",
+                    "where[search_name]", "where[site_administrator]"):
+            wsgi_get(self.m.wsgi, "/people/v2/people", f"{key}=x")
+        for endpoint in ("emails", "phone_numbers", "addresses", "households"):
+            wsgi_get(self.m.wsgi, f"/people/v2/{endpoint}")
+        self.assertGreaterEqual(
+            self.m.db.query_one("SELECT count(*) c FROM shadow_probe")["c"], 12)
+        divergence.configure(self.m.db, 6)
+
+    def test_the_first_pass_gets_a_full_allowance(self):
+        """Turning it on should do something now, not in sixty seconds."""
+        self.assertEqual(self.m.divergence.run_once(), 6)
+
+    def test_a_second_pass_straight_afterwards_gets_nothing(self):
+        self.m.divergence.run_once()
+        self.assertEqual(self.m.divergence.run_once(), 0)
+
+    def test_twelve_fast_passes_do_not_spend_twelve_allowances(self):
+        """The exact shape of the bug: 5-second ticks, one per scheduler tick."""
+        self.m.divergence.run_once()                  # spend the initial fill
+        checked = 0
+        for _ in range(12):                           # one minute of ticks
+            self.clock[0] += 5.0
+            checked += self.m.divergence.run_once()
+        self.assertLessEqual(checked, 6, "a minute of ticks bought more than a minute")
+
+    def test_it_keeps_going_over_time(self):
+        self.m.divergence.run_once()
+        for _ in range(3):
+            self.clock[0] += 60.0
+            self.m.divergence.run_once()
+        self.assertGreaterEqual(
+            self.m.db.query_one(
+                "SELECT count(*) c FROM shadow_probe WHERE last_checked_at IS NOT NULL")["c"],
+            12)
+
+    def test_the_allowance_does_not_bank_forever(self):
+        """An hour idle must not buy an hour's worth in one pass."""
+        self.m.divergence.run_once()
+        self.clock[0] = 3600.0
+        self.assertLessEqual(self.m.divergence.run_once(), 6)
+
+
+class TestTurningItOnAndOff(unittest.TestCase):
+    def setUp(self):
+        self.m, _ = build()
+
+    def test_the_environment_is_the_default(self):
+        self.m.settings.shadow_per_minute = 4
+        rate = divergence.effective(self.m.db, self.m.settings)
+        self.assertEqual((rate["per_minute"], rate["source"]), (4, "environment"))
+
+    def test_an_override_wins_and_persists(self):
+        self.m.settings.shadow_per_minute = 4
+        divergence.configure(self.m.db, 9)
+        rate = divergence.effective(self.m.db, self.m.settings)
+        self.assertEqual((rate["per_minute"], rate["source"], rate["default"]),
+                         (9, "admin", 4))
+
+    def test_zero_is_off_and_is_a_real_choice(self):
+        """Off has to override an environment that says on, or the page's switch
+        is a lie on exactly the deployment that needs it."""
+        self.m.settings.shadow_per_minute = 10
+        divergence.configure(self.m.db, 0)
+        self.assertFalse(self.m.divergence.enabled)
+        self.assertEqual(divergence.effective(self.m.db, self.m.settings)["source"], "admin")
+
+    def test_resetting_falls_back_to_the_environment(self):
+        self.m.settings.shadow_per_minute = 4
+        divergence.configure(self.m.db, 9)
+        divergence.configure(self.m.db, None)
+        self.assertEqual(divergence.effective(self.m.db, self.m.settings),
+                         {"per_minute": 4, "source": "environment", "default": 4})
+
+    def test_it_is_clamped(self):
+        divergence.configure(self.m.db, 10_000)
+        self.assertEqual(divergence.effective(self.m.db, self.m.settings)["per_minute"],
+                         divergence.MAX_PER_MINUTE)
+
+    def test_a_corrupt_override_falls_back_rather_than_failing(self):
+        self.m.settings.shadow_per_minute = 4
+        self.m.db.set_meta(divergence.OVERRIDE_KEY, "not-a-number")
+        self.assertEqual(divergence.effective(self.m.db, self.m.settings)["per_minute"], 4)
+
+    def test_turning_it_on_makes_reads_start_enrolling(self):
+        divergence.configure(self.m.db, 0)
+        wsgi_get(self.m.wsgi, "/people/v2/people")
+        self.assertEqual(self.m.db.query("SELECT * FROM shadow_probe"), [])
+        divergence.configure(self.m.db, 5)
+        wsgi_get(self.m.wsgi, "/people/v2/people")
+        self.assertEqual(len(self.m.db.query("SELECT * FROM shadow_probe")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

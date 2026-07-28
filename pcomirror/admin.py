@@ -15,7 +15,8 @@ from . import adminauth, adminstats, apikeys, diagnostics, divergence
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics",
-         "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear")
+         "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear",
+         "/admin/divergence/configure")
 
 
 def handles(path: str) -> bool:
@@ -161,6 +162,8 @@ class AdminApp:
             return self._divergence_download()
         if path == "/admin/divergence/clear":
             return self._divergence_clear(method, body, session)
+        if path == "/admin/divergence/configure":
+            return self._divergence_configure(method, body, session)
         return self._dashboard(session, qs)
 
     # -- login ------------------------------------------------------------
@@ -477,12 +480,13 @@ class AdminApp:
     def _divergence_section(self) -> str:
         """The dashboard's line on it — mostly, whether it is even running."""
         s = divergence.summary(self.db)
-        if not getattr(self.s, "shadow_per_minute", 0):
-            return ("<h2>Divergence</h2><p class=muted>Off. Set "
-                    "<code>PCOMIRROR_SHADOW_PER_MINUTE</code> to have the mirror "
-                    "re-ask Planning Center about the reads it serves and record "
-                    "anything they disagree about. It spends PCO budget, so it is "
-                    "meant to be switched on while chasing something.</p>")
+        rate = divergence.effective(self.db, self.s)
+        if not rate["per_minute"]:
+            return ("<h2>Divergence</h2><p class=muted>Off. Have the mirror re-ask "
+                    "Planning Center about the reads it serves and record anything "
+                    "they disagree about — <a href=/admin/divergence>turn it on</a>. "
+                    "It spends PCO budget, so it is meant to be switched on while "
+                    "chasing something.</p>")
         cards = [("divergences", f"{s['divergence']:,}"),
                  ("stale (self-healing)", f"{s['staleness']:,}"),
                  ("shapes seen", f"{s['shapes']:,}"),
@@ -497,8 +501,9 @@ class AdminApp:
         return f"""
 <h2>Divergence</h2>
 <div class=cards>{cards_html}</div>{alarm}
-<p class=muted>last checked {_esc(s['last_checked'], 'never')} ·
-  {s['requests_seen']:,} reads observed · <a href=/admin/divergence>full log</a></p>"""
+<p class=muted>checking {rate['per_minute']}/min · last checked
+  {_esc(s['last_checked'], 'never')} · {s['requests_seen']:,} reads observed ·
+  <a href=/admin/divergence>full log</a></p>"""
 
     _REPORT_HEAD = ("<tr><th>when<th>verdict<th>request<th>status"
                     "<th>differences<th>pco request id</tr>")
@@ -525,7 +530,7 @@ class AdminApp:
                 f"</td></tr>")
         return "".join(rows)
 
-    def _divergence_page(self, qs, session):
+    def _divergence_page(self, qs, session, error=""):
         verdict = (qs.get("verdict", [""])[0] or "").strip()
         if verdict not in ("", "divergence", "staleness"):
             verdict = ""
@@ -540,8 +545,15 @@ class AdminApp:
         body = (f"<table>{self._REPORT_HEAD}{self._report_rows(reports)}</table>"
                 if reports else "<p class=muted>Nothing recorded — the mirror has "
                                 "agreed with Planning Center on everything checked.</p>")
+        banners = ""
+        if qs.get("saved"):
+            banners += "<p class='msg ok'>Saved.</p>"
+        if error:
+            banners += f"<p class='msg err'>{E(error)}</p>"
         return 200, _headers(), _page("Divergence", f"""
-<p class=sub>where the mirror and Planning Center disagree</p>
+<p class=sub>where the mirror and Planning Center disagree</p>{banners}
+{self._divergence_controls(csrf)}
+<h2>Log</h2>
 <p class=muted>show: {tabs}</p>
 {body}
 <p class=muted>Showing {len(reports):,} of {s['total']:,} kept.
@@ -553,6 +565,59 @@ class AdminApp:
   <input type=hidden name=csrf value="{csrf}">
   <button type=submit>Clear it</button></form>""",
             nav="<nav><a href=/>back</a></nav>")
+
+
+    def _divergence_controls(self, csrf: str) -> str:
+        """On, off, and how hard — from the page, not from a restart.
+
+        The environment sets the default; this override wins and persists,
+        because the person who wants this on at 9pm while chasing something is
+        rarely the person who can edit the container's environment and restart
+        it. `0` is off, and is spelled that way rather than as a separate switch
+        so there is one number to reason about instead of two settings that can
+        disagree.
+        """
+        rate = divergence.effective(self.db, self.s)
+        state = (f"<b>on</b>, {rate['per_minute']} checks per minute"
+                 if rate["per_minute"] else "<b>off</b>")
+        source = ("set here" if rate["source"] == "admin"
+                  else "from <code>PCOMIRROR_SHADOW_PER_MINUTE</code>")
+        revert = ("" if rate["source"] != "admin" else f"""
+  <button type=submit name=reset value=1>Back to the environment default
+    ({rate['default']}/min)</button>""")
+        return f"""
+<h2>Checking</h2>
+<p class=muted>Currently {state} — {source}. Each check re-asks Planning Center
+  about one read the mirror has served, and spends that request from the same
+  budget everything else here shares. <code>0</code> turns it off.</p>
+<form method=post action=/admin/divergence/configure>
+  <input type=hidden name=csrf value="{csrf}">
+  <label for=r>Checks per minute</label>
+  <input id=r name=per_minute type=number min=0 max={divergence.MAX_PER_MINUTE}
+         value="{rate['per_minute']}" required>
+  <p><button type=submit>Save</button>{revert}</p>
+</form>"""
+
+    def _divergence_configure(self, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/divergence")
+        form = _form(body)
+        if not adminauth.check_csrf(session, form.get("csrf")):
+            return self._divergence_page({}, session, error="Session expired — try again.")
+        if form.get("reset"):
+            divergence.configure(self.db, None)
+            return _redirect("/admin/divergence?saved=1")
+        try:
+            chosen = int((form.get("per_minute") or "").strip())
+        except ValueError:
+            return self._divergence_page(
+                {}, session, error="Checks per minute has to be a whole number.")
+        if chosen < 0 or chosen > divergence.MAX_PER_MINUTE:
+            return self._divergence_page(
+                {}, session,
+                error=f"Choose between 0 and {divergence.MAX_PER_MINUTE} checks per minute.")
+        divergence.configure(self.db, chosen)
+        return _redirect("/admin/divergence?saved=1")
 
     def _divergence_download(self):
         payload = divergence.export(self.db)

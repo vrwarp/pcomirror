@@ -395,6 +395,19 @@ cannot drift apart. Live it is *stricter* in one respect: `meta.total_count` mus
 match, because the mirror holds the whole organization where the corpus is a
 sample.
 
+**Turning it on.** `/admin/divergence` has the switch: a checks-per-minute box
+where `0` is off. `PCOMIRROR_SHADOW_PER_MINUTE` sets the default and the page
+overrides it, persistently — the person who wants this on at 9pm while chasing
+something is rarely the person who can edit the container's environment and
+restart it. One number rather than a separate on/off toggle, so there are not two
+settings that can disagree. "Back to the environment default" clears the
+override.
+
+The rate is a token bucket at N *per minute*, filled at startup so the first pass
+does something immediately. It is genuinely per minute: the scheduler ticks every
+few seconds, and a plain per-pass limit would have made the number mean twelve
+times what it said.
+
 Both responses are stored **pseudonymised**, so the log is safe to hand to
 somebody. Download it as JSON or clear it from the page; the store is capped by
 `PCOMIRROR_SHADOW_KEEP` (default 200 reports).

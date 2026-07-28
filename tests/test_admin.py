@@ -385,11 +385,12 @@ class TestDivergencePage(AdminCase):
         self.assertNotIn(b"Lovelace", page)
         self.assertNotIn(b"Grace", page)
 
-    def test_the_dashboard_says_when_it_is_off(self):
+    def test_the_dashboard_says_when_it_is_off_and_offers_the_switch(self):
         self.m.settings.shadow_per_minute = 0
         cookie = self.configured_login()
         _, _, page = self.get("/", cookie=cookie)
-        self.assertIn(b"PCOMIRROR_SHADOW_PER_MINUTE", page)
+        self.assertIn(b"Off.", page)
+        self.assertIn(b"/admin/divergence>turn it on", page)
 
     def test_the_download_is_a_json_attachment_with_nothing_real_in_it(self):
         self._a_divergence()
@@ -422,6 +423,77 @@ class TestDivergencePage(AdminCase):
         cookie = self.configured_login()
         _, headers, _ = self.get("/admin/divergence", cookie=cookie)
         self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+
+
+class TestDivergenceControls(AdminCase):
+    """On, off and how hard — without editing the environment and restarting."""
+
+    def _page_csrf(self, cookie):
+        _, _, page = self.get("/admin/divergence", cookie=cookie)
+        return re.search(rb'name=csrf value="([^"]+)"', page).group(1).decode()
+
+    def _configure(self, cookie, **fields):
+        return self.post("/admin/divergence/configure",
+                         _form(csrf=self._page_csrf(cookie), **fields), cookie=cookie)
+
+    def test_it_needs_a_session(self):
+        self.assertEqual(self.post("/admin/divergence/configure")[0], 303)
+        self.assertIsNone(self.m.db.get_meta(divergence.OVERRIDE_KEY))
+
+    def test_turning_it_on_from_the_page(self):
+        cookie = self.configured_login()
+        status, headers, _ = self._configure(cookie, per_minute="6")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/admin/divergence?saved=1")
+        self.assertTrue(self.m.divergence.enabled)
+        self.assertEqual(self.m.divergence.per_minute, 6)
+
+    def test_turning_it_off_from_the_page(self):
+        self.m.settings.shadow_per_minute = 10
+        cookie = self.configured_login()
+        self._configure(cookie, per_minute="0")
+        self.assertFalse(self.m.divergence.enabled)
+
+    def test_the_page_says_which_it_is_and_where_it_came_from(self):
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/divergence", cookie=cookie)
+        self.assertIn(b"PCOMIRROR_SHADOW_PER_MINUTE", page)
+        self._configure(cookie, per_minute="6")
+        _, _, page = self.get("/admin/divergence", cookie=cookie)
+        self.assertIn(b"6 checks per minute", page)
+        self.assertIn(b"set here", page)
+
+    def test_reverting_to_the_environment_default(self):
+        self.m.settings.shadow_per_minute = 3
+        cookie = self.configured_login()
+        self._configure(cookie, per_minute="9")
+        self._configure(cookie, reset="1")
+        self.assertEqual(self.m.divergence.per_minute, 3)
+        self.assertIsNone(self.m.db.get_meta(divergence.OVERRIDE_KEY))
+
+    def test_a_number_out_of_range_is_refused_with_a_reason(self):
+        cookie = self.configured_login()
+        status, _, page = self._configure(cookie, per_minute="10000")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Choose between 0 and", page)
+        self.assertIsNone(self.m.db.get_meta(divergence.OVERRIDE_KEY))
+
+    def test_something_that_is_not_a_number_is_refused(self):
+        cookie = self.configured_login()
+        status, _, page = self._configure(cookie, per_minute="lots")
+        self.assertEqual(status, 200)
+        self.assertIn(b"whole number", page)
+
+    def test_it_needs_the_csrf_token(self):
+        cookie = self.configured_login()
+        self.post("/admin/divergence/configure", _form(csrf="wrong", per_minute="6"),
+                  cookie=cookie)
+        self.assertIsNone(self.m.db.get_meta(divergence.OVERRIDE_KEY))
+
+    def test_the_dashboard_offers_the_switch_when_it_is_off(self):
+        cookie = self.configured_login()
+        _, _, page = self.get("/", cookie=cookie)
+        self.assertIn(b"/admin/divergence>turn it on", page)
 
 
 if __name__ == "__main__":

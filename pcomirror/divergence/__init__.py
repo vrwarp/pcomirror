@@ -39,12 +39,51 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 from ..config import now_iso
 from .rules import Difference, classify, compare
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
-           "recent", "summary", "clear", "export"]
+           "recent", "summary", "clear", "export", "effective", "configure",
+           "MAX_PER_MINUTE", "OVERRIDE_KEY"]
+
+#: Where an operator's choice is kept. Absent means "whatever the environment
+#: said", which is what a fresh install and a `docker run -e …` both expect.
+OVERRIDE_KEY = "shadow_per_minute"
+
+#: The most an operator may dial in from the page. The shared limiter stops this
+#: from hurting PCO, but a large enough number would still crowd out the reads
+#: real callers are waiting on — and nothing this feature learns is worth that.
+MAX_PER_MINUTE = 60
+
+
+def effective(db, settings) -> dict:
+    """The rate in force, and where it came from.
+
+    The environment sets the default and an operator may override it from the
+    admin page; the override wins and persists, because the person turning this
+    on mid-investigation is not the person who can edit the container's
+    environment and restart it.
+    """
+    default = max(0, getattr(settings, "shadow_per_minute", 0) or 0)
+    held = db.get_meta(OVERRIDE_KEY)
+    if held is None:
+        return {"per_minute": default, "source": "environment", "default": default}
+    try:
+        chosen = max(0, min(MAX_PER_MINUTE, int(held)))
+    except (TypeError, ValueError):
+        return {"per_minute": default, "source": "environment", "default": default}
+    return {"per_minute": chosen, "source": "admin", "default": default}
+
+
+def configure(db, per_minute) -> dict:
+    """Set the operator override, or clear it back to the environment default."""
+    if per_minute is None:
+        db.execute("DELETE FROM mirror_meta WHERE key=?", (OVERRIDE_KEY,))
+    else:
+        db.set_meta(OVERRIDE_KEY, str(max(0, min(MAX_PER_MINUTE, int(per_minute)))))
+    return {"per_minute": per_minute}
 
 #: A path segment that is a record id, replaced so `/people/1` and `/people/2`
 #: are one shape rather than two thousand.
@@ -77,16 +116,45 @@ class ShadowChecker:
     serving path and not a reimplementation of it.
     """
 
-    def __init__(self, db, client, settings, pseudonymiser, serve, recorder=None):
+    def __init__(self, db, client, settings, pseudonymiser, serve, recorder=None,
+                 monotonic=time.monotonic):
         self.db, self.client, self.s = db, client, settings
         self.pseudonymiser = pseudonymiser
         self._serve = serve
         self._recorder = recorder
+        self._now = monotonic
+        # A token bucket, because the setting says *per minute* and the scheduler
+        # ticks every few seconds. Spending the whole allowance on every pass —
+        # which is what a plain per-pass limit did — made the number mean twelve
+        # times what it claimed, and the operator who typed it had no way to tell.
+        # Started full, like the shared limiter: an operator who turns this on
+        # wants the first pass to do something, not to wait out a minute before
+        # anything happens.
+        self._tokens = 0.0
+        self._last_refill = self._now() - 60.0
 
     # -- enrolling ---------------------------------------------------------
     @property
+    def per_minute(self) -> int:
+        return effective(self.db, self.s)["per_minute"]
+
+    @property
     def enabled(self) -> bool:
-        return getattr(self.s, "shadow_per_minute", 0) > 0
+        return self.per_minute > 0
+
+    def _allowance(self) -> int:
+        """How many checks this pass may make, from time actually elapsed."""
+        rate = self.per_minute
+        if rate <= 0:
+            return 0
+        now = self._now()
+        self._tokens = min(float(rate),
+                           self._tokens + (now - self._last_refill) * rate / 60.0)
+        self._last_refill = now
+        return int(self._tokens)
+
+    def _spend(self, n: int) -> None:
+        self._tokens = max(0.0, self._tokens - n)
 
     def observe(self, path: str, qs: dict) -> None:
         """Note that a shape was asked for. Cheap, and never fails a read."""
@@ -114,7 +182,9 @@ class ShadowChecker:
         """One pass. Returns how many shapes were checked."""
         if not self.enabled:
             return 0
-        budget = self.s.shadow_per_minute if limit is None else limit
+        budget = self._allowance() if limit is None else limit
+        if budget <= 0:
+            return 0
         checked = 0
         for probe in self.due(budget):
             try:
@@ -124,6 +194,8 @@ class ShadowChecker:
             self.db.execute("UPDATE shadow_probe SET last_checked_at=? WHERE shape=?",
                             (now_iso(), probe["shape"]))
             checked += 1
+        if limit is None:
+            self._spend(checked)
         return checked
 
     def check(self, shape: str, path: str, params: dict) -> str:
