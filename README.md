@@ -366,8 +366,15 @@ still reads as a family. What does not survive is who they are.
 | address | a plausible street, city, state and postcode |
 | dates | the same year, a shifted month and day, so age and grade logic still lands |
 | booleans, numbers, timestamps, ids, relationships | **untouched** — this is what a divergence is made of |
-| free text (`medical_notes`, field values) | `«redacted»`, never fabricated |
-| anything unclassified | `«redacted»` |
+| free text (`medical_notes`, field values) | `«redacted:a3f9…»`, never fabricated |
+| anything unclassified | `«redacted:a3f9…»` |
+
+A redaction still carries a **keyed fingerprint of what it replaced**, because a
+constant marker would make every hidden value equal to every other — and then the
+one question the log is asked about those fields, *are these two the same*, could
+never be answered. Equal values tag alike; different ones do not; the tag carries
+none of the text. Free text is compared verbatim rather than case-folded, since a
+mirror holding `EpiPen` where PCO holds `epipen` is a real difference.
 
 Two properties are worth stating outright, because the package is worthless
 without either:
@@ -376,10 +383,15 @@ without either:
   fields; the day it adds one this package has not heard of, the failure has to
   be a redaction rather than a leak.
 - **Selection is keyed.** A plain hash over a thousand-name pool is a lookup
-  table anybody can rebuild. Selection is an HMAC under a secret minted per
-  install and kept in `mirror_meta`, which never appears in an export — so a log
-  on its own says nothing about who anybody is, while the same install
-  pseudonymises the same person identically for ever.
+  table anybody can rebuild. Selection is an HMAC under a key **derived from the
+  PCO credential** — nothing is minted and nothing extra has to be kept, because
+  anyone holding the token can read the real records anyway. The key is a
+  derivative, never the token itself, and never appears in an export. Two
+  organizations map the same person differently; one organization maps them
+  identically for ever, and the mapping survives a rebuilt database.
+
+  The consequence to know about: **rotating the PAT re-pseudonymises everything**,
+  so logs from either side of a rotation cannot be compared.
 
 Record **ids are kept**, deliberately: they are how two responses are lined up
 against each other, and they identify nobody without access to the organization

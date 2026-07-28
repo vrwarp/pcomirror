@@ -20,41 +20,56 @@ to the organization they came from; names are not.
     p = pseudonym.Pseudonymiser(secret)
     safe = p.document(body)
 
-The secret is per install, generated on first use and stored in `mirror_meta`.
-It never appears in an export. Two installs pseudonymise the same person
-differently; one install always pseudonymises them the same way, for ever — which
-is what makes two logs taken a month apart comparable.
+The key is derived from the PCO credential. Nothing is minted and nothing extra
+has to be kept: anyone holding the token can read the real records anyway, so a
+key derived from it guards exactly what it should and adds no new secret to lose.
+It also means the mapping survives a rebuild — throw the database away, backfill
+again, and yesterday's log still lines up with today's.
+
+Two consequences worth knowing. Two organizations pseudonymise the same person
+differently, which is right. And **rotating the PAT re-pseudonymises everything**,
+so logs from before and after a rotation cannot be compared — an acceptable price
+for having no second secret, but not a surprise anybody should meet in the middle
+of an investigation.
 """
 from __future__ import annotations
 
-import secrets
+import hashlib
+import hmac
 
 from . import fields, pools, values
 from .fields import kind_of
-from .values import REDACTED, Chooser, pseudonymise
+from .values import REDACTED_PREFIX, Chooser, pseudonymise, redacted
 
-__all__ = ["Pseudonymiser", "REDACTED", "kind_of", "fields", "pools", "values",
-           "SECRET_META_KEY", "secret_for"]
+__all__ = ["Pseudonymiser", "REDACTED_PREFIX", "redacted", "kind_of",
+           "fields", "pools", "values", "secret_for", "derive_key"]
 
-#: Where the per-install secret lives. Not a credential for anything — losing it
-#: costs only the ability to compare a new log against an old one.
-SECRET_META_KEY = "pseudonym_secret"
+#: Domain separator, so the pseudonym key is a *derivative* of the credential and
+#: never the credential itself. HMAC does not leak its key, but a key that is
+#: literally the PAT is one careless log line away from being the PAT.
+_KEY_INFO = b"pcomirror/pseudonym/v1"
+
+#: Used when no credential is configured at all — tests and a bare dev box, where
+#: there is no real organization and so nothing to protect. Named so that a
+#: pseudonym produced under it is obviously not protecting anything.
+_NO_CREDENTIAL = b"pcomirror-insecure-development-key"
 
 
-def secret_for(db) -> bytes:
-    """The install's pseudonym secret, minted on first use.
+def derive_key(credential: str | bytes) -> bytes:
+    """A pseudonym key from the PCO credential, which never appears in a log."""
+    raw = credential.encode() if isinstance(credential, str) else (credential or b"")
+    return hmac.new(raw or _NO_CREDENTIAL, _KEY_INFO, hashlib.sha256).digest()
 
-    Kept in the database rather than the environment so it survives a restart
-    without an operator having to know it exists, and so a pseudonym stays stable
-    across the life of the deployment. A rotated secret is not a disaster — it
-    just means logs from before and after no longer line up.
+
+def secret_for(settings) -> bytes:
+    """The install's pseudonym key.
+
+    Both halves of the Personal Access Token go in, so two organizations on the
+    same host never share a mapping even if one of them is misconfigured.
     """
-    held = db.get_meta(SECRET_META_KEY)
-    if held:
-        return bytes.fromhex(held)
-    minted = secrets.token_bytes(32)
-    db.set_meta(SECRET_META_KEY, minted.hex())
-    return minted
+    app_id = getattr(settings, "pco_app_id", "") or ""
+    secret = getattr(settings, "pco_secret", "") or ""
+    return derive_key(f"{app_id}:{secret}" if (app_id or secret) else "")
 
 
 class Pseudonymiser:

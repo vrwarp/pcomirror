@@ -33,7 +33,20 @@ from .fields import (CITY, DATE, EMAIL, FIRST, FREE_TEXT, FULL_NAME, HOUSEHOLD_N
 
 #: What an unclassified or free-text value becomes. Deliberately not plausible:
 #: nobody should ever read one of these and think it is content.
-REDACTED = "«redacted»"
+#:
+#: It carries a keyed fingerprint of what it replaced, because the alternative
+#: was worse than useless. A constant marker makes *every* redacted value equal
+#: to every other, so the one question a divergence log is asked about these
+#: fields — are these two the same or not — could never be answered: a mirror
+#: holding one medical note and PCO holding a different one read as identical,
+#: which is a divergence report that hides the divergence.
+REDACTED_PREFIX = "«redacted:"
+REDACTED_SUFFIX = "»"
+
+#: Domain separator for fingerprints, deliberately *not* the attribute name: the
+#: same text in two different fields should fingerprint the same, so "this value
+#: moved" and "these two records share a value" stay visible.
+_FINGERPRINT_DOMAIN = "redacted-fingerprint"
 
 _DIGIT = re.compile(r"\d")
 _HOUSEHOLD_SUFFIX = re.compile(r"^(.*?)(\s+Household)$", re.IGNORECASE)
@@ -56,12 +69,33 @@ class Chooser:
         mac = hmac.new(self._secret, f"{kind}\0{_norm(value)}".encode(), hashlib.sha256)
         return int.from_bytes(mac.digest(), "big")
 
+    def fingerprint(self, value: str) -> str:
+        """A short keyed tag: equal values tag alike, different ones do not.
+
+        Deliberately over the value **verbatim**, where every other mapping here
+        folds case and whitespace first. Folding is right for a name, because
+        that is how PCO matches one; it is wrong here, because a mirror holding
+        `"EpiPen"` where PCO holds `"epipen"` is a real difference and the whole
+        job of this tag is to make a difference visible.
+
+        Keyed, like everything else, so a short value out of a small space — a
+        status string, an id — cannot be recovered by hashing the candidates.
+        """
+        mac = hmac.new(self._secret,
+                       f"{_FINGERPRINT_DOMAIN}\0{value}".encode(), hashlib.sha256)
+        return mac.hexdigest()[:10]
+
     def pick(self, kind: str, value: str, pool) -> str:
         return pool[self.digest(kind, value) % len(pool)]
 
     def number(self, kind: str, value: str, low: int, high: int) -> int:
         span = max(1, high - low + 1)
         return low + self.digest(kind, value) % span
+
+
+def redacted(chooser: Chooser, value: str) -> str:
+    """The marker for a value that may not be shown, tagged so it can be compared."""
+    return f"{REDACTED_PREFIX}{chooser.fingerprint(str(value))}{REDACTED_SUFFIX}"
 
 
 def _first(c: Chooser, v: str) -> str:
@@ -102,7 +136,7 @@ def _email(c: Chooser, v: str) -> str:
     """
     raw = str(v).strip()
     if raw.count("@") != 1 or not all(raw.split("@")):
-        return REDACTED
+        return redacted(c, v)
     local, _, _domain = raw.partition("@")
     person = f"{_first(c, local)}.{_last(c, local)}".lower()
     tag = c.number(EMAIL, raw, 1, 99)
@@ -120,7 +154,7 @@ def _phone(c: Chooser, v: str) -> str:
     """
     raw = str(v)
     if not _DIGIT.search(raw):
-        return REDACTED
+        return redacted(c, v)
     # A leading country code is kept. It identifies a country, not a person, and
     # the mirror's two phone filters turn on it — `search_phone_number` matches a
     # digits *suffix* while `search_phone_number_e164` is exact, so a scrambled
@@ -143,7 +177,7 @@ def _postcode(c: Chooser, v: str) -> str:
     """Digits swapped, format kept — a UK postcode stays UK-shaped."""
     raw = str(v)
     if not _DIGIT.search(raw):
-        return REDACTED
+        return redacted(c, v)
     replacement = iter(
         str(c.number(POSTCODE, f"{raw}#{i}", 0, 9)) for i in range(len(raw)))
     return _DIGIT.sub(lambda _: next(replacement), raw)
@@ -163,7 +197,7 @@ def _date(c: Chooser, v: str) -> str:
     # fragment surviving under the one kind that looked safest.
     match = re.match(r"^(\d{4})-(\d{2})-(\d{2})(T[0-9:.+\-Z]*)?$", raw)
     if not match:
-        return REDACTED
+        return redacted(c, v)
     year, _month, _day, tail = match.groups()
     shifted_month = c.number(DATE, f"{raw}#m", 1, 12)
     shifted_day = c.number(DATE, f"{raw}#d", 1, 28)
@@ -200,6 +234,6 @@ def pseudonymise(chooser: Chooser, kind: str, value):
     if not value.strip():
         return value
     if kind in (FREE_TEXT, OPAQUE):
-        return REDACTED
+        return redacted(chooser, value)
     generator = _GENERATORS.get(kind)
-    return generator(chooser, value) if generator else REDACTED
+    return generator(chooser, value) if generator else redacted(chooser, value)
