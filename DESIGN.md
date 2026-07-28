@@ -901,10 +901,12 @@ def write_through(req, ctx):                        # caller's api-key must hold
   limiter.acquire(priority='passthrough')           # writes spend the shared PCO budget too
 
   # 1) The equivalent PCO RPC — same method + path + JSON:API body, host-swapped.
+  #    Sent ONCE. A mutation is never replayed: see "Indeterminate writes" below.
   try:
       resp = pco.request(req.method, pco_path, body=req.body, auth=PCO_PAT)
-  except (Timeout, ConnError):                      # PCO unreachable
-      return 504, mirror_error("upstream_unreachable")     # nothing written locally
+  except (Timeout, ConnError):                      # answer lost — MAY have applied
+      return 504, mirror_error("upstream_response_lost",   # nothing written locally
+                               write_indeterminate=True, safe_to_retry=False)
 
   # 2) FAIL IF IT FAILS — any non-2xx is the caller's failure; the mirror is untouched.
   if not resp.ok:                                   # 400/401/403/404/409/422/429/5xx…
@@ -949,7 +951,36 @@ design.)*
   PCO also fires is an idempotent no-op (same or older `updated_at`). A `POST`
   yields the new `pco_id`, inserted immediately so the very next local read sees it.
 - **Failure = safe.** If the PCO call errors, nothing is written locally and the
-  caller gets PCO's status (or a `502`); the mirror never diverges from PCO.
+  caller gets PCO's status (or a `504`); the mirror never diverges from PCO.
+
+**Indeterminate writes — a mutation is sent exactly once.**
+
+"Failure = safe" is a statement about the *mirror*, not about PCO. There is one
+case where the mirror stays clean and PCO does not: a write that arrived, was
+applied, and whose response was lost on the way back. A dropped socket, a read
+timeout, and a `502`/`504` from whatever sits in front of PCO all look identical
+from here — and in every one of them the record may already exist.
+
+PCO has no idempotency key to send, so that ambiguity cannot be resolved by
+retrying; it can only be *duplicated* by retrying. Therefore:
+
+- **`GET` is retried; `POST`/`PATCH`/`DELETE` are not.** Neither on a transport
+  error nor on a `5xx`, which is the same rule stated in two places that must
+  agree. The one exception is `429`: a limiter refuses *before* the request
+  reaches anything that could apply it, so a replay cannot create a second
+  record whatever the verb.
+- **The caller is told, in terms it can act on.** `504` with
+  `meta.write_indeterminate: true` and `meta.safe_to_retry: false`. This is the
+  one failure a status code alone describes wrongly — every `5xx` reads as "try
+  again" to a well-behaved client, and here that is the wrong move. The
+  resolution is to read the record back, not to send the write again.
+
+*Why this is spelled out at this length:* it was not, and both halves regressed
+at once. The status path retried writes the transport path was written to
+protect, and the lost-response case fell through to a bare `500` — which told an
+otherwise-correct caller to retry, five times, creating five copies of one
+parent on a real family's record before reporting that PCO could not be reached
+at all.
 
 **Two strictly separated credential planes:** local `api_key` (hashed, scoped —
 `read:*` / `passthrough` / `write` — with a per-key local rate + pass-through
