@@ -198,5 +198,82 @@ class GuardAllows(unittest.TestCase):
         self.assertEqual(self.guard.counts, {})
 
 
+class TestChildCollections(unittest.TestCase):
+    """Contact details on the test record — and on nothing else.
+
+    Added so the live procedure can observe what PCO does to a resource's
+    *siblings*: setting `primary` demotes whatever held it before, silently, and
+    the create response does not mention it. That is unobservable without a real
+    write, and it is a real divergence when a mirror misses it.
+    """
+
+    def setUp(self):
+        self.guard = MutationGuard(Unreachable())
+        self.guard.created_id = CREATED
+
+    def _body(self, rtype="Email", **attrs):
+        return json.dumps({"data": {"type": rtype, "attributes": attrs or {"address": "x@y.z"}}}).encode()
+
+    def _post(self, sub, body=None):
+        return self.guard.send("POST", f"{PCO}{sub}", {}, body if body is not None else self._body())
+
+    def test_refused_when_not_armed(self):
+        with self.assertRaises(MutationRefused):
+            self._post(f"/people/{CREATED}/emails")
+
+    def test_refused_for_a_record_this_session_did_not_create(self):
+        self.guard.arm("add_child")
+        with self.assertRaises(MutationRefused):
+            self._post(f"/people/{SOMEBODY_ELSE}/emails")
+
+    def test_refused_when_nothing_was_created(self):
+        self.guard.created_id = None
+        self.guard.arm("add_child")
+        with self.assertRaises(MutationRefused):
+            self._post(f"/people/{CREATED}/emails")
+
+    def test_refused_for_a_collection_outside_the_allowlist(self):
+        self.guard.arm("add_child")
+        for collection in ("households", "workflow_cards", "notes", "field_data"):
+            with self.assertRaises(MutationRefused):
+                self._post(f"/people/{CREATED}/{collection}")
+
+    def test_refused_when_the_type_does_not_match_the_collection(self):
+        self.guard.arm("add_child")
+        with self.assertRaises(MutationRefused):
+            self._post(f"/people/{CREATED}/emails", self._body(rtype="PhoneNumber"))
+
+    def test_refused_when_the_body_would_attach_it_to_another_record(self):
+        self.guard.arm("add_child")
+        body = json.dumps({"data": {"type": "Email", "attributes": {"address": "x@y.z"},
+                                    "relationships": {"person": {"data": {"id": SOMEBODY_ELSE}}}}}).encode()
+        with self.assertRaises(MutationRefused):
+            self._post(f"/people/{CREATED}/emails", body)
+
+    def test_arming_is_spent_so_a_stray_call_cannot_ride_along(self):
+        self.guard.arm("add_child")
+        # A legitimate call gets through the checks and reaches the transport,
+        # which is `Unreachable` here — so the AssertionError *is* the proof that
+        # the guard allowed it. What matters is what it left behind.
+        with self.assertRaises(AssertionError):
+            self._post(f"/people/{CREATED}/emails")
+        self.assertIsNone(self.guard.armed)
+        with self.assertRaises(MutationRefused):     # the next one is not armed
+            self._post(f"/people/{CREATED}/emails")
+
+    def test_the_limit_is_enforced(self):
+        for _ in range(LIMITS["add_child"]):
+            self.guard.arm("add_child")
+            self.guard.counts["add_child"] = self.guard.counts.get("add_child", 0) + 1
+        with self.assertRaises(MutationRefused):
+            self.guard.arm("add_child")
+
+    def test_a_top_level_create_is_unaffected(self):
+        self.guard.arm("create")
+        with self.assertRaises(MutationRefused):     # no sentinel surname
+            self.guard.send("POST", f"{PCO}/people", {}, json.dumps(
+                {"data": {"type": "Person", "attributes": {"last_name": "Real"}}}).encode())
+
+
 if __name__ == "__main__":
     unittest.main()

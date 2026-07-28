@@ -111,6 +111,23 @@ CREATE TABLE IF NOT EXISTS nested_walk_state (
   row_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (resource_type, parent_pco_id)
 );
+-- What was asked of Planning Center and what came back, for the questions that
+-- can only be asked after the fact. Every mutation, and every upstream failure
+-- including ones a retry recovered from. No bodies, no headers beyond a chosen
+-- few, and no query-parameter values — see diagnostics.py for why.
+CREATE TABLE IF NOT EXISTS diagnostic_event (
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,     -- also the tie-break: `at` is only second-precision
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  kind TEXT NOT NULL,                             -- write.applied | write.lost | upstream.error | …
+  severity TEXT NOT NULL DEFAULT 'info',          -- info | warning | error
+  method TEXT, target TEXT,                       -- target carries query *keys* only
+  status INTEGER, duration_ms INTEGER, attempts INTEGER,
+  pco_id TEXT,
+  pco_request_id TEXT,                            -- PCO's x-request-id: what their support can look up
+  detail TEXT, error_type TEXT, error_detail TEXT
+);
+CREATE INDEX IF NOT EXISTS diagnostic_event_kind_idx ON diagnostic_event (kind, event_id);
+CREATE INDEX IF NOT EXISTS diagnostic_event_sev_idx  ON diagnostic_event (severity, event_id);
 CREATE VIEW IF NOT EXISTS person_custom_fields AS
 SELECT fd.person_pco_id,
        json_group_object(def.slug,

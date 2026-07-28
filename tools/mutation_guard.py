@@ -40,10 +40,22 @@ FORBIDDEN_ATTRIBUTES = frozenset({
     "login_identifier", "medical_notes", "avatar",
 })
 
+#: Child collections a test record may be given, and the JSON:API type each one
+#: takes. Contact details on a record that exists only to be deleted are the one
+#: safe way to observe what PCO does to a resource's *siblings* — setting
+#: `primary` demotes whatever held it before, and the create response does not
+#: say so.
+CHILD_COLLECTIONS = {
+    "emails": "Email",
+    "phone_numbers": "PhoneNumber",
+    "addresses": "Address",
+}
+
 #: How many times each operation may run in a single session. Patching is allowed
 #: more than once because finding a value the API actually rejects takes probing,
-#: and every attempt is still confined to the record this run created.
-LIMITS = {"create": 1, "patch": 4, "delete": 1}
+#: and every attempt is still confined to the record this run created. So is
+#: `add_child`, which needs at least two sends to observe a demotion at all.
+LIMITS = {"create": 1, "patch": 4, "add_child": 4, "delete": 1}
 
 
 class MutationRefused(RuntimeError):
@@ -84,6 +96,10 @@ class MutationGuard:
         if method == "GET":
             return self._forward(method, url, headers, body, sub)
         if method == "POST":
+            if len([s for s in sub.split("/") if s]) == 3:     # /people/{id}/{collection}
+                self._check_child(sub, body)
+                self._spend("add_child")
+                return self._forward(method, url, headers, body, sub)
             self._check_create(sub, body)
             self._spend("create")
             return self._forward(method, url, headers, body, sub)
@@ -118,6 +134,35 @@ class MutationGuard:
         if not str(attrs.get("last_name", "")).startswith(self.sentinel_prefix):
             raise MutationRefused("refusing to create a person without the test sentinel")
         self._check_shared(data, attrs)
+
+    def _check_child(self, sub: str, body: bytes) -> None:
+        """A contact detail on the record this run created, and nowhere else.
+
+        The same rule as `PATCH`/`DELETE` — the id in the path must be the one
+        this session made — plus a fixed set of collections, so a stray call
+        cannot reach a household, a workflow, or anything that would attach the
+        test record to a real one.
+        """
+        if self.armed != "add_child":
+            raise MutationRefused(f"POST {sub} while not armed to add a child")
+        if not self.created_id:
+            raise MutationRefused("nothing was created in this session to add a child to")
+        segments = [s for s in sub.split("/") if s]
+        collection = segments[2]
+        if segments[:2] != ["people", str(self.created_id)]:
+            raise MutationRefused(
+                f"a child may only be added to the person this session created "
+                f"({self.created_id}), not {sub}")
+        if collection not in CHILD_COLLECTIONS:
+            raise MutationRefused(
+                f"{collection!r} is not a collection this guard will write to; "
+                f"allowed: {sorted(CHILD_COLLECTIONS)}")
+        data = _data(body)
+        if data.get("type") != CHILD_COLLECTIONS[collection]:
+            raise MutationRefused(
+                f"{collection} takes a {CHILD_COLLECTIONS[collection]}, "
+                f"got {data.get('type')!r}")
+        self._check_shared(data, data.get("attributes") or {})
 
     def _check_targeted(self, operation: str, sub: str) -> None:
         """`PATCH`/`DELETE` may only ever address the record this run created."""

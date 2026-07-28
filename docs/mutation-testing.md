@@ -37,6 +37,42 @@ applies PCO's *response* rather than the caller's request body. The `422` case
 confirms both halves live: the request tried to set `first_name` and `nickname`
 to a sentinel string, and neither reached the mirror.
 
+### A second run: child collections (2026-07-28)
+
+Run against an organization of 1,925 people. Census before and after: **1925**.
+Four writes, all against one sentinel person created and deleted by the session:
+`POST /people`, two `POST /people/{id}/emails`, `DELETE /people/{id}`.
+
+| Question | Answer |
+|---|---|
+| Does a child create echo its owning `person` relationship? | **Yes** — `relationships: ["person"]` is present, so the URL-derived owner hint is belt-and-braces here rather than load-bearing. It is still sent, because a mirror that *needs* the echo is one bad release away from orphaning every row. |
+| Does setting `primary: true` demote the one that held it? | **Yes**, silently — PCO returns only the new record and says nothing about the old one. |
+| Does the demoted record's `updated_at` move? | **No.** Both stamps were `2026-07-28T15:06:28Z`, before and after. |
+
+That last row is the one that matters. A side effect PCO applies **without
+moving `updated_at`** is invisible to everything the mirror uses to stay fresh:
+the incremental sweep filters on `where[updated_at][gt]=<watermark>`, so the
+demoted row never comes back, and the canonical writer's monotonic guard would
+refuse it as not-newer even if it did. Nothing converges on it, ever. The mirror
+would have gone on reporting two primary email addresses for that person
+indefinitely — and a caller asking for "the" number would have had even odds of
+the one nobody answers.
+
+So the fix cannot be "wait for the sweep": the write path re-reads the owner with
+its children after any nested write, which is the only moment the divergence is
+knowable. Verified end to end in this run — PCO and the mirror agreed on both
+records afterwards.
+
+**A measurement trap worth recording**, because it produced a confident wrong
+answer first time round: `SELECT "primary" FROM email` does not error. There is
+no such column — the projection is `is_primary` — and SQLite falls back to
+treating a double-quoted unknown identifier as a *string literal*, so every row
+came back with the truthy value `'primary'` and the mirror appeared to have
+missed the demotion when it had not. `PRAGMA table_info` will not help you spot
+it either: it omits generated columns. Use `PRAGMA table_xinfo`, and prefer
+single quotes for literals so a typo in a column name is an error rather than a
+plausible result.
+
 ## A finding about Planning Center's validation
 
 Three of four deliberately invalid values were **accepted with `200`** and the

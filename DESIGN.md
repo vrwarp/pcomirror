@@ -935,6 +935,20 @@ def write_through(req, ctx):                        # caller's api-key must hold
   `created`/`updated`/`destroyed` webhook for the same change; because it carries
   the same-or-newer `updated_at`, the canonical monotonic writer makes it an
   idempotent no-op — belt-and-suspenders, never a double-apply.
+- **Read-your-writes covers what the write *affected*, not only what it
+  returned.** `route_page` applies the resource PCO sent back, and for a nested
+  write that is not the only record that moved. `POST /households/{h}/household_memberships`
+  returns a membership; the household it joined is now wrong in two ways the
+  response says nothing about, and neither self-repairs on read — its
+  `relationships.people` array (which `include=households.people` is served
+  from) still lists the old members, and its membership collection is a
+  `nested_walk` whose ledger already says it was walked, so a read will not
+  re-fetch it. So the walk is redone synchronously as part of the write, and the
+  parent record is queued for hydration. Failing to re-walk leaves the rows
+  already held rather than failing the write: stale beats absent, and the sweep
+  converges. (The walk is *redone* rather than the ledger *dropped* — dropping it
+  would turn every household read into a `503` for as long as PCO was
+  unreachable, trading a staleness bug for an availability one.)
 - **Read-your-writes**, *best-effort*. A `POST` inserts the new `pco_id`
   immediately, so the very next local read (even before the webhook lands) sees
   the change. If that local insert itself fails, the request still succeeds —
