@@ -115,9 +115,6 @@ class TestPassThrough(unittest.TestCase):
         self.assertIsNotNone(m.db.query_one("SELECT 1 FROM person WHERE pco_id='77'"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestWritesAreNeverReplayed(unittest.TestCase):
     """A mutation is sent to PCO exactly once, and a lost answer says so.
@@ -305,3 +302,52 @@ class TestRelayedHeaders(unittest.TestCase):
         self.assertEqual(status, 422)
         self.assertLengthMatchesBody(headers, raw)
         self.assertNotIn("connection", {k.lower() for k in headers})
+
+
+class TestMirrorFailureAfterAWriteLands(unittest.TestCase):
+    """A write PCO accepted must not be reported as a failure the caller can retry.
+
+    Everything after the upstream call runs with the record already created. The
+    blanket handler turned any exception there into a bare 500 — the same
+    "please send it again" a lost response used to produce, and repeatable,
+    because the same payload raises the same way every time.
+    """
+
+    def _post(self, m):
+        body = json.dumps({"data": {"type": "Person",
+                                    "attributes": {"first_name": "Dana", "last_name": "Reed"}}}).encode()
+        return wsgi_call(m.wsgi, "POST", "/people/v2/people", body=body)
+
+    def test_a_broken_mirror_write_does_not_fail_the_request(self):
+        m, fake = build()
+        boom = RuntimeError("projection blew up")
+
+        def explode(*a, **k):
+            raise boom
+
+        m.writer.route_page = explode
+        noted = []
+        m.wsgi.log_mirror_failure = lambda *a: noted.append(a)
+
+        status, _, out = self._post(m)
+        # PCO created the person, so the caller is told so — exactly once.
+        self.assertEqual(status, 201)
+        self.assertEqual(sum(1 for method, _ in fake.request_log if method == "POST"), 1)
+        self.assertEqual(len(fake.data.get("Person", {})), 1)
+        self.assertEqual(out["data"]["attributes"]["first_name"], "Dana")
+        # And it is not silent: somebody has to be able to find out.
+        self.assertEqual(len(noted), 1)
+        self.assertIs(noted[0][2], boom)
+
+    def test_a_broken_tombstone_does_not_fail_a_delete(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "Lovelace", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.writer.tombstone = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no"))
+        m.wsgi.log_mirror_failure = lambda *a: None
+        status, _, _ = wsgi_call(m.wsgi, "DELETE", "/people/v2/people/1")
+        self.assertIn(status, (200, 204))
+        self.assertEqual(sum(1 for method, _ in fake.request_log if method == "DELETE"), 1)
+
+if __name__ == "__main__":
+    unittest.main()
