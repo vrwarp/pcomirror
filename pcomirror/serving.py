@@ -8,6 +8,7 @@ plain WSGI app so it runs on the stdlib server and is trivially unit-testable.
 from __future__ import annotations
 
 import json
+import sys
 import urllib.parse
 
 from . import apikeys, links, registry
@@ -542,14 +543,44 @@ class Application:
         if not resp.ok:  # FAIL IF IT FAILS — mirror untouched, relay PCO's status
             return (resp.status, self._relay_headers(resp.headers),
                     resp.body or {"errors": [{"code": str(resp.status)}]})
+        # Everything below here runs AFTER Planning Center has applied the write.
         if method == "DELETE":
             if len(segs) >= 2:
-                self.writer.tombstone(r.table, segs[1], None, "destroyed")
+                self._record_locally(lambda: self.writer.tombstone(r.table, segs[1], None, "destroyed"),
+                                     method, pco_path)
             return resp.status or 204, {}, b""
         out = resp.json() or {}
-        self.writer.route_page(out, "passthrough")
+        self._record_locally(lambda: self.writer.route_page(out, "passthrough"), method, pco_path)
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
         return resp.status, self._relay_headers(resp.headers), links.rewrite_document(out, self.s)
+
+    def _record_locally(self, apply, method: str, pco_path: str) -> None:
+        """Update the mirror after a write PCO has already accepted.
+
+        Failing this must not fail the *request*. The record exists upstream by
+        the time this runs, and the blanket handler above turns any exception
+        into a bare 500 — which tells the caller to retry a write that already
+        succeeded. That is the same duplicate-creating shape as a lost response,
+        arriving by a different door, and it would be perfectly repeatable: the
+        same payload raises the same way every time, so every retry would land
+        another record.
+
+        The cost of swallowing it is read-your-writes (DESIGN §8.4): the very
+        next local read may not see the change. That is a real regression and a
+        small one — the reconcile sweep and PCO's own `created`/`updated` webhook
+        both converge on the truth, and a stale read repairs itself within
+        minutes. A duplicate person on a family's record does not.
+        """
+        try:
+            apply()
+        except Exception as e:  # noqa: BLE001
+            self.log_mirror_failure(method, pco_path, e)
+
+    def log_mirror_failure(self, method: str, pco_path: str, error: Exception) -> None:
+        """Overridable seam so a deployment can alert on this; stderr by default."""
+        print(f"[write-through] {method} {pco_path} succeeded at Planning Center but the "
+              f"mirror could not record it: {type(error).__name__}: {error}. The mirror "
+              f"will catch up on the next reconcile or webhook.", file=sys.stderr, flush=True)
 
     # -- pass-through (non-mirrorable / miss / freshness) -----------------
     def _passthrough(self, method, path, qs, body, scopes=None):

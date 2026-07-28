@@ -935,8 +935,13 @@ def write_through(req, ctx):                        # caller's api-key must hold
   `created`/`updated`/`destroyed` webhook for the same change; because it carries
   the same-or-newer `updated_at`, the canonical monotonic writer makes it an
   idempotent no-op — belt-and-suspenders, never a double-apply.
-- **Read-your-writes.** A `POST` inserts the new `pco_id` immediately, so the very
-  next local read (even before the webhook lands) sees the change.
+- **Read-your-writes**, *best-effort*. A `POST` inserts the new `pco_id`
+  immediately, so the very next local read (even before the webhook lands) sees
+  the change. If that local insert itself fails, the request still succeeds —
+  PCO has already accepted the write, and failing the response would invite a
+  retry that creates a second record. The failure is logged and the mirror
+  converges on the next reconcile or webhook. Read-your-writes is the weaker
+  promise of the two, and it is the one that yields.
 
 *(This deliberately couples writes to PCO availability: if PCO is down, writes
 fail — which is what "always call PCO and fail if it fails" requires. If you ever
