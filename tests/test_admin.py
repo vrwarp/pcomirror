@@ -1,12 +1,13 @@
 """The operator page: bootstrap login, forced password change, keys, stats."""
 from __future__ import annotations
 
+import json
 import re
 import unittest
 import urllib.parse
 
 from base import build, wsgi_call, wsgi_get
-from pcomirror import adminauth, apikeys
+from pcomirror import adminauth, apikeys, diagnostics
 
 SECRET = "sec"                      # base.build() sets pco_secret="sec"
 GOOD_PASSWORD = "a-long-enough-password"
@@ -250,6 +251,103 @@ class TestIsolation(AdminCase):
 
     def test_health_endpoints_unaffected(self):
         self.assertEqual(self.get("/healthz")[0], 200)
+
+
+class TestDiagnosticsPage(AdminCase):
+    """The log, and the two things it must never do: leak, or open.
+
+    Built after an incident whose cause could only have been read off a stderr
+    line nobody captured, in a container that had since been replaced.
+    """
+
+    def _api(self, scopes="read:*,write,passthrough") -> dict:
+        """A machine credential. This suite runs with `allow_anonymous` off, so a
+        request without one 401s before it ever reaches the code being recorded."""
+        return {"Authorization": f"Bearer {apikeys.create(self.m.db, 'app', scopes)}"}
+
+    def _write_something(self):
+        body = json.dumps({"data": {"type": "Person",
+                                    "attributes": {"first_name": "Dana",
+                                                   "last_name": "Reed"}}}).encode()
+        return wsgi_call(self.m.wsgi, "POST", "/people/v2/people",
+                         body=body, headers=self._api())
+
+    def test_the_log_needs_a_session(self):
+        status, headers, _ = self.get("/admin/diagnostics")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/")
+
+    def test_a_write_shows_up_on_the_page(self):
+        self._write_something()
+        cookie = self.configured_login()
+        status, _, page = self.get("/admin/diagnostics", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn(b"write.applied", page)
+        self.assertIn(b"/people", page)
+
+    def test_a_lost_write_is_called_out_on_the_dashboard(self):
+        self.fake.unreachable = True
+        self._write_something()
+        cookie = self.configured_login()
+        _, _, page = self.get("/", cookie=cookie)
+        self.assertIn(b"Diagnostics", page)
+        self.assertIn(b"indeterminate", page)
+        # The operator is told what to do about it, not just given a number.
+        self.assertIn(b"checking upstream by hand", page)
+
+    def test_an_empty_log_explains_itself(self):
+        cookie = self.configured_login()
+        _, _, page = self.get("/", cookie=cookie)
+        self.assertIn(b"Nothing recorded yet", page)
+
+    def test_filters_narrow_the_list(self):
+        self._write_something()
+        cookie = self.configured_login()
+        _, _, only_upstream = self.get("/admin/diagnostics", "kind=upstream.", cookie=cookie)
+        self.assertNotIn(b"write.applied", only_upstream)
+        _, _, only_writes = self.get("/admin/diagnostics", "kind=write.", cookie=cookie)
+        self.assertIn(b"write.applied", only_writes)
+
+    def test_a_bogus_filter_is_ignored_rather_than_reflected(self):
+        cookie = self.configured_login()
+        status, _, page = self.get(
+            "/admin/diagnostics", urllib.parse.urlencode(
+                {"kind": "<script>x</script>", "severity": "nope", "limit": "abc"}),
+            cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"<script>x", page)
+
+    def test_a_searched_for_name_never_reaches_the_page(self):
+        """The log records which filter ran, never what somebody typed into it."""
+        # A pass-through miss: PCO answers 404, which is recorded — and does not
+        # go round the retry ladder, so this test costs nothing in wall clock.
+        wsgi_get(self.m.wsgi, "/people/v2/people/404",
+                 "where[search_name]=Nathaniel&passthrough=on", headers=self._api())
+        recorded = diagnostics.recent(self.m.db, limit=10)
+        self.assertTrue(any("where[search_name]" in (r["target"] or "") for r in recorded),
+                        "the filter should be recorded even though the name is not")
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/diagnostics", cookie=cookie)
+        self.assertNotIn(b"Nathaniel", page)
+
+    def test_no_credential_is_rendered(self):
+        self._write_something()
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/diagnostics", cookie=cookie)
+        for secret in (b"Basic ", b"Authorization", GOOD_PASSWORD.encode()):
+            self.assertNotIn(secret, page)
+
+    def test_the_page_keeps_the_no_script_policy(self):
+        cookie = self.configured_login()
+        _, headers, _ = self.get("/admin/diagnostics", cookie=cookie)
+        self.assertIn("default-src 'none'", headers["Content-Security-Policy"])
+        self.assertEqual(headers["Cache-Control"], "no-store")
+
+    def test_an_incomplete_log_says_so(self):
+        self.m.diagnostics.last_failure = "OperationalError: disk I/O error"
+        cookie = self.configured_login()
+        _, _, page = self.get("/admin/diagnostics", cookie=cookie)
+        self.assertIn(b"log is incomplete", page)
 
 
 if __name__ == "__main__":

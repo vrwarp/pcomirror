@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from .config import Settings
 from .db import Database
+from .diagnostics import NullRecorder, Recorder
 from .ingest import Ingestor
 from .pcoclient import PcoClient, UrllibTransport
 from .ratelimit import RateLimiter
@@ -20,12 +21,14 @@ class Mirror:
         self.db.init_schema()
         self.limiter = RateLimiter(settings.rate_target_rps, settings.rate_util)
         self.transport = transport or UrllibTransport(settings.pco_ca_bundle or None)
-        self.client = PcoClient(settings, self.limiter, self.transport)
+        keep = getattr(settings, "diagnostic_keep", 0)
+        self.diagnostics = Recorder(self.db, keep) if keep else NullRecorder()
+        self.client = PcoClient(settings, self.limiter, self.transport, self.diagnostics)
         self.writer = Writer(self.db, settings.api_version)
         self.ingestor = Ingestor(self.db, self.client, self.writer)
         self.webhooks = WebhookProcessor(self.db, self.writer, self.ingestor)
         self.wsgi = Application(self.db, self.writer, self.ingestor,
-                                self.client, self.webhooks, settings)
+                                self.client, self.webhooks, settings, self.diagnostics)
 
     def close(self):
         self.db.close()

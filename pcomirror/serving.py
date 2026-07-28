@@ -11,7 +11,7 @@ import json
 import sys
 import urllib.parse
 
-from . import apikeys, links, registry
+from . import apikeys, diagnostics, links, registry
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
 from .db import norm_digits, norm_text
@@ -129,10 +129,11 @@ class Application:
     # and a hundred serial upstream requests is not a response, it is a timeout.
     WALK_FILL_BUDGET = 25
 
-    def __init__(self, db, writer, ingestor, client, webhooks, settings):
+    def __init__(self, db, writer, ingestor, client, webhooks, settings, recorder=None):
         self.db, self.writer, self.ingestor = db, writer, ingestor
         self.client, self.webhooks, self.s = client, webhooks, settings
-        self.admin = AdminApp(db, settings)
+        self.diagnostics = recorder or diagnostics.NullRecorder()
+        self.admin = AdminApp(db, settings, self.diagnostics)
 
     # -- WSGI --------------------------------------------------------------
     def __call__(self, environ, start_response):
@@ -519,8 +520,12 @@ class Application:
     def _write_through(self, method, path, r, segs, body):
         pco_path = path[len("/people/v2"):]  # same path, host-swapped
         json_body = json.loads(body) if body else None
+        target = diagnostics.redact_target(pco_path)
         try:
-            resp = self.client.request(method, pco_path, json_body=json_body, priority="passthrough")
+            # The outcome is recorded below, with the record id and whether the
+            # mirror then accepted it — things the client cannot know.
+            resp = self.client.request(method, pco_path, json_body=json_body,
+                                       priority="passthrough", record_outcome=False)
         except Exception as e:  # noqa: BLE001
             # The write never came back. It is *not* known to have failed — the
             # client deliberately refuses to replay a mutation whose response was
@@ -534,6 +539,16 @@ class Application:
             # another copy. 504 is the status §8.4 specifies for this, and the
             # marker carries the part no status code can: nobody knows whether it
             # applied, so the resolution is to go and look, not to send it again.
+            etype, edetail = diagnostics.describe_error(e)
+            # The event this whole log exists for. A write in this state is the
+            # one an operator has to go and look at by hand, so it is recorded
+            # before the error is raised — the raise is what loses the context.
+            self.diagnostics.write_outcome(
+                diagnostics.WRITE_LOST, diagnostics.ERROR, method, target,
+                pco_id=segs[1] if len(segs) >= 2 else None,
+                detail="the response never arrived — this write may or may not have "
+                       "been applied upstream; check before sending it again",
+                error_type=etype, error_detail=edetail)
             raise _HttpError(
                 504, f"the {method} reached Planning Center but its response was lost, so it "
                      f"may or may not have been applied — check upstream before retrying: {e}",
@@ -541,20 +556,34 @@ class Application:
                       "write_indeterminate": True, "safe_to_retry": False},
             ) from e
         if not resp.ok:  # FAIL IF IT FAILS — mirror untouched, relay PCO's status
+            self.diagnostics.write_outcome(
+                diagnostics.WRITE_REFUSED, diagnostics.WARNING, method, target,
+                status=resp.status, duration_ms=resp.duration_ms, attempts=resp.attempts,
+                pco_request_id=resp.request_id, pco_id=segs[1] if len(segs) >= 2 else None,
+                detail="Planning Center declined the write; the mirror was not touched")
             return (resp.status, self._relay_headers(resp.headers),
                     resp.body or {"errors": [{"code": str(resp.status)}]})
         # Everything below here runs AFTER Planning Center has applied the write.
         if method == "DELETE":
-            if len(segs) >= 2:
-                self._record_locally(lambda: self.writer.tombstone(r.table, segs[1], None, "destroyed"),
-                                     method, pco_path)
+            target_id = segs[1] if len(segs) >= 2 else None
+            if target_id:
+                self._record_locally(lambda: self.writer.tombstone(r.table, target_id, None, "destroyed"),
+                                     method, target, target_id, resp)
+            self.diagnostics.write_outcome(
+                diagnostics.WRITE_APPLIED, diagnostics.INFO, method, target,
+                status=resp.status, duration_ms=resp.duration_ms, attempts=resp.attempts,
+                pco_request_id=resp.request_id, pco_id=target_id,
+                detail="deleted upstream and tombstoned locally")
             return resp.status or 204, {}, b""
         out = resp.json() or {}
-        self._record_locally(lambda: self.writer.route_page(out, "passthrough"), method, pco_path)
+        applied_id = ((out.get("data") or {}).get("id")
+                      if isinstance(out.get("data"), dict) else None)
+        self._record_locally(lambda: self.writer.route_page(out, "passthrough"),
+                             method, target, applied_id, resp)
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
         return resp.status, self._relay_headers(resp.headers), links.rewrite_document(out, self.s)
 
-    def _record_locally(self, apply, method: str, pco_path: str) -> None:
+    def _record_locally(self, apply, method: str, target: str, pco_id, resp) -> None:
         """Update the mirror after a write PCO has already accepted.
 
         Failing this must not fail the *request*. The record exists upstream by
@@ -574,11 +603,29 @@ class Application:
         try:
             apply()
         except Exception as e:  # noqa: BLE001
-            self.log_mirror_failure(method, pco_path, e)
+            etype, edetail = diagnostics.describe_error(e)
+            self.diagnostics.write_outcome(
+                diagnostics.WRITE_MIRROR_FAILED, diagnostics.ERROR, method, target,
+                status=resp.status, duration_ms=resp.duration_ms, attempts=resp.attempts,
+                pco_request_id=resp.request_id, pco_id=pco_id,
+                detail="applied at Planning Center, but the mirror could not record it; "
+                       "it will catch up on the next reconcile or webhook",
+                error_type=etype, error_detail=edetail)
+            self.log_mirror_failure(method, target, e)
+            return
+        self.diagnostics.write_outcome(
+            diagnostics.WRITE_APPLIED, diagnostics.INFO, method, target,
+            status=resp.status, duration_ms=resp.duration_ms, attempts=resp.attempts,
+            pco_request_id=resp.request_id, pco_id=pco_id,
+            detail="applied upstream and recorded in the mirror")
 
-    def log_mirror_failure(self, method: str, pco_path: str, error: Exception) -> None:
-        """Overridable seam so a deployment can alert on this; stderr by default."""
-        print(f"[write-through] {method} {pco_path} succeeded at Planning Center but the "
+    def log_mirror_failure(self, method: str, target: str, error: Exception) -> None:
+        """Overridable seam so a deployment can alert on this; stderr by default.
+
+        The durable copy is in `diagnostic_event`; this line is for whoever is
+        watching the container's output at the time.
+        """
+        print(f"[write-through] {method} {target} succeeded at Planning Center but the "
               f"mirror could not record it: {type(error).__name__}: {error}. The mirror "
               f"will catch up on the next reconcile or webhook.", file=sys.stderr, flush=True)
 

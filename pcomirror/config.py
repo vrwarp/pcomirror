@@ -101,6 +101,10 @@ class Settings:
     subscriptions: list = field(default_factory=list)
     # serve /people/v2 without an API key — LAN-only escape hatch (DESIGN §8.4)
     allow_anonymous: bool = False
+    # How many diagnostic events to keep. Every mutation and every upstream
+    # failure writes one, so at this scale a thousand is weeks of history and
+    # well under a megabyte. 0 switches recording off entirely.
+    diagnostic_keep: int = 1000
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -121,6 +125,8 @@ class Settings:
         s.allow_anonymous = _truthy(e.get("PCOMIRROR_ALLOW_ANONYMOUS"))
         if e.get("PCOMIRROR_RATE_TARGET_RPS"):
             s.rate_target_rps = float(e["PCOMIRROR_RATE_TARGET_RPS"])
+        if e.get("PCOMIRROR_DIAGNOSTIC_KEEP"):
+            s.diagnostic_keep = max(0, int(e["PCOMIRROR_DIAGNOSTIC_KEEP"]))
         return s
 
     def auth_header(self) -> str:

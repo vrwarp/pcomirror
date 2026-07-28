@@ -10,10 +10,10 @@ from __future__ import annotations
 import html
 import urllib.parse
 
-from . import adminauth, adminstats, apikeys
+from . import adminauth, adminstats, apikeys, diagnostics
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
-         "/admin/keys/create", "/admin/keys/revoke")
+         "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics")
 
 
 def handles(path: str) -> bool:
@@ -119,8 +119,11 @@ def _redirect(to: str, extra: dict | None = None):
 
 
 class AdminApp:
-    def __init__(self, db, settings):
+    def __init__(self, db, settings, recorder=None):
         self.db, self.s = db, settings
+        # Only for `last_failure` — the events themselves are read from the table,
+        # so the page works the same whether or not recording is currently on.
+        self.recorder = recorder
 
     # -- entry ------------------------------------------------------------
     def handle(self, method, path, qs, body, environ):
@@ -148,6 +151,8 @@ class AdminApp:
             return self._create_key(method, body, session)
         if path == "/admin/keys/revoke":
             return self._revoke_key(method, body, session)
+        if path == "/admin/diagnostics":
+            return self._diagnostics_page(qs)
         return self._dashboard(session, qs)
 
     # -- login ------------------------------------------------------------
@@ -279,9 +284,11 @@ class AdminApp:
 
         return 200, _headers(), _page("Admin", "".join([
             "<p class=sub>operator console</p>", banners,
-            self._stats_section(st), self._keys_section(csrf), self._webhooks_section(st),
+            self._stats_section(st), self._diagnostics_section(),
+            self._keys_section(csrf), self._webhooks_section(st),
         ]), nav=f"<nav><form method=post action=/admin/logout style='display:inline'>"
                 f"<button class=link type=submit>sign out</button></form> · "
+                f"<a href=/admin/diagnostics>diagnostics</a> · "
                 f"<a href=/admin/password>password</a></nav>")
 
     def _stats_section(self, st) -> str:
@@ -346,6 +353,114 @@ class AdminApp:
     passthrough — spend the server's PCO credential on cache misses</label>
   <p><button type=submit>Create key</button></p>
 </form>"""
+
+    # -- diagnostics ------------------------------------------------------
+    #: Filters offered on the log page. `write.` first because a mutation is the
+    #: thing an operator comes here about — the reads are context around it.
+    _FILTERS = (("", "everything"), ("write.", "writes"), ("upstream.", "upstream failures"))
+
+    def _severity_class(self, severity: str) -> str:
+        return {"error": "warn", "warning": "warn"}.get(severity, "muted")
+
+    def _event_rows(self, events) -> str:
+        rows = []
+        for e in events:
+            when = _esc(e["at"])
+            what = f"{_esc(e['method'], '')} {_esc(e['target'], '')}".strip()
+            status = _esc(e["status"])
+            timing = f"{e['duration_ms']} ms" if e["duration_ms"] is not None else "—"
+            if (e["attempts"] or 1) > 1:
+                timing += f" · {e['attempts']} sends"
+            detail = _esc(e["detail"], "")
+            if e["error_type"]:
+                detail += (f" <span class=warn>{E(e['error_type'])}"
+                           f"{': ' + E(e['error_detail']) if e['error_detail'] else ''}</span>")
+            # The one field Planning Center's own support can look up.
+            req = (f"<code>{E(e['pco_request_id'])}</code>" if e["pco_request_id"] else "—")
+            rows.append(
+                f"<tr><td>{when}</td>"
+                f"<td class={self._severity_class(e['severity'])}>{_esc(e['kind'])}</td>"
+                f"<td>{E(what)}</td><td>{status}</td><td>{E(timing)}</td>"
+                f"<td>{_esc(e['pco_id'])}</td><td>{req}</td>"
+                f"<td style='white-space:normal'>{detail}</td></tr>")
+        return "".join(rows)
+
+    _EVENT_HEAD = ("<tr><th>when<th>kind<th>request<th>status<th>timing"
+                   "<th>record<th>pco request id<th>what happened</tr>")
+
+    def _diagnostics_section(self) -> str:
+        """The dashboard's summary — enough to know whether to click through."""
+        s = diagnostics.summary(self.db)
+        if not s["total"]:
+            return ("<h2>Diagnostics</h2><p class=muted>Nothing recorded yet. Every write "
+                    "and every upstream failure lands here — an empty log means neither has "
+                    "happened since the mirror started. "
+                    "<a href=/admin/diagnostics>Open the log</a>.</p>")
+        cards = [
+            ("writes", f"{s['writes']:,}"),
+            ("errors", f"{s['errors']:,}"),
+            ("warnings", f"{s['warnings']:,}"),
+            ("indeterminate writes", f"{s['indeterminate']:,}"),
+        ]
+        cards_html = "".join(
+            f"<div class=card><b class={'warn' if v != '0' and k != 'writes' else ''}>{E(v)}</b>"
+            f"<span>{E(k)}</span></div>" for k, v in cards)
+        recent = diagnostics.recent(self.db, limit=8)
+        alarm = ("<p class='msg err'>An indeterminate write is one Planning Center may or may "
+                 "not have applied — the response was lost, or the mirror could not record it. "
+                 "Each one needs checking upstream by hand.</p>" if s["indeterminate"] else "")
+        return f"""
+<h2>Diagnostics</h2>
+<div class=cards>{cards_html}</div>{alarm}
+<table>{self._EVENT_HEAD}{self._event_rows(recent)}</table>
+<p class=muted>{s['total']:,} events from {_esc(s['oldest'])} to {_esc(s['newest'])} ·
+  <a href=/admin/diagnostics>full log</a></p>"""
+
+    def _diagnostics_page(self, qs):
+        """The whole log, with the two filters worth having.
+
+        Server-rendered like everything else here: no script, so it works with
+        the page's `default-src 'none'` policy and through any proxy.
+        """
+        kind = (qs.get("kind", [""])[0] or "").strip()
+        if kind not in {k for k, _ in self._FILTERS}:
+            kind = ""
+        severity = (qs.get("severity", [""])[0] or "").strip()
+        if severity not in ("", "info", "warning", "error"):
+            severity = ""
+        try:
+            limit = int(qs.get("limit", ["200"])[0])
+        except ValueError:
+            limit = 200
+
+        events = diagnostics.recent(self.db, limit=limit, kind_prefix=kind, severity=severity)
+        s = diagnostics.summary(self.db)
+
+        def tab(value, label, param, current):
+            query = urllib.parse.urlencode(
+                {k: v for k, v in
+                 {"kind": kind, "severity": severity, param: value}.items() if v})
+            href = f"/admin/diagnostics{'?' + query if query else ''}"
+            shown = f"<b>{E(label)}</b>" if value == current else E(label)
+            return f"<a href='{href}'>{shown}</a>"
+
+        kinds = " · ".join(tab(v, label, "kind", kind) for v, label in self._FILTERS)
+        sevs = " · ".join(tab(v, label, "severity", severity) for v, label in
+                          (("", "any"), ("error", "errors"), ("warning", "warnings")))
+        body = (f"<table>{self._EVENT_HEAD}{self._event_rows(events)}</table>"
+                if events else "<p class=muted>No events match this filter.</p>")
+        # A log that is quietly short is worse than no log, so say so.
+        failure = getattr(self.recorder, "last_failure", None)
+        incomplete = (f"<p class='msg err'>Recording has failed at least once "
+                      f"({E(failure)}), so this log is incomplete.</p>" if failure else "")
+        return 200, _headers(), _page("Diagnostics", f"""
+<p class=sub>what was asked of Planning Center, and what came back</p>{incomplete}
+<p class=muted>show: {kinds} &nbsp;|&nbsp; severity: {sevs}</p>
+{body}
+<p class=muted>Showing {len(events):,} of {s['total']:,} kept. Bodies, headers and
+  query values are never recorded — only which filters were in play. Raise
+  <code>PCOMIRROR_DIAGNOSTIC_KEEP</code> to keep more history.</p>""",
+            nav="<nav><a href=/>back</a></nav>")
 
     def _webhooks_section(self, st) -> str:
         w = st["webhooks"]

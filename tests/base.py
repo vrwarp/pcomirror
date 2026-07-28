@@ -13,14 +13,22 @@ from pcomirror.config import Settings     # noqa: E402
 from fakepco import FakePCO               # noqa: E402
 
 
-def build(fake: FakePCO | None = None, allow_anonymous: bool = True) -> tuple[Mirror, FakePCO]:
+def build(fake: FakePCO | None = None, allow_anonymous: bool = True,
+          diagnostic_keep: int | None = None) -> tuple[Mirror, FakePCO]:
     """`allow_anonymous` defaults on so the serving tests can stay about serving;
-    the api_key plane has its own suite (test_apikeys.py)."""
+    the api_key plane has its own suite (test_apikeys.py).
+
+    `diagnostic_keep` is left at the production default so every other suite
+    exercises the recorder incidentally — a log that only runs in its own tests
+    is one that breaks the first time something else changes around it.
+    """
     fake = fake or FakePCO()
     path = os.path.join(tempfile.mkdtemp(), "test.db")
     settings = Settings(db_path=path, rate_target_rps=1_000_000.0,
                         pco_app_id="app", pco_secret="sec",
                         allow_anonymous=allow_anonymous)
+    if diagnostic_keep is not None:
+        settings.diagnostic_keep = diagnostic_keep
     return Mirror(settings, transport=fake), fake
 
 

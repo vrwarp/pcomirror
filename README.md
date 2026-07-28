@@ -309,6 +309,43 @@ What the console shows:
   (the secret is displayed exactly once), and revoke inline.
 - **Webhooks** — registered subscriptions with their receiver tokens and last
   event, delivery and event counts by status, and dead-letter count.
+- **Diagnostics** — a summary, and `/admin/diagnostics` for the full log. See below.
+
+### Diagnostics
+
+`/admin/diagnostics` is a durable record of what the mirror asked Planning Center
+and what came back. It exists because of a question that could not be answered
+after the fact: a write reached PCO, PCO applied it, the response never made it
+back, and the only account of why was a line on stderr in a container that had
+since been replaced.
+
+What is recorded:
+
+- **Every mutation**, successful or not. `write.applied`, `write.refused` (PCO
+  said no), `write.lost` (the response never came, so it may or may not have been
+  applied), and `write.mirror_failed` (PCO applied it; the mirror could not
+  record it). The last two are counted separately on the dashboard as
+  **indeterminate writes** — each one needs checking upstream by hand.
+- **Every upstream failure**, read or write, *including ones a retry recovered
+  from* (`upstream.retry`). A read that needed three attempts is not a problem in
+  itself, but it is often the reason the write beside it timed out, and a
+  successful retry otherwise erases the only trace of it.
+- **`x-request-id`** — the one field in the exchange Planning Center's own
+  support can look up.
+
+Each event carries the method, the path, the upstream status, how long it took,
+how many sends it needed, and the record id where there is one.
+
+What is **never** recorded: request or response bodies, any header beyond a
+chosen few, and the *values* of query parameters. A mirror of a church's people
+database has somebody's child's details in almost every payload, and a diagnostic
+log is exactly the sort of thing that gets pasted into an issue. Filter names
+survive (`where[search_name]=•`) because "that filter was in play" is the
+diagnostic fact; what was typed into it is not.
+
+Recording never fails a request — if it cannot write, the page says the log is
+incomplete rather than quietly showing a short one. The table is capped at
+`PCOMIRROR_DIAGNOSTIC_KEEP` rows (default 1000; `0` switches recording off).
 
 Session hardening: `HttpOnly` + `SameSite=Strict` cookies (`Secure` too when the
 request arrives over HTTPS, including via `X-Forwarded-Proto` from a reverse
@@ -437,8 +474,8 @@ and exits, rather than surfacing a SQLite traceback:
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
-  and the container-friendly defaults `PCOMIRROR_DB` / `PCOMIRROR_HOST` /
-  `PCOMIRROR_PORT`.
+  `PCOMIRROR_DIAGNOSTIC_KEEP`, and the container-friendly defaults
+  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.
   They are deliberately not settable from the environment — that would mean
