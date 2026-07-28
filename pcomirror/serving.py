@@ -580,8 +580,66 @@ class Application:
                       if isinstance(out.get("data"), dict) else None)
         self._record_locally(lambda: self.writer.route_page(out, "passthrough"),
                              method, target, applied_id, resp)
+        self._refresh_affected(r, segs, method, target)
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
         return resp.status, self._relay_headers(resp.headers), links.rewrite_document(out, self.s)
+
+    def _refresh_affected(self, r, segs, method: str, target: str) -> None:
+        """Re-read what the write changed but PCO's answer did not describe.
+
+        `route_page` applies the resource PCO *returned*, which is the one the
+        request created — and for a nested write that is not the only record that
+        moved. `POST /households/{h}/household_memberships` comes back as a
+        membership; the household it joined is now wrong in two ways the response
+        says nothing about, and neither self-repairs on read:
+
+          * Its `relationships.people` array — which the mirror serves for
+            `include=households.people` — still lists the old members. Nothing
+            but a household fetch ever rewrites it.
+          * Its membership collection is a `nested_walk`, and the walk ledger
+            already says this household was walked, so `_ensure_walked` will not
+            re-fetch it. Whether the new row is visible then depends on whether
+            PCO's create response happened to carry the owning household id.
+
+        Both were live: a parent added to an existing household stayed invisible
+        to the app that added them, which read back the family and found only the
+        child. Read-your-writes (DESIGN §8.4) has to mean the records the write
+        *affected*, not only the one it returned.
+
+        So the walk is redone here, synchronously — one request, on a path that
+        has just made a round trip anyway — rather than by dropping the ledger
+        row and letting the next read discover it. Dropping it would turn every
+        household read into a 503 for as long as PCO was unreachable, trading a
+        staleness bug for an availability one. Failing to re-walk leaves the rows
+        that are already there: stale beats absent, and the sweep still converges.
+        """
+        if method not in ("POST", "DELETE") or len(segs) < 3:
+            return
+        rel = r.relationships.get(segs[2])
+        if rel is None or rel.kind != "many":
+            return
+        target_resource = registry.by_name(rel.target)
+        if target_resource.method != "nested_walk":
+            return
+        parent_id = segs[1]
+        try:
+            self.ingestor.walk_parent(target_resource.name, parent_id, "passthrough")
+        except Exception as e:  # noqa: BLE001
+            etype, edetail = diagnostics.describe_error(e)
+            self.diagnostics.record(
+                diagnostics.WRITE_MIRROR_FAILED, diagnostics.WARNING,
+                method=method, target=target, pco_id=parent_id,
+                detail=f"the write was applied, but {target_resource.type} could not be "
+                       f"re-read for {r.type} {parent_id}; the collection may be stale "
+                       f"until the next sweep",
+                error_type=etype, error_detail=edetail)
+        # The parent's own payload — the `people` array on a Household — is only
+        # rewritten by fetching the parent. That is not on the critical path for
+        # the caller, so it goes to the queue the scheduler already drains.
+        try:
+            self.ingestor.enqueue_hydration(r.name, parent_id, reason="write_through")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _record_locally(self, apply, method: str, target: str, pco_id, resp) -> None:
         """Update the mirror after a write PCO has already accepted.

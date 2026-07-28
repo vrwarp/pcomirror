@@ -33,6 +33,7 @@ class FakePCO:
         self.fail_next = None                         # (status, detail) to force a write failure
         self.unreachable = False                      # every request fails, as in an outage
         self.request_log: list[tuple[str, str]] = []
+        self.echo_self_link = True   # see _create_membership
 
     # -- population --------------------------------------------------------
     def add(self, resource: dict):
@@ -166,6 +167,8 @@ class FakePCO:
         return self._ok({"data": items[:per_page], "meta": {"total_count": len(items)}})
 
     def _write(self, method, segs, body):
+        if method == "POST" and len(segs) == 3 and segs[2] == "household_memberships":
+            return self._create_membership(segs[1], body)
         if self.fail_next is not None:
             status, detail = self.fail_next
             self.fail_next = None
@@ -189,6 +192,32 @@ class FakePCO:
             self.destroy(rtype, segs[1])
             return Response(204, {}, b"")
         return Response(405, {}, b'{"errors":[{"code":"405"}]}')
+
+
+    def _create_membership(self, household_id, body):
+        """`POST /households/{id}/household_memberships`, shaped as PCO shapes it.
+
+        The owning household appears only in `links.self` — there is no
+        `household` relationship on a membership payload — and `echo_self_link`
+        exists because whether a *create* response repeats that link is exactly
+        what a mirror must not depend on. PCO knows the association either way,
+        so the stored copy always carries it and only the reply may omit it.
+        """
+        attrs = (json.loads(body).get("data") or {}).get("attributes") or {}
+        person_id = str(attrs.get("person_id"))
+        mid = str(next(self._ids))
+        item = self.add_membership(mid, household_id, person_id,
+                                   role=attrs.get("household_role", "child_or_dependent"))
+        household = self.data.get("Household", {}).get(str(household_id))
+        if household is not None:
+            members = household.setdefault("relationships", {}).setdefault(
+                "people", {"data": []})["data"]
+            if not any(m["id"] == person_id for m in members):
+                members.append({"type": "Person", "id": person_id})
+        returned = dict(item)
+        if not self.echo_self_link:
+            returned.pop("links", None)
+        return Response(201, {}, json.dumps({"data": returned}).encode())
 
     # -- helpers -----------------------------------------------------------
     def _filter(self, items, qs):

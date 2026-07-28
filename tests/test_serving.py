@@ -2,7 +2,8 @@ import json
 import unittest
 
 from base import build, wsgi_call, wsgi_get
-from fakepco import FakePCO
+from fakepco import FakePCO, res
+from pcomirror import diagnostics
 from pcomirror.pcoclient import Response
 
 
@@ -348,6 +349,104 @@ class TestMirrorFailureAfterAWriteLands(unittest.TestCase):
         status, _, _ = wsgi_call(m.wsgi, "DELETE", "/people/v2/people/1")
         self.assertIn(status, (200, 204))
         self.assertEqual(sum(1 for method, _ in fake.request_log if method == "DELETE"), 1)
+
+
+class TestAWriteRefreshesWhatItChanged(unittest.TestCase):
+    """Read-your-writes has to cover the records a write *affected*.
+
+    `route_page` applies the resource PCO returned. For a nested write that is
+    not the only record that moved, and the two that did not move are exactly
+    the ones a caller reads back: adding a parent to an existing household left
+    the app that added them reading the family and finding only the child.
+    """
+
+    def _family(self, echo_self_link=True):
+        fake = FakePCO()
+        fake.echo_self_link = echo_self_link
+        fake.add_person("100", "Kid", "Reed", "2026-01-01T00:00:00Z",
+                        households={"data": [{"type": "Household", "id": "900"}]})
+        fake.add(res("Household", "900", {"name": "Reed Household"},
+                     relationships={"people": {"data": [{"type": "Person", "id": "100"}]}},
+                     updated="2026-01-01T00:00:00Z"))
+        fake.add_membership("500", "900", "100", role="child_or_dependent")
+        m, _ = build(fake)
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        # The screen that offers "add a parent" has just read the family, which
+        # is what marks the household walked — the ordinary case, not a corner.
+        wsgi_get(m.wsgi, "/people/v2/households/900/household_memberships")
+        return m, fake
+
+    def _add_parent(self, m):
+        _, _, created = wsgi_call(m.wsgi, "POST", "/people/v2/people", body=json.dumps(
+            {"data": {"type": "Person",
+                      "attributes": {"first_name": "Dana", "last_name": "Reed",
+                                     "child": False}}}).encode())
+        parent_id = created["data"]["id"]
+        status, _, _ = wsgi_call(
+            m.wsgi, "POST", "/people/v2/households/900/household_memberships",
+            body=json.dumps({"data": {"type": "HouseholdMembership", "attributes": {
+                "person_id": parent_id, "pending": False,
+                "household_role": "parent_guardian"}}}).encode())
+        self.assertEqual(status, 201)
+        return parent_id
+
+    def _members(self, m):
+        _, _, page = wsgi_get(m.wsgi, "/people/v2/households/900/household_memberships",
+                              "include=person")
+        return [d["relationships"]["person"]["data"]["id"] for d in page.get("data", [])]
+
+    def test_the_new_member_is_visible_on_the_very_next_read(self):
+        m, _ = self._family()
+        parent_id = self._add_parent(m)
+        self.assertIn(parent_id, self._members(m))
+
+    def test_it_does_not_depend_on_the_create_response_echoing_the_link(self):
+        """A membership's household is only ever in `links.self`, and whether a
+        *create* reply repeats it is not something a mirror may rely on."""
+        m, _ = self._family(echo_self_link=False)
+        parent_id = self._add_parent(m)
+        self.assertIn(parent_id, self._members(m))
+
+    def test_the_household_payload_catches_up_from_the_queue(self):
+        """`include=households.people` reads the household's own array, which only
+        a household fetch rewrites — off the critical path, so it is queued."""
+        m, _ = self._family()
+        parent_id = self._add_parent(m)
+        m.ingestor.drain_hydration()
+        _, _, doc = wsgi_get(m.wsgi, "/people/v2/people/100", "include=households.people")
+        self.assertIn(("Person", parent_id),
+                      {(i["type"], i["id"]) for i in doc.get("included", [])})
+
+    def test_a_failed_re_read_leaves_the_rows_that_are_there(self):
+        """Stale beats absent, and it must never turn a write into a failure."""
+        m, fake = self._family()
+        before = self._members(m)
+        original = m.ingestor.walk_parent
+        m.ingestor.walk_parent = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("PCO down"))
+        try:
+            parent_id = self._add_parent(m)
+        finally:
+            m.ingestor.walk_parent = original
+        self.assertTrue(set(before).issubset(self._members(m)))
+        noted = [r for r in diagnostics.recent(m.db, limit=50)
+                 if r["kind"] == diagnostics.WRITE_MIRROR_FAILED]
+        self.assertEqual(len(noted), 1)
+        self.assertIn("may be stale", noted[0]["detail"])
+        self.assertEqual(noted[0]["pco_id"], "900")
+        self.assertIsNotNone(parent_id)
+
+    def test_an_ordinary_write_does_not_trigger_a_walk(self):
+        """One extra request on a nested write; none on every other write."""
+        m, fake = self._family()
+        before = sum(1 for method, path in fake.request_log
+                     if method == "GET" and "household_memberships" in path)
+        wsgi_call(m.wsgi, "PATCH", "/people/v2/people/100", body=json.dumps(
+            {"data": {"type": "Person", "id": "100",
+                      "attributes": {"last_name": "Byron"}}}).encode())
+        after = sum(1 for method, path in fake.request_log
+                    if method == "GET" and "household_memberships" in path)
+        self.assertEqual(before, after)
 
 if __name__ == "__main__":
     unittest.main()
