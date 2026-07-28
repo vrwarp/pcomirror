@@ -2,6 +2,8 @@ import json
 import unittest
 
 from base import build, wsgi_call, wsgi_get
+from fakepco import FakePCO
+from pcomirror.pcoclient import Response
 
 
 class TestServingReads(unittest.TestCase):
@@ -115,3 +117,191 @@ class TestPassThrough(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWritesAreNeverReplayed(unittest.TestCase):
+    """A mutation is sent to PCO exactly once, and a lost answer says so.
+
+    All three failures here happened together on one "add a parent" in Tally: the
+    write-through created five copies of one person, and the leader was told the
+    mirror could not reach Planning Center at all. A write whose response went
+    missing is not a write that did not happen, and nothing in this file may ever
+    treat it as one again.
+    """
+
+    def _body(self, first="Dana", last="Reed"):
+        return json.dumps({"data": {"type": "Person",
+                                    "attributes": {"first_name": first, "last_name": last}}}).encode()
+
+    def test_lost_response_is_reported_as_indeterminate_not_replayed(self):
+        m, fake = build()
+        fake.unreachable = True
+        status, _, out = wsgi_call(m.wsgi, "POST", "/people/v2/people", body=self._body())
+        # Exactly one attempt: the write may already have landed upstream.
+        self.assertEqual(sum(1 for method, _ in fake.request_log if method == "POST"), 1)
+        # The 504 DESIGN §8.4 specifies, not the bare 500 the blanket handler
+        # used to produce — that status is an instruction to retry, which is the
+        # one thing a caller must not do here.
+        self.assertEqual(status, 504)
+        error = out["errors"][0]
+        self.assertEqual(error["meta"]["code"], "upstream_response_lost")
+        self.assertTrue(error["meta"]["write_indeterminate"])
+        self.assertFalse(error["meta"]["safe_to_retry"])
+
+    def test_write_is_not_replayed_when_pco_answers_5xx(self):
+        """The write lands and the gateway loses the answer — the classic duplicate."""
+
+        class WritesLandThenFail(FakePCO):
+            def _write(self, method, segs, body):
+                super()._write(method, segs, body)          # the row IS created
+                return Response(502, {}, b'{"errors":[{"code":"502"}]}')
+
+        fake = WritesLandThenFail()
+        m, _ = build(fake)
+        status, _, _ = wsgi_call(m.wsgi, "POST", "/people/v2/people", body=self._body())
+        self.assertEqual(status, 502)
+        self.assertEqual(sum(1 for method, _ in fake.request_log if method == "POST"), 1)
+        self.assertEqual(len(fake.data.get("Person", {})), 1)
+
+    def test_a_read_is_still_retried_through_a_5xx(self):
+        """The guard is about the verb, not about giving up on transient failures."""
+
+        class FlakyReads(FakePCO):
+            def __init__(self):
+                super().__init__()
+                self.failures = 2
+
+            def send(self, method, url, headers, body):
+                if method == "GET" and self.failures > 0:
+                    self.failures -= 1
+                    self.request_log.append((method, url))
+                    return Response(503, {}, b'{"errors":[{"code":"503"}]}')
+                return super().send(method, url, headers, body)
+
+        fake = FlakyReads()
+        fake.add_person("1", "Ada", "Lovelace", "2026-01-01T00:00:00Z")
+        m, _ = build(fake)
+        status, _, body = wsgi_get(m.wsgi, "/people/v2/people/1", "passthrough=on")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["data"]["id"], "1")
+
+    def test_a_429_still_retries_a_write(self):
+        """A limiter refuses before the request reaches anything that could apply it."""
+
+        class RateLimitedOnce(FakePCO):
+            def __init__(self):
+                super().__init__()
+                self.limited = True
+
+            def _write(self, method, segs, body):
+                if self.limited:
+                    self.limited = False
+                    return Response(429, {"Retry-After": "0"}, b'{"errors":[{"code":"429"}]}')
+                return super()._write(method, segs, body)
+
+        fake = RateLimitedOnce()
+        m, _ = build(fake)
+        status, _, _ = wsgi_call(m.wsgi, "POST", "/people/v2/people", body=self._body())
+        self.assertEqual(status, 201)
+        self.assertEqual(sum(1 for method, _ in fake.request_log if method == "POST"), 2)
+        self.assertEqual(len(fake.data.get("Person", {})), 1)
+
+
+class TestRelayedHeaders(unittest.TestCase):
+    """What PCO said about *its* hop must not be repeated about ours.
+
+    Every served document is rewritten on the way out — absolute PCO URLs become
+    mirror-relative paths — so relaying PCO's `Content-Length` promised a body
+    longer than the one that followed. A caller then waits for a remainder that
+    never comes and reports a dropped connection, which is how a write that
+    reached PCO got replayed as one that never left.
+    """
+
+    @staticmethod
+    def _raw_call(app, method, path, body=b""):
+        """Like `wsgi_call`, but keeps the bytes on the wire.
+
+        The whole point of this class is the relationship between the declared
+        length and the sent length, and a parsed-then-reserialized body is a
+        different number of bytes than the one the client would actually read.
+        """
+        import io
+        env = {"REQUEST_METHOD": method, "PATH_INFO": path, "QUERY_STRING": "",
+               "CONTENT_LENGTH": str(len(body)), "wsgi.input": io.BytesIO(body)}
+        captured = {}
+
+        def start_response(status, hdrs):
+            captured["status"] = int(status.split()[0])
+            captured["headers"] = dict(hdrs)
+
+        raw = b"".join(app(env, start_response))
+        return captured["status"], captured["headers"], raw
+
+    def assertLengthMatchesBody(self, headers, raw):
+        self.assertEqual(int(headers["Content-Length"]), len(raw),
+                         "a caller would block waiting for bytes that never come")
+
+    class ChattyPCO(FakePCO):
+        """PCO as it really answers a create: absolute links, and its own framing."""
+
+        declared_length = None
+
+        def _write(self, method, segs, body):
+            resp = super()._write(method, segs, body)
+            doc = json.loads(resp.body)
+            pid = doc["data"]["id"]
+            doc["data"]["links"] = {
+                "self": f"https://api.planningcenteronline.com/people/v2/people/{pid}",
+                "html": f"https://people.planningcenteronline.com/people/AC{pid}",
+            }
+            payload = json.dumps(doc).encode()
+            self.declared_length = len(payload)
+            return Response(resp.status, {
+                "Content-Type": "application/vnd.api+json",
+                "Content-Length": str(len(payload)),
+                "Transfer-Encoding": "chunked",
+                "Connection": "keep-alive",
+                "Location": f"https://api.planningcenteronline.com/people/v2/people/{pid}",
+                "X-PCO-API-Request-Rate-Count": "3",
+            }, payload)
+
+    _NEW_PERSON = json.dumps({"data": {"type": "Person",
+                                       "attributes": {"first_name": "Dana",
+                                                      "last_name": "Reed"}}}).encode()
+
+    def test_content_length_counts_the_bytes_actually_sent(self):
+        fake = self.ChattyPCO()
+        m, _ = build(fake)
+        status, headers, raw = self._raw_call(m.wsgi, "POST", "/people/v2/people", self._NEW_PERSON)
+        self.assertEqual(status, 201)
+        self.assertLengthMatchesBody(headers, raw)
+        # And the relay really would have been wrong, rather than this passing by
+        # luck on a payload that happened to survive rewriting at the same size:
+        # the absolute self link became a mirror path, so PCO's count is larger.
+        self.assertNotIn("api.planningcenteronline.com/people/v2", raw.decode())
+        self.assertGreater(fake.declared_length, len(raw))
+
+    def test_framing_headers_are_dropped_and_location_is_rewritten(self):
+        m, _ = build(self.ChattyPCO())
+        _, headers, raw = self._raw_call(m.wsgi, "POST", "/people/v2/people", self._NEW_PERSON)
+        lowered = {k.lower() for k in headers}
+        self.assertNotIn("transfer-encoding", lowered)
+        self.assertNotIn("connection", lowered)
+        # A caller holds a mirror key, not a PAT, so a PCO URL is a dead end.
+        new_id = json.loads(raw)["data"]["id"]
+        self.assertEqual(headers["Location"], f"/people/v2/people/{new_id}")
+        # Headers that genuinely describe the exchange still come through.
+        self.assertEqual(headers["X-PCO-API-Request-Rate-Count"], "3")
+
+    def test_content_length_is_right_on_a_relayed_failure_too(self):
+        class RefusingPCO(FakePCO):
+            def _write(self, method, segs, body):
+                payload = b'{"errors":[{"code":"422","detail":"Grade must be a number"}]}'
+                return Response(422, {"Content-Length": "99999",
+                                      "Connection": "close"}, payload)
+
+        m, _ = build(RefusingPCO())
+        status, headers, raw = self._raw_call(m.wsgi, "POST", "/people/v2/people", self._NEW_PERSON)
+        self.assertEqual(status, 422)
+        self.assertLengthMatchesBody(headers, raw)
+        self.assertNotIn("connection", {k.lower() for k in headers})

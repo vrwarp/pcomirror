@@ -22,6 +22,23 @@ _SEG = {r.endpoint.strip("/"): r for r in registry.RESOURCES.values()}
 # rebuilt so `offset`/`per_page` are set once, by us.
 _PAGING = ("offset", "per_page")
 
+# Response headers that describe the hop they arrived on rather than the record,
+# and so may never be relayed from PCO to our caller.
+#
+# `Content-Length` is the one that bites. Every document served is rewritten on
+# the way out — absolute PCO URLs become mirror-relative paths, which makes the
+# body *shorter* than the one PCO sent — so relaying PCO's length declared a
+# response tens of bytes longer than the bytes that followed it. A client then
+# blocks waiting for a remainder that never arrives, and eventually reports a
+# dropped connection: a write that reached PCO looked, from the caller's side,
+# exactly like one that never got there. `Transfer-Encoding` is worse in kind —
+# framing this response does not use — and `Content-Encoding` describes a
+# compression the transport has already undone.
+_UNRELAYABLE = frozenset({
+    "content-length", "transfer-encoding", "content-encoding", "connection",
+    "keep-alive", "te", "trailer", "upgrade", "proxy-authenticate", "proxy-authorization",
+})
+
 _BOOLS = {"true": 1, "t": 1, "1": 1, "yes": 1, "on": 1,
           "false": 0, "f": 0, "0": 0, "no": 0, "off": 0}
 
@@ -128,12 +145,19 @@ class Application:
             # Both schemes are accepted (apikeys.bearer_token), so both are offered.
             headers = ({"WWW-Authenticate": 'Bearer realm="pcomirror", Basic realm="pcomirror"'}
                        if e.status == 401 else {})
-            status, payload = e.status, {"errors": [{"code": str(e.status), "detail": e.detail}]}
+            error = {"code": str(e.status), "detail": e.detail}
+            if e.meta:
+                error["meta"] = e.meta
+            status, payload = e.status, {"errors": [error]}
         except Exception as e:  # noqa: BLE001
             status, headers, payload = 500, {}, {"errors": [{"code": "500", "detail": str(e)}]}
         raw = payload if isinstance(payload, (bytes, bytearray)) else json.dumps(payload).encode()
-        base = {"Content-Type": JSONAPI, "Content-Length": str(len(raw))}
+        base = {"Content-Type": JSONAPI}
         base.update(headers)
+        # Set last and unconditionally, so no relayed header can win: it counts
+        # the bytes this response is actually about to send, which is the one
+        # number a caller cannot recover for itself if we get it wrong.
+        base["Content-Length"] = str(len(raw))
         start_response(f"{status} ", [(k, v) for k, v in base.items()])
         return [raw]
 
@@ -477,12 +501,47 @@ class Application:
         return f" AND {rel.child_fk}=?", (row["pco_id"],)
 
     # -- writes: PCO-first write-through (DESIGN §8.4) ---------------------
+    def _relay_headers(self, headers) -> dict:
+        """PCO's response headers, minus the ones that describe its hop not ours.
+
+        `Location` is rewritten rather than dropped: a 201 that points at
+        `api.planningcenteronline.com` hands the caller a URL their mirror key
+        cannot open, which is the one thing a base-URL swap must never do.
+        """
+        out = {}
+        for k, v in (headers or {}).items():
+            if k.lower() in _UNRELAYABLE:
+                continue
+            out[k] = links.to_mirror_path(v, self.s) if k.lower() == "location" else v
+        return out
+
     def _write_through(self, method, path, r, segs, body):
         pco_path = path[len("/people/v2"):]  # same path, host-swapped
         json_body = json.loads(body) if body else None
-        resp = self.client.request(method, pco_path, json_body=json_body, priority="passthrough")
+        try:
+            resp = self.client.request(method, pco_path, json_body=json_body, priority="passthrough")
+        except Exception as e:  # noqa: BLE001
+            # The write never came back. It is *not* known to have failed — the
+            # client deliberately refuses to replay a mutation whose response was
+            # lost, because that is indistinguishable from one that never left,
+            # and replaying it creates a second record on somebody's real file.
+            #
+            # Reported here rather than left to the blanket handler above, which
+            # answered a bare 500: to a caller that retries 5xx — which is every
+            # sensible HTTP client — that status is an instruction to do exactly
+            # the thing this client just refused to do, and each attempt landed
+            # another copy. 504 is the status §8.4 specifies for this, and the
+            # marker carries the part no status code can: nobody knows whether it
+            # applied, so the resolution is to go and look, not to send it again.
+            raise _HttpError(
+                504, f"the {method} reached Planning Center but its response was lost, so it "
+                     f"may or may not have been applied — check upstream before retrying: {e}",
+                meta={"code": "upstream_response_lost",
+                      "write_indeterminate": True, "safe_to_retry": False},
+            ) from e
         if not resp.ok:  # FAIL IF IT FAILS — mirror untouched, relay PCO's status
-            return resp.status, dict(resp.headers), resp.body or {"errors": [{"code": str(resp.status)}]}
+            return (resp.status, self._relay_headers(resp.headers),
+                    resp.body or {"errors": [{"code": str(resp.status)}]})
         if method == "DELETE":
             if len(segs) >= 2:
                 self.writer.tombstone(r.table, segs[1], None, "destroyed")
@@ -490,7 +549,7 @@ class Application:
         out = resp.json() or {}
         self.writer.route_page(out, "passthrough")
         # Store PCO's payload verbatim, but hand the caller mirror-relative links.
-        return resp.status, dict(resp.headers), links.rewrite_document(out, self.s)
+        return resp.status, self._relay_headers(resp.headers), links.rewrite_document(out, self.s)
 
     # -- pass-through (non-mirrorable / miss / freshness) -----------------
     def _passthrough(self, method, path, qs, body, scopes=None):
@@ -797,5 +856,5 @@ class Application:
 
 
 class _HttpError(Exception):
-    def __init__(self, status, detail):
-        self.status, self.detail = status, detail
+    def __init__(self, status, detail, meta: dict | None = None):
+        self.status, self.detail, self.meta = status, detail, meta

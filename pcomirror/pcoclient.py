@@ -104,11 +104,24 @@ class PcoClient:
                 continue
             self.limiter.on_response(resp.headers)
             if resp.status == 429:
+                # Safe for a write as much as a read, and the only failure here
+                # that is: a limiter refuses *before* the request reaches
+                # anything that could apply it, so the record cannot already
+                # exist and a replay cannot make a second one.
                 ra = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
                 self.limiter.on_429(float(ra) if ra else None)
                 time.sleep(min(60.0, 2 ** attempt))
                 continue
             if resp.status in (500, 502, 503, 504):
+                # The same rule as the dropped socket above, for the same reason.
+                # A 502 or 504 comes from whatever sits *in front of* PCO and is
+                # sent after the request reached it, so the write may well have
+                # landed and only the answer went missing — a replay creating a
+                # second Person is at least as likely as one repairing a failure.
+                # Only the guard above used to check this, which left the status
+                # path quietly replaying every write it was written to protect.
+                if not idempotent:
+                    return resp
                 time.sleep(min(30.0, 2 ** attempt))
                 continue
             return resp
