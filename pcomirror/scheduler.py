@@ -21,7 +21,6 @@ class Scheduler:
         self._thread: threading.Thread | None = None
         self._last_merger = 0.0
         self._last_drift = 0.0
-        self._last_audit = 0.0
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name="pcomirror-scheduler", daemon=True)
@@ -87,6 +86,40 @@ class Scheduler:
                     # looks — its `updated_at` will not move again.
                     self._guard(f"repair:{r.name}", self._repair, r.name)
             self._last_drift = t
+        # The third delete mechanism (DESIGN §7.2), and the only one that needs no
+        # signal from PCO: webhooks are lossy and merges only cover the merge path,
+        # so a person hard-deleted in the UI is invisible to everything else here —
+        # `where[updated_at]` cannot return an id that no longer exists. It was
+        # written, tested, documented and exposed on the CLI, and then never
+        # scheduled, which is why a live mirror was serving `total_count` 448
+        # against PCO's 447 with nothing on course to notice.
+        if self._audit_due("person", now):
+            self._guard("audit:person", self._audit, "person")
+
+    def _audit_due(self, name: str, now: str) -> bool:
+        """Due off the *persisted* completion time, not this process's clock.
+
+        Every other cadence here is monotonic, which is right for something that
+        runs every couple of minutes. It is wrong at a day: a service that
+        restarts more often than its own interval restarts the countdown too, and
+        a check written for once a night then never happens at all. The audit
+        already records when it finished, so that is the clock to read.
+        """
+        hours = max(0, getattr(self.m.settings, "audit_interval_hours", 24))
+        if not hours:
+            return False
+        st = self.m.ingestor.state(name)
+        if not st["backfill_completed_at"]:
+            return False
+        # The later of started/completed, so an audit that *fails* waits a full
+        # interval rather than re-enumerating the organization every five seconds.
+        last = max(st["last_audit_started_at"] or "", st["last_audit_completed_at"] or "")
+        return not last or last <= self._minus(hours * 3600, now)
+
+    def _audit(self, name: str) -> None:
+        n = self.m.ingestor.delete_audit(name)
+        if n:
+            print(f"[scheduler] audit tombstoned {n} deleted {name} record(s)", flush=True)
 
     def _repair(self, name: str) -> None:
         n = self.m.ingestor.repair_incomplete(name)
@@ -106,3 +139,9 @@ class Scheduler:
     def _plus(seconds: int) -> str:
         from datetime import datetime, timedelta, timezone
         return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    @staticmethod
+    def _minus(seconds: int, now: str) -> str:
+        from datetime import datetime, timedelta, timezone
+        at = datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return (at - timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")

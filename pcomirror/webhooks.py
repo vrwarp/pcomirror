@@ -152,14 +152,17 @@ class WebhookProcessor:
     def _handle_merge(self, payload: dict) -> None:
         a = payload.get("attributes", {})
         keep, gone = a.get("person_to_keep_id"), a.get("person_to_remove_id")
+        merger_id = payload.get("id", f"merge-{keep}-{gone}")
+        # A merge the poll already applied is not news. Without this a redelivery,
+        # or simply the poll getting there first, queues the survivor for another
+        # hydration — one PCO request for an answer we have.
+        if not self.ingestor._merger_is_new(merger_id):
+            return
         if gone:
             self.writer.tombstone("person", gone, None, "merged", merged_into=keep)
         if keep:
             self.ingestor.enqueue_hydration("person", keep, reason="merge_survivor")
-        self.db.execute(
-            "INSERT OR IGNORE INTO person_merger(pco_id,raw,source,api_version) VALUES(?,?,?,?)",
-            (payload.get("id", f"merge-{keep}-{gone}"), json.dumps(payload),
-             "webhook", self.writer.api_version))
+        self.ingestor._record_merger(merger_id, payload, "webhook")
 
     def _is_thin(self, r, payload: dict) -> bool:
         # webhook payloads never embed includes; if we project children/relationships

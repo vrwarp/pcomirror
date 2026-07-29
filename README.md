@@ -387,7 +387,16 @@ constantly is the one whose breaking gets noticed.
 
 The boundary this draws is deliberate: it verifies the mirror **against the
 traffic it serves**. A record no caller has ever asked for is outside it, and the
-reconcile sweep and drift probe own that ground.
+reconcile sweep, drift probe and delete audit own that ground.
+
+The **delete audit** is the third and slowest of the delete mechanisms (DESIGN
+§7.2) and the only one that needs no signal from PCO: webhooks are lossy and the
+merger poll only covers the merge path, so a person hard-deleted in the UI is
+invisible to everything else — `where[updated_at]` cannot return an id that no
+longer exists. It runs on `PCOMIRROR_AUDIT_INTERVAL_HOURS` (default 24, `0` off),
+timed from the *persisted* completion stamp rather than process start, because a
+once-a-night check measured against a service that restarts more often than that
+is a check that never happens.
 
 **What fairness by shape does and does not buy.** Every shape gets an equal share
 of the checks, whatever its traffic. Measured against deliberately lopsided
@@ -456,6 +465,15 @@ times what it said.
 Both responses are stored **pseudonymised**, so the log is safe to hand to
 somebody. Download it as JSON or clear it from the page; the store is capped by
 `PCOMIRROR_SHADOW_KEEP` (default 200 reports).
+
+A report keeps the **concrete parameters**, not only the shape. That is what
+makes an ordering difference readable: a real export showed one record eight
+places out of position with every attribute agreeing, and nothing in the file
+said which field the page had been sorted by. Filter *values* in those parameters
+are pseudonymised like the attributes they filter on — `where[last_name]=` is as
+identifying as `attributes.last_name` — while `order`, `include`, `per_page`,
+`offset` and `fields[…]` survive verbatim, because they name schema and they are
+the reason for storing the query at all.
 
 ### Pseudonyms
 
@@ -635,7 +653,7 @@ and exits, rather than surfacing a SQLite traceback:
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
-  `PCOMIRROR_SHADOW_KEEP`, and the container-friendly defaults
+  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`, and the container-friendly defaults
   `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.

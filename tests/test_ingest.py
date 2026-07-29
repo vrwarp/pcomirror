@@ -2,6 +2,7 @@ import unittest
 
 from base import build
 from fakepco import res
+from pcomirror.config import now_iso
 
 
 class TestBackfill(unittest.TestCase):
@@ -68,6 +69,44 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(row["merged_into_pco_id"], "1")
         self.assertEqual(row["tombstone_reason"], "merged")
 
+    def test_merger_poll_applies_each_merge_exactly_once(self):
+        """The watermark filter is `gte`, so the newest merge comes back for ever.
+
+        Applying it every time is what put a permanent `GET /people/{survivor}`
+        on a 120-second cadence in a real mirror — answered `404`, because that
+        survivor had since been deleted, for ever.
+        """
+        m, fake = self._seed()
+        fake.add_person("2", "Ada", "Dup", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        fake.merge(keep="1", remove="2", created="2026-04-01T00:00:00Z")
+        self.assertEqual(m.ingestor.merger_poll(), 1)
+        m.ingestor.drain_hydration()
+
+        # The same merge, still the newest, still returned by `gte`.
+        self.assertEqual(m.ingestor.merger_poll(), 0)
+        self.assertEqual(m.db.query_one("SELECT count(*) c FROM hydration_task")["c"], 0)
+        # ...and nothing was re-fetched on its behalf.
+        fake.request_log.clear()
+        m.ingestor.merger_poll()
+        m.ingestor.drain_hydration()
+        self.assertEqual([p for meth, p in fake.request_log if p.startswith("/people/")], [])
+
+    def test_merger_poll_terminates_when_a_page_shares_one_second(self):
+        """`per_page` merges at one `created_at` cannot advance the cursor.
+
+        `gte` then returns the identical full page every time, so paging on asks
+        for it again for ever.
+        """
+        m, fake = self._seed()
+        for i in range(2, 152):
+            fake.add_person(str(i), f"Dup{i}", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        for i in range(2, 152):
+            fake.merge(keep="1", remove=str(i), created="2026-04-01T00:00:00Z")
+        self.assertEqual(m.ingestor.merger_poll(), 100)   # one page, then stuck
+        self.assertEqual(m.ingestor.merger_poll(), 0)     # and it stops, rather than spinning
+
     def test_delete_audit_tombstones_hard_deleted(self):
         m, fake = self._seed()
         fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
@@ -98,6 +137,69 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(d["total_count"], 1)
         self.assertEqual(d["mirror_live"], 1)
         self.assertEqual(d["delta"], 0)
+
+    def test_drift_probe_does_not_ask_for_a_collection_pco_will_not_serve(self):
+        """`GET /household_memberships` is a 404 by design — there is no such
+        collection, only `/households/{id}/household_memberships`. Probing it
+        spent a request every 15 minutes to log a permanent error."""
+        m, fake = self._seed()
+        fake.request_log.clear()
+        d = m.ingestor.drift_probe("household_membership")
+        self.assertEqual(fake.request_log, [])
+        self.assertIsNone(d["total_count"])
+        self.assertIsNone(d["delta"])
+        self.assertEqual(d["mirror_live"], 0)
+
+
+class TestScheduledAudit(unittest.TestCase):
+    """The delete audit is the only mechanism that finds a hard delete with no
+    webhook and no merge. It was written, tested, documented and exposed on the
+    CLI — and never scheduled."""
+
+    def _seeded(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        return m, fake, Scheduler(m)
+
+    def test_scheduler_runs_the_delete_audit(self):
+        m, fake, sched = self._seeded()
+        fake.destroy("Person", "2")
+        sched.run_once()
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
+
+    def test_audit_is_not_repeated_within_its_interval(self):
+        m, fake, sched = self._seeded()
+        sched.run_once()
+        first = m.ingestor.state("person")["last_audit_completed_at"]
+        self.assertIsNotNone(first)
+        fake.request_log.clear()
+        sched.run_once()
+        self.assertEqual([p for meth, p in fake.request_log if "fields[Person]" in p], [])
+
+    def test_audit_interval_of_zero_switches_it_off(self):
+        m, fake, sched = self._seeded()
+        m.settings.audit_interval_hours = 0
+        fake.destroy("Person", "2")
+        sched.run_once()
+        self.assertIsNone(m.ingestor.state("person")["last_audit_completed_at"])
+
+    def test_a_failed_audit_waits_rather_than_retrying_every_tick(self):
+        """Due-ness reads the later of started/completed, so an audit that dies
+        partway does not re-enumerate the organization on the next 5s tick."""
+        m, fake, sched = self._seeded()
+
+        def explode(*a, **k):
+            raise ConnectionResetError("PCO is unreachable")
+        m.ingestor.client.get = explode
+        sched.run_once()
+        st = m.ingestor.state("person")
+        self.assertIsNone(st["last_audit_completed_at"])
+        self.assertIsNotNone(st["last_audit_started_at"])
+        self.assertFalse(sched._audit_due("person", now_iso()))
 
 
 class TestReferenceRefresh(unittest.TestCase):

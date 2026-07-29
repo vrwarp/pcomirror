@@ -154,6 +154,10 @@ CREATE TABLE IF NOT EXISTS shadow_report (
   report_id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   shape TEXT NOT NULL, path TEXT NOT NULL,
+  -- The concrete parameters, not just the shape. Without them an ordering
+  -- divergence is unreproducible: a real export showed one record eight places
+  -- out of position and the `order=` it was sorted by was nowhere in the file.
+  query TEXT NOT NULL DEFAULT '{}',
   verdict TEXT NOT NULL,                          -- divergence | staleness
   difference_count INTEGER NOT NULL DEFAULT 0, differences TEXT NOT NULL DEFAULT '[]',
   mirror_status INTEGER, pco_status INTEGER,
@@ -314,10 +318,35 @@ class Database:
         """
         with self._lock:
             self._conn.executescript(schema_sql())
-            added = self._reconcile_columns()
+            added = self._reconcile_columns() + self._reconcile_ops_columns()
             self._seed_walk_ledger()
             self._conn.commit()
         return added
+
+    #: Columns added to an ops table after it shipped. `CREATE TABLE IF NOT
+    #: EXISTS` is a no-op once the table is there, so a new column in the DDL
+    #: above reaches a fresh database and no existing one — and the first query
+    #: naming it fails at runtime, in whatever was using it. Registry tables get
+    #: this from `_reconcile_columns`; these have no registry entry to derive it
+    #: from, so they are listed. Definitions must match the DDL exactly.
+    _OPS_COLUMNS = (
+        ("shadow_report", "query", "TEXT NOT NULL DEFAULT '{}'"),
+    )
+
+    def _reconcile_ops_columns(self) -> list[str]:
+        changes = []
+        for table, col, definition in self._OPS_COLUMNS:
+            if not self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,)).fetchone():
+                continue
+            have = {row["name"] for row in
+                    self._conn.execute(f"PRAGMA table_xinfo({table})").fetchall()}
+            if col in have:
+                continue
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+            changes.append(f"+{table}.{col}")
+        return changes
 
     def _seed_walk_ledger(self) -> None:
         """Credit parents whose rows prove they were already walked.

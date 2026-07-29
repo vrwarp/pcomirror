@@ -281,11 +281,15 @@ class ShadowChecker:
         p = self.pseudonymiser
         self.db.execute(
             """INSERT INTO shadow_report
-                 (at, shape, path, verdict, difference_count, differences,
+                 (at, shape, path, query, verdict, difference_count, differences,
                   mirror_status, pco_status, mirror_body, pco_body, pco_request_id)
-               VALUES (:at,:shape,:path,:verdict,:n,:diffs,:ms,:ps,:mb,:pb,:rid)""",
+               VALUES (:at,:shape,:path,:query,:verdict,:n,:diffs,:ms,:ps,:mb,:pb,:rid)""",
             {"at": now_iso(), "shape": self._shape_of_sample(sample_id, path),
-             "path": path, "verdict": verdict,
+             # The shape says a query was ordered; only this says by what. An
+             # ordering difference is otherwise unreproducible from the export —
+             # the reader can see one record eight places out of position and has
+             # no way to learn which field put it there.
+             "path": path, "query": json.dumps(p.query(params or {})), "verdict": verdict,
              "n": len(differences),
              "diffs": json.dumps([_safe_difference(p, d) for d in differences]),
              "ms": mirror_status, "ps": upstream.status,
@@ -339,7 +343,7 @@ def recent(db, limit: int = 100, verdict: str = ""):
     if verdict:
         where, params = " WHERE verdict = ?", [verdict]
     return db.query(
-        f"SELECT report_id, at, shape, path, verdict, difference_count, differences, "
+        f"SELECT report_id, at, shape, path, query, verdict, difference_count, differences, "
         f"mirror_status, pco_status, pco_request_id FROM shadow_report{where} "
         f"ORDER BY report_id DESC LIMIT ?", (*params, max(1, min(1000, limit))))
 
@@ -375,7 +379,8 @@ def export(db) -> bytes:
         "note": ("Values are pseudonymised: consistent per organization, "
                  "reversible by nobody. Record ids and structure are real."),
         "reports": [{
-            "at": r["at"], "shape": r["shape"], "path": r["path"], "verdict": r["verdict"],
+            "at": r["at"], "shape": r["shape"], "path": r["path"],
+            "query": json.loads(r["query"] or "{}"), "verdict": r["verdict"],
             "mirror_status": r["mirror_status"], "pco_status": r["pco_status"],
             "pco_request_id": r["pco_request_id"],
             "differences": json.loads(r["differences"] or "[]"),

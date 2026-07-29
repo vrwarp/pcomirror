@@ -285,6 +285,28 @@ class TestWhatGetsStored(ShadowCase):
             self.m.db.query_one("SELECT differences FROM shadow_report")["differences"])[0]
         self.assertNotEqual(d["mirror"], d["pco"])
 
+    def test_the_concrete_query_is_stored_not_only_the_shape(self):
+        """A real export showed one record eight places out of position and gave
+        the reader no way to learn which field had sorted it: the shape says a
+        query was ordered, and only this says by what."""
+        self.fake.data["Person"]["1"]["attributes"]["first_name"] = "Grace"
+        wsgi_get(self.m.wsgi, "/people/v2/people", "order=last_name&per_page=25")
+        self.m.divergence.run_once()
+        report = divergence.recent(self.m.db)[0]
+        self.assertEqual(json.loads(report["query"])["order"], "last_name")
+        self.assertEqual(json.loads(report["query"])["per_page"], "25")
+
+    def test_a_filter_value_in_the_query_is_pseudonymised(self):
+        """`where[last_name]=Lovelace` is exactly as identifying as the attribute
+        of the same name, and the export is meant to be safe to hand over."""
+        self.fake.data["Person"]["1"]["attributes"]["first_name"] = "Grace"
+        wsgi_get(self.m.wsgi, "/people/v2/people",
+                 "where%5Blast_name%5D=Lovelace&order=last_name")
+        self.m.divergence.run_once()
+        payload = divergence.export(self.m.db).decode()
+        self.assertNotIn("Lovelace", payload)
+        self.assertIn('"order": "last_name"', payload)
+
     def test_the_log_is_capped(self):
         self.m.settings.shadow_keep = 3
         for i in range(6):
