@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from . import registry
+from . import registry, webhooks
 
 
 def _one(db, sql, params=()):
@@ -58,14 +58,11 @@ def webhook_stats(db) -> dict:
             "SELECT event_name, url_token, active, last_event_at, "
             "       trim(coalesce(authenticity_secret,'')) = '' AS unverified "
             "FROM webhook_subscription ORDER BY event_name"),
-        # Receivers that apply whatever is posted to them. Counted here rather
-        # than worked out in the template because the dashboard raises it as an
-        # alarm, and an alarm that is computed in two places eventually disagrees
-        # with itself.
-        "unverified_tokens": [r["url_token"] for r in db.query(
-            "SELECT DISTINCT url_token FROM webhook_subscription "
-            "WHERE active=1 AND trim(coalesce(authenticity_secret,'')) = '' "
-            "ORDER BY url_token")],
+        # Receivers that authenticate a delivery with nothing at all — no secret
+        # *and* a guessable token. A secretless receiver on an unguessable token
+        # is a bearer credential and is deliberately not counted here; see
+        # `webhooks.unprotected_tokens`, which is the one definition of this.
+        "unprotected_tokens": webhooks.unprotected_tokens(db),
     }
 
 

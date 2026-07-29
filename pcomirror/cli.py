@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import secrets
 import signal
 import sys
 import threading
@@ -137,7 +136,7 @@ def cmd_add_subscription(args):
     # Deriving it per call would mint a fresh token for each event — three
     # receivers where one was asked for — and re-running would rotate the URL PCO
     # is already delivering to, which is the one thing this must never do.
-    token = args.url_token or _existing_token(m, ids) or secrets.token_hex(16)
+    token = args.url_token or _existing_token(m, ids) or webhooks.mint_token()
     for sub_id, event in zip(ids, events):
         upsert_subscription(m.db, sub_id, event, args.secret, token, managed="admin")
         print(f"subscription {event} -> {_receiver_url(m.settings, token)}")
@@ -160,17 +159,20 @@ def cmd_list_subscriptions(args):
         return
     source = "operator page" if not webhooks.env_is_authoritative(m.db) else "environment"
     print(f"subscriptions are managed by the {source}\n")
-    print(f"{'ID':28} {'EVENT':46} {'FROM':6} {'CHECKED':8} {'STATE':8} LAST EVENT")
+    print(f"{'ID':28} {'EVENT':46} {'FROM':6} {'AUTH':9} {'STATE':8} LAST EVENT")
     for r in rows:
-        checked = "no" if webhooks.is_unverified(r) else "yes"
+        # What actually authenticates a delivery: the signature, the URL being
+        # unguessable, or nothing.
+        auth = ("signature" if not webhooks.is_unverified(r)
+                else "url" if webhooks.token_is_credential(r["url_token"]) else "NONE")
         print(f"{r['subscription_pco_id'][:28]:28} {r['event_name'][:46]:46} "
-              f"{r['managed']:6} {checked:8} {'active' if r['active'] else 'inactive':8} "
+              f"{r['managed']:6} {auth:9} {'active' if r['active'] else 'inactive':8} "
               f"{r['last_event_at'] or 'never'}")
     print()
+    unprotected = set(webhooks.unprotected_tokens(m.db))
     for rec in webhooks.receivers(m.db):
-        open_here = any(s["active"] and webhooks.is_unverified(s)
-                        for s in rec["subscriptions"])
-        note = "  ** NOT CHECKED — anyone who knows this URL can write **" if open_here else ""
+        note = ("  ** nothing authenticates a delivery here **"
+                if rec["url_token"] in unprotected else "")
         print(f"{_receiver_url(m.settings, rec['url_token'])}  "
               f"({len(rec['subscriptions'])} event(s)){note}")
 
@@ -213,20 +215,21 @@ def cmd_revoke_api_key(args):
 
 
 def _warn_unverified_receivers(m: Mirror) -> None:
-    """Say, at every start, which receiver URLs are accepting anything.
+    """Say, at every start, which receiver URLs authenticate a delivery with nothing.
 
-    Not once at the point it was configured: the person reading the log on a
-    Tuesday is not the person who ticked the box, and a receiver whose only
-    secret is the URL in its own log line should be re-noticed every time the
-    container comes up. Same treatment as PCOMIRROR_ALLOW_ANONYMOUS, for the
-    same reason.
+    Not every secretless receiver: one whose token is unguessable has moved its
+    authentication into the URL, which is a bearer credential and not news. What
+    is worth interrupting somebody about is the combination that checks nothing —
+    no secret and a token that could be guessed.
+
+    Said at every start rather than once when it was configured, because the
+    person reading the log on a Tuesday is not the person who set it up. Same
+    treatment as PCOMIRROR_ALLOW_ANONYMOUS, for the same reason.
     """
-    for rec in webhooks.receivers(m.db):
-        if not any(s["active"] and webhooks.is_unverified(s) for s in rec["subscriptions"]):
-            continue
-        print(f"[serve] {_receiver_url(m.settings, rec['url_token'])} has no authenticity "
-              "secret — deliveries to it are NOT checked. Anyone who learns the URL can "
-              "write to the mirror; do not expose it to the public internet.")
+    for token in webhooks.unprotected_tokens(m.db):
+        print(f"[serve] {_receiver_url(m.settings, token)} has no authenticity secret and "
+              "a guessable token, so NOTHING authenticates a delivery to it. Paste the "
+              "secret Planning Center shows, or move it to a receiver with a minted token.")
 
 
 def cmd_serve(args):
@@ -285,8 +288,9 @@ def main(argv=None):
                    help="event name; repeat to point several event types at one receiver")
     a.add_argument("--secret", default="",
                    help="the subscription's authenticity_secret, from Planning Center. "
-                        "Leave it out to accept deliveries to this receiver WITHOUT "
-                        "checking them — the URL token becomes its only secret.")
+                        "Leave it out to authenticate on the URL alone — in which case "
+                        "leave --url-token out too, so a minted token makes the URL a "
+                        "bearer credential rather than a guess.")
     a.add_argument("--url-token", help="receiver-URL token to use (8-64 chars of [A-Za-z0-9_-]); "
                                        "pick one to know the URL before registering at PCO. "
                                        "Default: keep the existing token, else generate one.")

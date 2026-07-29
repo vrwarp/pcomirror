@@ -111,10 +111,10 @@ receiver URL here carries as many event types as you point at it, and the
 receiver works out which subscription a delivery came from by **the secret that
 signed it**. Mixed secrets on one URL work for the same reason.
 
-`--secret` is optional. Leave it off and that subscription's signature is not
-checked at all — for a sender that cannot sign, at the cost of the URL token
-becoming the receiver's only secret. See
-[Receivers with no secret](#receivers-with-no-secret).
+`--secret` is optional. Leave it off — and `--url-token` off with it — and the
+receiver authenticates on its minted URL instead of on a signature, which is a
+bearer credential rather than a hole. See
+[Receivers with no secret](#receivers-with-no-secret-the-url-as-the-credential).
 
 Or skip the command line: **the operator page at `/` manages subscriptions**
 (`/admin/webhooks`) with the same event picker Planning Center shows, and takes
@@ -678,31 +678,52 @@ JSON form instead:
 Several entries may share one `url_token`, which is the usual shape: one receiver
 URL registered at PCO, carrying every event type you ticked there.
 
-#### Receivers with no secret
+#### Receivers with no secret: the URL as the credential
 
 The `authenticity_secret` field may be left empty
-(`sub_123:people.v2.events.person.updated:person-events-01:`, or the checkbox on
-`/admin/webhooks`). That subscription's signature is then **not checked at all**.
+(`sub_123:people.v2.events.person.updated::`, or the checkbox on
+`/admin/webhooks`). That subscription's signature is then not checked.
 
-It is a real thing to want — a sender that cannot sign, a stand-in while you
-rebuild, a LAN-only box behind something that already authenticates — and the
-cost is exact, so it is worth stating plainly rather than burying:
+This is not the same as "unauthenticated". It **moves** the authentication from
+the body's signature to the token in the URL — and a URL whose token is
+unguessable is a bearer credential, exactly as an API key in a header is. A
+minted token is 32 characters of base64url, 192 bits, so leaving the secret off
+and the token blank gives you a perfectly ordinary security model, not a hole.
 
-- The URL token becomes the only secret the receiver has. Anyone who learns the
-  URL can write anything into the mirror, including tombstones.
+So the mirror distinguishes the two cases rather than shouting about both:
+
+| | signature | guessable token, no secret | minted token, no secret |
+| --- | --- | --- | --- |
+| authenticated by | the body | **nothing** | the URL |
+| the mirror | says nothing | names it at every start, banners it, marks it | says nothing; notes on the receiver what the URL now is |
+
+`webhooks.token_is_credential` decides which, and the bar is deliberately
+conservative: at least 24 characters, and at least 100 bits by
+`len × log2(distinct symbols used)` — the alphabet the token *actually* uses, so
+`aaaa…` 32 times scores zero rather than 32. A minted token scores ~149; the
+kind of name somebody types, `person-events-01`, scores ~55.
+
+**What that estimate cannot do**, since it decides whether anything shouts: it
+assumes the characters were chosen independently. That is true of a minted token
+and false of a phrase, so a long descriptive slug scores like randomness and is
+not. If you pick a token by hand, do not also turn the secret off.
+
+Two things stay true whatever you choose:
+
 - A receiver is only as checked as its *least*-checked subscription. One
-  unverified subscription on a shared URL opens that URL, because a delivery may
-  name any event; signed subscriptions on it still verify and are still
-  attributed correctly, but nothing is turned away any more.
+  secretless subscription moves the whole URL's authentication into the token,
+  because a delivery may name any event; signed subscriptions on it still verify
+  and are still attributed correctly.
 - Only the signature check goes. An unknown token is still a `404`, the token
   format is still enforced, and a paused subscription still stops receiving.
 
-There is no separate switch for it, on purpose: the secret is the only thing a
-check could be made of, so "no secret" and "no check" are one fact rather than
-two settings that can disagree. The `serve` log names every unverified receiver
-URL at every start, `/admin/webhooks` marks them, `list-subscriptions` has a
-`CHECKED` column, and the dashboard raises a banner — the same treatment
-`PCOMIRROR_ALLOW_ANONYMOUS` gets, for the same reason.
+And if the URL is the credential, treat it like a password: serve it over TLS,
+keep it out of anything that logs or forwards URLs, and rotate it by moving the
+events to a subscription on a fresh token.
+
+There is no separate switch for any of this, on purpose: the secret is the only
+thing a check could be made of, so "no secret" and "no signature check" are one
+fact rather than two settings that can disagree.
 
 #### Subscriptions from the page
 
@@ -718,8 +739,8 @@ The page carries the same event picker Planning Center's console does: tick as
 many events as you like, paste the secret, and it registers one subscription per
 event, all pointing at one receiver URL that it then shows you to paste back into
 PCO. Leaving the secret blank needs the *no secret* box ticked as well — an empty
-field on its own is what a half-finished paste looks like, and the receiver it
-would silently produce accepts anything. It also states, per event, what the mirror will do with it — write it to a
+field on its own is what a half-finished paste looks like. Tick it and leave the
+token blank too, and the minted URL becomes the credential. It also states, per event, what the mirror will do with it — write it to a
 table, run the merge path, or record it and apply it to nothing (which is what an
 event for a resource with no table here means; those are kept in the inbox marked
 `ignored` rather than dead-lettered, so the dead-letter queue keeps meaning
@@ -817,7 +838,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 502 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 512 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write

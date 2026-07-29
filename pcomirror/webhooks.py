@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 
@@ -30,6 +31,34 @@ BURST_THRESHOLD = 200  # pending per-id hydrations above which we defer to a swe
 # A url_token is the last path segment of the receiver URL, so keep it to
 # characters that survive a URL untouched (DESIGN §6, `POST /pco/webhooks/<url_token>`).
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+def mint_token() -> str:
+    """A receiver token: 32 characters of base64url, 192 bits.
+
+    `token_urlsafe(24)` rather than `token_hex(16)`, which is the same 32
+    characters and only 128 bits. `token_bits` scores the alphabet a token
+    *actually uses*, and a hex string has only 16 symbols to draw on — about one
+    minted hex token in ten thousand used nine or fewer of them and scored under
+    the bar below, so the mirror would have minted a token and then called it
+    guessable on its own page. Sixty-four symbols puts that far out of reach: the
+    worst of 300k draws scored 131 bits.
+
+    Base64url is exactly the alphabet `TOKEN_RE` permits, so this needs no
+    escaping in the path it ends up in.
+    """
+    return secrets.token_urlsafe(24)
+
+
+#: How many characters, and how many bits by `token_bits`, a token needs before
+#: it can stand in for the authenticity secret rather than merely accompany it.
+#:
+#: 24 and 100 are chosen so a minted token clears both by a wide margin (~149
+#: bits typical, 131 at the worst of 300k draws) while the sort of name somebody
+#: types by hand — `person-events-01`, ~55 bits — does not come close. The gap
+#: is the point: a bar that a minted token only just clears is one that fails
+#: occasionally and at random, which is worse than no bar at all.
+CREDENTIAL_MIN_LEN = 24
+CREDENTIAL_BITS = 100
 
 #: Set once the operator saves anything on the subscriptions page. From then on
 #: the page is authoritative and PCOMIRROR_SUBSCRIPTIONS is not applied — the
@@ -52,6 +81,46 @@ def verify(secret: str, raw: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(expected_b64, signature.strip())
 
 
+def token_bits(token: str) -> float:
+    """A deliberately pessimistic guess at how hard `token` is to guess.
+
+    `len × log2(distinct symbols actually used)`. The alphabet is taken from the
+    token itself rather than from what `TOKEN_RE` permits, so a token that only
+    ever uses ten characters is scored as ten, and a run of one repeated
+    character scores zero rather than its length.
+
+    **What it cannot do**, said plainly because the whole point of this number is
+    to decide whether to raise an alarm: it assumes the characters were chosen
+    independently. That is true of a minted token and false of a phrase, so a
+    long descriptive slug — `my-church-person-webhook-receiver` — scores like
+    randomness and is not. If you choose a token by hand, do not also turn the
+    secret off. The floor exists to catch the short obvious cases and to let a
+    genuinely random token through, not to grade English.
+    """
+    token = token or ""
+    distinct = len(set(token))
+    if distinct < 2:
+        return 0.0
+    return len(token) * math.log2(distinct)
+
+
+def token_is_credential(token: str) -> bool:
+    """Is this token strong enough to *be* the authentication?
+
+    A receiver URL is a bearer credential the moment the token in it is
+    unguessable: whoever holds the URL can post to it, and nothing else is being
+    asked for. That is the same security model as an API key in a header, and it
+    is exactly what a minted token gives — 192 bits from `mint_token`.
+
+    So this is what decides whether a subscription with no secret is an ordinary
+    configuration or a hole. `person-events-01` with no secret is a hole. A minted
+    token with no secret is a bearer credential, and shouting about it would only
+    teach an operator to ignore the shouting.
+    """
+    token = token or ""
+    return len(token) >= CREDENTIAL_MIN_LEN and token_bits(token) >= CREDENTIAL_BITS
+
+
 def is_unverified(sub) -> bool:
     """Does this subscription skip the signature check?
 
@@ -65,11 +134,10 @@ def is_unverified(sub) -> bool:
     through `listing`, which computes this in SQL and never selects the secret at
     all — a page cannot leak a value it was never handed.
 
-    It is a real thing to want — a sender that cannot sign, a stand-in during a
-    rebuild, a LAN-only box behind something that already authenticates — and a
-    real thing to be careful with: an unverified receiver applies whatever is
-    posted to its URL to the mirror, so the URL token becomes the only secret
-    there is. The admin page and the `serve` log both say so out loud.
+    Not in itself a problem. It moves the authentication from the body's
+    signature to the token in the URL, which is a bearer credential when the
+    token is unguessable — see `token_is_credential`, and `unprotected_tokens`
+    for the combination that *is* a problem.
     """
     if "unverified" in sub.keys():
         return bool(sub["unverified"])
@@ -128,7 +196,7 @@ def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
         raise ValueError("a subscription needs an event name")
     row = db.query_one(
         "SELECT url_token FROM webhook_subscription WHERE subscription_pco_id=?", (subscription_id,))
-    token = url_token or (row["url_token"] if row else secrets.token_hex(16))
+    token = url_token or (row["url_token"] if row else mint_token())
     resource, action = parse_event_name(event_name)
     db.execute(
         "INSERT INTO webhook_subscription"
@@ -171,6 +239,26 @@ def listing(db) -> list:
         "       last_event_at, managed, created_at, "
         "       trim(coalesce(authenticity_secret,'')) = '' AS unverified "
         "FROM webhook_subscription ORDER BY url_token, event_name")
+
+
+def unprotected_tokens(db) -> list[str]:
+    """Receiver tokens that authenticate a delivery with nothing at all.
+
+    The one definition of "raise the alarm", read by the dashboard, the receivers
+    page and the `serve` log, because an alarm computed in three places is one
+    that eventually disagrees with itself about when to go off.
+
+    Not simply "has no secret". A subscription with no secret has moved its
+    authentication into the URL, and a URL with an unguessable token is a bearer
+    credential — the same model as an API key, and not something to interrupt
+    somebody about. What is left over is the combination that authenticates
+    nothing: **no secret and a token somebody could guess**.
+    """
+    return [row["url_token"] for row in db.query(
+        "SELECT DISTINCT url_token FROM webhook_subscription "
+        "WHERE active=1 AND trim(coalesce(authenticity_secret,'')) = '' "
+        "ORDER BY url_token")
+        if not token_is_credential(row["url_token"])]
 
 
 def receivers(db) -> list[dict]:
