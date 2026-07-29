@@ -160,15 +160,19 @@ def cmd_list_subscriptions(args):
         return
     source = "operator page" if not webhooks.env_is_authoritative(m.db) else "environment"
     print(f"subscriptions are managed by the {source}\n")
-    print(f"{'ID':28} {'EVENT':46} {'FROM':6} {'STATE':8} LAST EVENT")
+    print(f"{'ID':28} {'EVENT':46} {'FROM':6} {'CHECKED':8} {'STATE':8} LAST EVENT")
     for r in rows:
+        checked = "no" if webhooks.is_unverified(r) else "yes"
         print(f"{r['subscription_pco_id'][:28]:28} {r['event_name'][:46]:46} "
-              f"{r['managed']:6} {'active' if r['active'] else 'inactive':8} "
+              f"{r['managed']:6} {checked:8} {'active' if r['active'] else 'inactive':8} "
               f"{r['last_event_at'] or 'never'}")
     print()
     for rec in webhooks.receivers(m.db):
+        open_here = any(s["active"] and webhooks.is_unverified(s)
+                        for s in rec["subscriptions"])
+        note = "  ** NOT CHECKED — anyone who knows this URL can write **" if open_here else ""
         print(f"{_receiver_url(m.settings, rec['url_token'])}  "
-              f"({len(rec['subscriptions'])} event(s))")
+              f"({len(rec['subscriptions'])} event(s)){note}")
 
 
 def cmd_remove_subscription(args):
@@ -208,6 +212,23 @@ def cmd_revoke_api_key(args):
         sys.exit(f"no active key with prefix {args.prefix}")
 
 
+def _warn_unverified_receivers(m: Mirror) -> None:
+    """Say, at every start, which receiver URLs are accepting anything.
+
+    Not once at the point it was configured: the person reading the log on a
+    Tuesday is not the person who ticked the box, and a receiver whose only
+    secret is the URL in its own log line should be re-noticed every time the
+    container comes up. Same treatment as PCOMIRROR_ALLOW_ANONYMOUS, for the
+    same reason.
+    """
+    for rec in webhooks.receivers(m.db):
+        if not any(s["active"] and webhooks.is_unverified(s) for s in rec["subscriptions"]):
+            continue
+        print(f"[serve] {_receiver_url(m.settings, rec['url_token'])} has no authenticity "
+              "secret — deliveries to it are NOT checked. Anyone who learns the URL can "
+              "write to the mirror; do not expose it to the public internet.")
+
+
 def cmd_serve(args):
     m = _mirror()
     _apply_env_subscriptions(m)
@@ -217,6 +238,7 @@ def cmd_serve(args):
     elif not apikeys.any_enabled(m.db):
         print("[serve] no API keys configured — /people/v2 will return 401. "
               "Create one with `pcomirror create-api-key --name <app>`.")
+    _warn_unverified_receivers(m)
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)
     sched = None
@@ -261,7 +283,10 @@ def main(argv=None):
     a.add_argument("--subscription-id", required=True)
     a.add_argument("--event", required=True, action="append",
                    help="event name; repeat to point several event types at one receiver")
-    a.add_argument("--secret", required=True)
+    a.add_argument("--secret", default="",
+                   help="the subscription's authenticity_secret, from Planning Center. "
+                        "Leave it out to accept deliveries to this receiver WITHOUT "
+                        "checking them — the URL token becomes its only secret.")
     a.add_argument("--url-token", help="receiver-URL token to use (8-64 chars of [A-Za-z0-9_-]); "
                                        "pick one to know the URL before registering at PCO. "
                                        "Default: keep the existing token, else generate one.")

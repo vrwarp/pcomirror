@@ -515,12 +515,16 @@ POST /pco/webhooks/<url_token>
   raw  = request.raw_body_bytes                      # EXACT pre-parse bytes
   subs = active_subscriptions_on(url_token)          # 1..n — a URL may carry many events
   if not subs:                                                 return 404   # unknown token — NOT 410
-  sig = header["X-PCO-Webhooks-Authenticity"]        or  return 401
-  sub = first s in subs with constant_time_eq(hmac_sha256(s.secret, raw), sig)   # all compared
-  if sub is None:                                              return 401   # bad sig — NOT 410
+  sig  = header["X-PCO-Webhooks-Authenticity"]                              # may be absent
+  signed = [s for s in subs if s.secret != ""]
+  open   = [s for s in subs if s.secret == ""]       # §6.2.1 — checked against nothing
+  sub = first s in signed with constant_time_eq(hmac_sha256(s.secret, raw), sig)  # all compared
+  if sub is None and not open:                                 return 401   # bad sig — NOT 410
   try:
      env = json_parse(raw)
-     upsert webhook_delivery(delivery_id=env.id, raw_body=raw, signature=sig)  ON CONFLICT DO NOTHING
+     sub = sub or by_event_name(open, env)           # attribution only, never acceptance
+     upsert webhook_delivery(delivery_id=env.id, raw_body=raw, signature=sig or "")
+                                                       ON CONFLICT DO NOTHING
      for item in env.data:                            # a delivery may BATCH several events
         insert webhook_event(event_id=item.id, payload=json_parse(item.attributes.payload), …)
                                                        ON CONFLICT (event_id) DO NOTHING
@@ -536,6 +540,41 @@ id** (handles batched deliveries — a delivery batching `person.updated` +
 `email.created` yields two inbox rows, not one). **Never emit 410** — an explicit
 response allow-list `{200,204,401,404,503}` plus a catch-all coercion to 204 (post-
 capture) / 503 (pre-capture), enforced by a contract test, guards the 410 footgun.
+
+#### 6.2.1 A subscription with no secret
+
+A blank `authenticity_secret` means the signature is not checked for that
+subscription. It is spelled as an *absent secret* rather than as a flag because
+the secret is the only thing a check could be made of — a separate switch would
+be a second setting that can disagree with the first, and the way that resolves
+is a receiver verifying against the empty string.
+
+Wanted for senders that cannot sign, and for a stand-in during a rebuild. The
+cost is precise and belongs written down:
+
+- The URL token becomes the receiver's only secret, so it is now a bearer
+  credential for writing to the mirror — including tombstones.
+- A receiver is only as checked as its **least**-checked subscription. Signed
+  subscriptions on the same URL still verify and are still attributed to
+  themselves, but nothing is turned away any more, and a body may claim any event
+  name (§6.2 files events by the *item's* name, not the subscription's).
+- Nothing else is relaxed: an unknown token is still 404, the token format is
+  still enforced, and pausing the last unverified subscription closes the URL.
+
+Two consequences fall out of the code rather than the policy. `sig` is used for
+*attribution* only once a match is found, so with no secrets there is nothing
+that can name the sender — the delivery's own event name is the best available
+guess and is only a label on the audit row. And `webhook_delivery.signature` is
+`NOT NULL` while a sender with nothing to sign with sends no header at all, so
+the absence is stored as `''`; letting that insert fail would have answered 503
+and had the sender redeliver, for ever.
+
+Because this cannot be made safe, it is made **loud**: `serve` names every
+unverified receiver URL at every start (not once at configuration time — the
+person reading the log on a Tuesday is not the person who ticked the box), the
+dashboard raises a banner, `/admin/webhooks` marks the receiver and every
+subscription on it, and `list-subscriptions` has a `CHECKED` column. Same
+treatment as `PCOMIRROR_ALLOW_ANONYMOUS` (§8.4), for the same reason.
 
 ### 6.3 Async worker — dispatch, guard, hydrate
 
@@ -1174,6 +1213,7 @@ uses the simpler equivalents from [§0](#0-deployment-profile-decided).
 | 21 | "A unique receiver URL per subscription" read PCO's *model* (one subscription per event) as a *constraint* on URLs, which it is not — its own console points every ticked event at one URL. `url_token UNIQUE` made the normal setup impossible to register | `url_token` not unique; the receiver resolves the delivering subscription by **the secret that signed the body**, never by the event name in the payload (§6.1–6.2) |
 | 22 | `PCOMIRROR_SUBSCRIPTIONS` re-applied on every start would silently overwrite a webhook fixed from the operator page, at the moment nobody is watching | The page takes precedence once used (`mirror_meta.subscriptions_managed_here`); the environment is reported-and-skipped, and handed back explicitly (§6.1) |
 | 23 | An event for a resource with no table dead-lettered, so subscribing to the whole console list filled the queue an alert points at with events that were only ever going to be filed | Captured and marked `ignored`, payload intact, counted on the page; dead letters keep meaning "something broke" (§6.1) |
+| 24 | A secret was mandatory, which shut out senders that cannot sign — and `webhook_delivery.signature NOT NULL` would have turned the unsigned delivery into a 503 and an endless redelivery loop rather than a stored one | A blank secret means no check (§6.2.1); the absent header stores as `''`; the receiver is loud about it at every start rather than safe-looking and silent |
 
 ---
 

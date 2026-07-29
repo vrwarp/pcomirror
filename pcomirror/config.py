@@ -36,6 +36,12 @@ def parse_subscriptions(value: str | None) -> list[SubscriptionSpec]:
       id:event:token:secret , id:event::secret     (empty token = keep/mint)
       [{"id": ..., "event": ..., "token": ..., "secret": ...}, ...]
 
+    An **empty secret** (`id:event:token:`) turns the signature check off for
+    that subscription — see `webhooks.is_unverified`. It is spelled as an absent
+    secret rather than as a flag because the secret is the only thing a check
+    could be made of; a separate switch would be a second setting that can
+    disagree with the first.
+
     Raises ValueError on anything malformed: a typo here means webhooks silently
     404 or fail their signature check, so it must be loud at startup.
     """
@@ -53,10 +59,11 @@ def parse_subscriptions(value: str | None) -> list[SubscriptionSpec]:
         for i, e in enumerate(entries):
             if not isinstance(e, dict):
                 raise ValueError(f"PCOMIRROR_SUBSCRIPTIONS[{i}] is not an object")
-            missing = [k for k in ("id", "event", "secret") if not e.get(k)]
+            missing = [k for k in ("id", "event") if not e.get(k)]
             if missing:
                 raise ValueError(f"PCOMIRROR_SUBSCRIPTIONS[{i}] missing {', '.join(missing)}")
-            out.append(SubscriptionSpec(str(e["id"]), str(e["event"]), str(e["secret"]),
+            out.append(SubscriptionSpec(str(e["id"]), str(e["event"]),
+                                        str(e.get("secret") or ""),
                                         str(e.get("token") or "")))
         return out
     out = []
@@ -69,9 +76,10 @@ def parse_subscriptions(value: str | None) -> list[SubscriptionSpec]:
             raise ValueError(
                 f"bad PCOMIRROR_SUBSCRIPTIONS entry {entry!r}: expected id:event:token:secret")
         sub_id, event, token, secret = (p.strip() for p in parts)
-        if not (sub_id and event and secret):
+        if not (sub_id and event):
             raise ValueError(f"bad PCOMIRROR_SUBSCRIPTIONS entry {entry!r}: "
-                             "id, event and secret are required (token may be empty)")
+                             "id and event are required (token may be empty; an empty "
+                             "secret turns the signature check off)")
         out.append(SubscriptionSpec(sub_id, event, secret, token))
     return out
 

@@ -52,6 +52,43 @@ def verify(secret: str, raw: bytes, signature: str | None) -> bool:
     return hmac.compare_digest(expected_b64, signature.strip())
 
 
+def is_unverified(sub) -> bool:
+    """Does this subscription skip the signature check?
+
+    A blank `authenticity_secret` means yes. There is no separate switch on
+    purpose: the secret is the only thing a check could be made of, so "no
+    secret" and "no check" are the same fact, and two settings that can disagree
+    about it is how a receiver ends up verifying against the empty string.
+
+    Takes either shape of row. The receiver holds the whole subscription because
+    it has to verify against the secret; everything that only *displays* one goes
+    through `listing`, which computes this in SQL and never selects the secret at
+    all — a page cannot leak a value it was never handed.
+
+    It is a real thing to want — a sender that cannot sign, a stand-in during a
+    rebuild, a LAN-only box behind something that already authenticates — and a
+    real thing to be careful with: an unverified receiver applies whatever is
+    posted to its URL to the mirror, so the URL token becomes the only secret
+    there is. The admin page and the `serve` log both say so out loud.
+    """
+    if "unverified" in sub.keys():
+        return bool(sub["unverified"])
+    return not (sub["authenticity_secret"] or "").strip()
+
+
+def _by_event_name(subs, env: dict):
+    """The subscription whose event this delivery claims to be, else the first.
+
+    Used only to label an unchecked delivery. Deliveries carry one event name —
+    PCO makes a subscription per name — so on a receiver holding several
+    unchecked ones this is what stops them all being filed under whichever sorted
+    first.
+    """
+    data = env.get("data") or []
+    name = (data[0].get("attributes") or {}).get("name") if data else None
+    return next((s for s in subs if s["event_name"] == name), subs[0])
+
+
 def parse_event_name(name: str) -> tuple[str, str]:
     parts = name.split(".")
     # people.v2.events.<resource>.<action>
@@ -76,6 +113,12 @@ def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
 
     `managed` records who wrote the row — 'env' or 'admin' — so the page can say
     where each subscription came from.
+
+    `secret` may be blank, which turns the signature check off for this
+    subscription (`is_unverified`). Deliberately not rejected here: it is a
+    choice an operator is allowed to make, and the place to argue about it is
+    where they can see the consequence — the page and the `serve` log — not an
+    exception from a function that also runs at container start.
     """
     if url_token is not None and not TOKEN_RE.match(url_token):
         raise ValueError(f"invalid url_token {url_token!r}: expected 8-64 chars of [A-Za-z0-9_-]")
@@ -83,8 +126,6 @@ def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
         raise ValueError("a subscription needs an id")
     if not (event_name or "").strip():
         raise ValueError("a subscription needs an event name")
-    if not (secret or "").strip():
-        raise ValueError("a subscription needs an authenticity secret")
     row = db.query_one(
         "SELECT url_token FROM webhook_subscription WHERE subscription_pco_id=?", (subscription_id,))
     token = url_token or (row["url_token"] if row else secrets.token_hex(16))
@@ -118,10 +159,17 @@ def set_active(db, subscription_id: str, active: bool) -> bool:
 
 
 def listing(db) -> list:
-    """Every subscription, grouped-friendly: receiver first, then event."""
+    """Every subscription, grouped-friendly: receiver first, then event.
+
+    Whether a subscription is checked comes back as a computed `unverified`
+    flag and the secret itself is never selected. Everything that renders a
+    subscription reads this, so no page or log line is ever holding the value it
+    would be a disaster to print.
+    """
     return db.query(
         "SELECT subscription_pco_id, event_name, resource, action, url_token, active, "
-        "       last_event_at, managed, created_at "
+        "       last_event_at, managed, created_at, "
+        "       trim(coalesce(authenticity_secret,'')) = '' AS unverified "
         "FROM webhook_subscription ORDER BY url_token, event_name")
 
 
@@ -202,6 +250,12 @@ class WebhookProcessor:
         the subscription Planning Center sent this from. The loop does not break
         on a match, so how long it takes does not say *which* subscription
         matched — only the per-comparison constant-time guarantee is `verify`'s.
+
+        A subscription with a **blank secret** is not checked at all (see
+        `is_unverified`). Signed subscriptions are still tried first, so adding
+        one alongside them does not stop the signed ones being attributed
+        correctly — but it does mean this URL now accepts whatever is posted to
+        it, which is the whole point and also the whole risk.
         """
         subs = self.db.query(
             "SELECT * FROM webhook_subscription WHERE url_token=? AND active=1 "
@@ -210,21 +264,32 @@ class WebhookProcessor:
             return 404, "unknown token"                         # NOT 410
         matched = None
         for candidate in subs:
-            if verify(candidate["authenticity_secret"], raw, signature) and matched is None:
+            if not is_unverified(candidate) and \
+                    verify(candidate["authenticity_secret"], raw, signature) and matched is None:
                 matched = candidate
-        if matched is None:
+        open_subs = [s for s in subs if is_unverified(s)]
+        if matched is None and not open_subs:
             return 401, "bad signature"                         # NOT 410
-        sub = matched
         try:
             env = json.loads(raw)
         except json.JSONDecodeError:
             return 503, "unparseable"                           # pre-capture: PCO retries safely
+        # Attribution only. With no signature there is nothing that can name the
+        # sender, so the delivery's own event name is the best available guess at
+        # which unchecked subscription it belongs to — and it is only a label on
+        # the delivery row, never a decision about whether to accept it.
+        sub = matched or _by_event_name(open_subs, env)
         delivery_id = env.get("id") or f"nodelivery-{now_iso()}"
         try:
             self.db.execute(
                 "INSERT OR IGNORE INTO webhook_delivery(delivery_id,subscription_pco_id,signature,raw_body,attempt) "
                 "VALUES(?,?,?,?,?)",
-                (delivery_id, sub["subscription_pco_id"], signature, raw, env.get("attempt")))
+                # `signature` is NOT NULL and a sender with nothing to sign with
+                # may send no header at all. Storing the absence as an empty
+                # string keeps the audit row; letting the insert fail would have
+                # answered 503 and had PCO redeliver, forever.
+                (delivery_id, sub["subscription_pco_id"], signature or "", raw,
+                 env.get("attempt")))
             for item in env.get("data", []):
                 name = item.get("attributes", {}).get("name", sub["event_name"])
                 res, act = parse_event_name(name)

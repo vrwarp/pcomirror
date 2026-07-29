@@ -309,6 +309,14 @@ class AdminApp:
         if self.s.allow_anonymous:
             banners += ("<p class='msg err'>PCOMIRROR_ALLOW_ANONYMOUS is set: "
                         "<code>/people/v2</code> is served without an API key.</p>")
+        open_tokens = st["webhooks"]["unverified_tokens"]
+        if open_tokens:
+            banners += (f"<p class='msg err'>{len(open_tokens)} webhook receiver"
+                        f"{'' if len(open_tokens) == 1 else 's'} have no authenticity "
+                        f"secret, so nothing posted to them is checked: "
+                        f"{', '.join('…/' + E(t) for t in open_tokens)}. Anyone who learns "
+                        f"the URL can write to the mirror. "
+                        f"<a href=/admin/webhooks>Review them</a>.</p>")
 
         return 200, _headers(), _page("Admin", "".join([
             "<p class=sub>operator console</p>", banners,
@@ -726,10 +734,15 @@ class AdminApp:
         secret = (form.get("secret") or "").strip()
         if not events:
             return self._webhooks_page({}, session, error="Choose at least one event.")
-        if not secret:
+        # A blank secret is allowed, but only on purpose. An empty field is what a
+        # half-finished paste looks like, and the failure it would cause is a
+        # receiver that quietly accepts anything — so the box has to be ticked as
+        # well, and the two together cannot happen by accident.
+        if not secret and not form.get("unverified"):
             return self._webhooks_page(
                 {}, session,
-                error="Paste the authenticity secret Planning Center shows for this webhook.")
+                error="Paste the authenticity secret Planning Center shows for this "
+                      "webhook — or tick 'no secret' to accept deliveries unchecked.")
         if token and not webhooks.TOKEN_RE.match(token):
             return self._webhooks_page(
                 {}, session, error="A receiver token is 8–64 characters of A–Z, a–z, 0–9, - or _.")
@@ -860,10 +873,13 @@ class AdminApp:
             for s in rec["subscriptions"]:
                 verdict, why = pcoevents.handling(s["event_name"])
                 toggle = "off" if s["active"] else "on"
+                checked = ("<span class=muted>signature</span>" if not webhooks.is_unverified(s)
+                           else "<span class=warn>none</span>")
                 rows.append(f"""
 <tr><td>{E(s['event_name'])}</td>
     <td class={'muted' if verdict != 'recorded' else 'warn'}>{E(verdict)}</td>
     <td class=muted style='white-space:normal'>{E(why)}</td>
+    <td>{checked}</td>
     <td>{'active' if s['active'] else '<span class=muted>paused</span>'}</td>
     <td>{_esc(s['last_event_at'], 'never')}</td>
     <td>{E(s['managed'])}</td>
@@ -876,17 +892,29 @@ class AdminApp:
       <input type=hidden name=csrf value="{csrf}">
       <input type=hidden name=id value="{E(s['subscription_pco_id'])}">
       <button class=link type=submit>remove</button></form></td></tr>""")
+            # A receiver is only as checked as its least-checked subscription:
+            # one unverified row means the URL accepts whatever is posted to it,
+            # whatever the others are signed with. Said on the receiver, because
+            # the URL is the thing being handed out.
+            open_here = [s for s in rec["subscriptions"]
+                         if s["active"] and webhooks.is_unverified(s)]
+            warning = "" if not open_here else (
+                "<p class='msg err'>No authenticity secret, so deliveries to this "
+                "receiver are <b>not checked</b> — anyone who learns the URL can write "
+                "to the mirror. The token in it is the only secret this receiver has.</p>")
             blocks.append(f"""
 <h3 style='font-size:.95rem;margin:1.5rem 0 .25rem'>{E(rec['url_token'])}</h3>
-<p class=secret>{E(self._receiver_url(rec['url_token']))}</p>
-<table><tr><th>event<th>handling<th>what happens<th>state<th>last event<th>set by<th></tr>
+<p class=secret>{E(self._receiver_url(rec['url_token']))}</p>{warning}
+<table><tr><th>event<th>handling<th>what happens<th>checked<th>state<th>last event
+  <th>set by<th></tr>
 {''.join(rows)}</table>""")
         return f"""
 <h2>Receivers</h2>
 <p class=muted>One URL per receiver, however many event types it carries. Planning
   Center makes a subscription per event name but lets them share a URL, and each
   carries its own authenticity secret — the receiver works out which subscription
-  a delivery came from by the secret that signed it.</p>
+  a delivery came from by the secret that signed it. A subscription with no secret
+  is not checked at all.</p>
 {''.join(blocks)}"""
 
     def _webhooks_add_section(self, csrf: str) -> str:
@@ -918,10 +946,16 @@ class AdminApp:
          pattern="[A-Za-z0-9_-]{{8,64}}">
   <datalist id=existing-receivers>{options}</datalist>
   <label for=sec>Authenticity secret</label>
-  <input id=sec name=secret required placeholder="whsec_…">
+  <input id=sec name=secret placeholder="whsec_…">
   <p class=muted>If Planning Center issued a different secret per event, add those
     events one at a time — the receiver verifies against every secret registered
     for its URL, so mixed secrets on one URL work.</p>
+  <label class=warn><input type=checkbox name=unverified value=1> No secret —
+    accept deliveries <b>without checking them</b></label>
+  <p class=muted>For a sender that cannot sign, or a stand-in while you rebuild.
+    It makes the URL token the only secret the receiver has: anyone who learns it
+    can write anything into the mirror, so keep it off the public internet. Leave
+    unticked and paste the secret for anything Planning Center is delivering to.</p>
   <label for=sid>Subscription id <span class=muted>(optional; used only when one
     event is ticked)</span></label>
   <input id=sid name=subscription_id placeholder="Planning Center's id, if you have it">
