@@ -1051,6 +1051,16 @@ def write_through(req, ctx):                        # caller's api-key must hold
   converges. (The walk is *redone* rather than the ledger *dropped* — dropping it
   would turn every household read into a `503` for as long as PCO was
   unreachable, trading a staleness bug for an availability one.)
+- **A top-level write can move records too.** `POST /households` builds a whole
+  family in one call: the members are named in the request's
+  `relationships.people`, and PCO stores that edge on each of them as well —
+  `person.relationships.households` is a second copy, not a view. The response
+  describes only the household, so the people it moved are re-read before the
+  response, capped, with any tail queued. Only the edges the *request* names are
+  followed: PCO's reply echoes a record's whole relationship set, and chasing
+  those would make an ordinary `PATCH` pay for edges it never touched. Two gaps
+  are left to the sweep on purpose — a member a `PATCH` *removes* is named by
+  neither the request nor the mirror by then, and a `DELETE` names nobody.
 - **Read-your-writes**, *best-effort*. A `POST` inserts the new `pco_id`
   immediately, so the very next local read (even before the webhook lands) sees
   the change. If that local insert itself fails, the request still succeeds —
