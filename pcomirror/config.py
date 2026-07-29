@@ -105,6 +105,13 @@ class Settings:
     # failure writes one, so at this scale a thousand is weeks of history and
     # well under a megabyte. 0 switches recording off entirely.
     diagnostic_keep: int = 1000
+    # Divergence checking: how many read *shapes* per scheduler pass to re-ask
+    # PCO about. 0 (the default) switches it off — it spends real PCO budget, so
+    # it is something an operator turns on while chasing a problem.
+    shadow_per_minute: int = 0
+    # How many divergence reports to keep. Each holds two whole responses, so
+    # this is the setting that decides the log's size on disk.
+    shadow_keep: int = 200
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -127,6 +134,10 @@ class Settings:
             s.rate_target_rps = float(e["PCOMIRROR_RATE_TARGET_RPS"])
         if e.get("PCOMIRROR_DIAGNOSTIC_KEEP"):
             s.diagnostic_keep = max(0, int(e["PCOMIRROR_DIAGNOSTIC_KEEP"]))
+        if e.get("PCOMIRROR_SHADOW_PER_MINUTE"):
+            s.shadow_per_minute = max(0, int(e["PCOMIRROR_SHADOW_PER_MINUTE"]))
+        if e.get("PCOMIRROR_SHADOW_KEEP"):
+            s.shadow_keep = max(1, int(e["PCOMIRROR_SHADOW_KEEP"]))
         return s
 
     def auth_header(self) -> str:

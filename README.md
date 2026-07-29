@@ -347,6 +347,166 @@ Recording never fails a request — if it cannot write, the page says the log is
 incomplete rather than quietly showing a short one. The table is capped at
 `PCOMIRROR_DIAGNOSTIC_KEEP` rows (default 1000; `0` switches recording off).
 
+### Divergence checking
+
+`/admin/divergence` records where the mirror and Planning Center disagree, so a
+wrong answer stops being something only a user notices. Off unless
+`PCOMIRROR_SHADOW_PER_MINUTE` is set above zero — it spends real PCO budget, so
+it is meant to be switched on while chasing something.
+
+**Why it has to exist.** Every freshness mechanism in this design rests on
+`updated_at` being truthful, and there is now a measured case where it is not:
+PCO demotes a previous primary email **without moving it**
+([`docs/mutation-testing.md`](docs/mutation-testing.md)). The sweep filters on
+that timestamp so the record never comes back; the monotonic writer would refuse
+it as not-newer if something did fetch it; drift counts rows and the count does
+not change. Nothing converges on it, ever. Asking PCO is the only way to see it.
+
+**How it works.** It keeps a **live golden corpus**: the distinct reads the
+mirror has actually been asked for. The scheduler works through it under the rate
+cap, replaying each request against the mirror *and* PCO back to back, then
+comparing. `tests/golden/` is the same idea recorded by hand once; this is the
+same idea kept current by the traffic itself.
+
+Nothing is synthesised. Every request checked is one a caller really made — a
+made-up query tests something nobody does, and spends the PCO budget doing it.
+
+Replaying both sides at comparison time is what keeps them near-simultaneous: an
+edit landing between a stored response and a later upstream read is
+indistinguishable from a bug.
+
+**Shape is a fairness unit, not the sample.** Requests are grouped by shape — the
+path with ids and paging removed, so `/people/1` and `/people/99999` group
+together. Checking takes the least-recently-checked *shape*, then the
+least-recently-checked request within it. The grouping stops the busiest query in
+the building taking every check; the several requests inside a group are what
+cover the records callers actually touch, so a shape does not mean re-verifying
+one person for ever. Up to `SAMPLES_PER_SHAPE` (25) requests are kept per shape,
+the busiest ones — a request made once may never be made again, and the one made
+constantly is the one whose breaking gets noticed.
+
+The boundary this draws is deliberate: it verifies the mirror **against the
+traffic it serves**. A record no caller has ever asked for is outside it, and the
+reconcile sweep and drift probe own that ground.
+
+**What fairness by shape does and does not buy.** Every shape gets an equal share
+of the checks, whatever its traffic. Measured against deliberately lopsided
+traffic:
+
+| shape | share of traffic | share of checks |
+|---|---|---|
+| `/people` | 97.7% | 25% |
+| `/people/{id}` | 2.0% | 25% |
+| `/people?include` | 0.2% | 25% |
+| `/people?where[child]` | 0.2% | 25% |
+
+That is the intent, not a side effect. A hot query breaking is noticed in minutes
+by whoever is using it; a filter run once a week breaking is silent for as long as
+nobody runs it. Equal shares deliberately bias the budget towards the quiet
+corners, because those are the ones nothing else will report.
+
+The cost is coverage *within* a busy shape: with `S` shapes at `R` checks a
+minute, a shape holding `N` distinct requests takes `N·S/R` minutes to work
+through them. Twenty shapes at 6/min with 25 requests in one of them is about an
+hour and a half for that shape's full cycle.
+
+**Yielding to the foreground.** Background work — `divergence`, `reconcile`,
+`backfill`, `webhook_hydrate` — only spends a token when the bucket has headroom
+above a reserve, so it uses what the foreground demonstrably is not. When PCO is
+quiet the bucket sits full and checks run freely; when callers are busy the tokens
+stay low and checks stall, which is the point. A divergence check gives up after
+five seconds rather than hold the scheduler thread, and the rate is a token bucket
+started with **one** token rather than a full bucket: switching this on should do
+something immediately, not fire a whole minute's allowance into a budget people
+are waiting on.
+
+**Two verdicts, and the difference is the point:**
+
+| | means | action |
+|---|---|---|
+| **staleness** | PCO's `updated_at` is newer — the mirror is simply behind | none; the sweep collects it |
+| **divergence** | they differ at the *same* `updated_at` | somebody has to look — nothing will fix this on its own |
+
+Burying the second under the first is how this feature would fail quietly, so
+they are counted and filtered separately.
+
+**What is *not* a difference** is the part that takes the work. The mirror
+differs from PCO on purpose — `links` are generated from the registry and
+rewritten relative, `meta.can_filter` is deliberately empty, `meta.mirror` is its
+own — and a naive comparison reports 100% divergence and teaches you nothing.
+Those rules live in [`pcomirror/divergence/rules.py`](pcomirror/divergence/rules.py),
+lifted out of `tests/test_golden.py` so the live check and the 81-response corpus
+cannot drift apart. Live it is *stricter* in one respect: `meta.total_count` must
+match, because the mirror holds the whole organization where the corpus is a
+sample.
+
+**Turning it on.** `/admin/divergence` has the switch: a checks-per-minute box
+where `0` is off. `PCOMIRROR_SHADOW_PER_MINUTE` sets the default and the page
+overrides it, persistently — the person who wants this on at 9pm while chasing
+something is rarely the person who can edit the container's environment and
+restart it. One number rather than a separate on/off toggle, so there are not two
+settings that can disagree. "Back to the environment default" clears the
+override.
+
+The rate is a token bucket at N *per minute*, filled at startup so the first pass
+does something immediately. It is genuinely per minute: the scheduler ticks every
+few seconds, and a plain per-pass limit would have made the number mean twelve
+times what it said.
+
+Both responses are stored **pseudonymised**, so the log is safe to hand to
+somebody. Download it as JSON or clear it from the page; the store is capped by
+`PCOMIRROR_SHADOW_KEEP` (default 200 reports).
+
+### Pseudonyms
+
+[`pcomirror/pseudonym/`](pcomirror/pseudonym/) replaces the people in a payload
+with believable strangers, so a log can be read by somebody and handed to
+somebody. It is the building block the divergence log is stored through.
+
+Every real value becomes a plausible fake one, and *the same* fake one every
+time, so what survives is the structure: which records share a surname, which
+people are in which household, whether two responses differ in a flag. A family
+still reads as a family. What does not survive is who they are.
+
+| Kind | Becomes |
+|---|---|
+| names — first, last, nickname, `name` | a name from the pools, consistently: a person's `name` always agrees with their `first_name` and `last_name`, and `Reed Household` follows `Reed` |
+| email | a different valid address; two identical addresses stay identical |
+| phone | the same digit count and punctuation, dialling code kept — both phone filters turn on those |
+| address | a plausible street, city, state and postcode |
+| dates | the same year, a shifted month and day, so age and grade logic still lands |
+| booleans, numbers, timestamps, ids, relationships | **untouched** — this is what a divergence is made of |
+| free text (`medical_notes`, field values) | `«redacted:a3f9…»`, never fabricated |
+| anything unclassified | `«redacted:a3f9…»` |
+
+A redaction still carries a **keyed fingerprint of what it replaced**, because a
+constant marker would make every hidden value equal to every other — and then the
+one question the log is asked about those fields, *are these two the same*, could
+never be answered. Equal values tag alike; different ones do not; the tag carries
+none of the text. Free text is compared verbatim rather than case-folded, since a
+mirror holding `EpiPen` where PCO holds `epipen` is a real difference.
+
+Two properties are worth stating outright, because the package is worthless
+without either:
+
+- **Unclassified attributes are redacted, never passed through.** PCO adds
+  fields; the day it adds one this package has not heard of, the failure has to
+  be a redaction rather than a leak.
+- **Selection is keyed.** A plain hash over a thousand-name pool is a lookup
+  table anybody can rebuild. Selection is an HMAC under a key **derived from the
+  PCO credential** — nothing is minted and nothing extra has to be kept, because
+  anyone holding the token can read the real records anyway. The key is a
+  derivative, never the token itself, and never appears in an export. Two
+  organizations map the same person differently; one organization maps them
+  identically for ever, and the mapping survives a rebuilt database.
+
+  The consequence to know about: **rotating the PAT re-pseudonymises everything**,
+  so logs from either side of a rotation cannot be compared.
+
+Record **ids are kept**, deliberately: they are how two responses are lined up
+against each other, and they identify nobody without access to the organization
+they came from.
+
 Session hardening: `HttpOnly` + `SameSite=Strict` cookies (`Secure` too when the
 request arrives over HTTPS, including via `X-Forwarded-Proto` from a reverse
 proxy), 12-hour expiry, tokens stored only as a SHA-256 digest, CSRF tokens on
@@ -474,7 +634,8 @@ and exits, rather than surfacing a SQLite traceback:
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
-  `PCOMIRROR_DIAGNOSTIC_KEEP`, and the container-friendly defaults
+  `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
+  `PCOMIRROR_SHADOW_KEEP`, and the container-friendly defaults
   `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.

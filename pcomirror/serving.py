@@ -133,6 +133,9 @@ class Application:
         self.db, self.writer, self.ingestor = db, writer, ingestor
         self.client, self.webhooks, self.s = client, webhooks, settings
         self.diagnostics = recorder or diagnostics.NullRecorder()
+        #: Set by `Mirror`. Absent in the plain-Application tests, which is why
+        #: every use of it is guarded rather than assumed.
+        self.divergence = None
         self.admin = AdminApp(db, settings, self.diagnostics)
 
     # -- WSGI --------------------------------------------------------------
@@ -162,6 +165,24 @@ class Application:
         base["Content-Length"] = str(len(raw))
         start_response(f"{status} ", [(k, v) for k, v in base.items()])
         return [raw]
+
+    def serve_json(self, path: str, params: dict | None = None):
+        """Serve one read internally and hand back `(status, body)`.
+
+        Used by the divergence checker so the thing it compares against PCO is
+        the real serving path — filters, includes, ordering, pagination and all
+        — rather than a second implementation that could be wrong in its own way.
+        """
+        qs = {k: [str(v)] for k, v in (params or {}).items()}
+        try:
+            status, _headers, payload = self.route(
+                "GET", path if path.startswith("/people/v2") else f"/people/v2{path}",
+                qs, b"", {"PATH_INFO": path, "pcm.internal": True})
+        except _HttpError as e:
+            return e.status, {"errors": [{"code": str(e.status), "detail": e.detail}]}
+        if isinstance(payload, (bytes, bytearray)):
+            payload = json.loads(payload or b"{}")
+        return status, payload
 
     def _read_body(self, environ) -> bytes:
         try:
@@ -206,7 +227,12 @@ class Application:
         if admin_handles(path):
             return self.admin.handle(method, path, qs, body, environ)
 
-        scopes = self._authenticate(environ)
+        # An internal caller — the divergence checker replaying a read through
+        # the real serving path — has no API key and needs none: the environ it
+        # passes cannot be constructed from outside this process.
+        internal = bool(environ.get("pcm.internal"))
+        scopes = ({"read:*", apikeys.SCOPE_WRITE, apikeys.SCOPE_PASSTHROUGH} if internal
+                  else self._authenticate(environ))
 
         prefix = "/people/v2/"
         if not path.startswith(prefix):
@@ -224,6 +250,12 @@ class Application:
         if method == "GET":
             if not apikeys.allows_read(scopes, segs[0]):
                 raise _HttpError(403, f"key lacks the 'read:{segs[0]}' scope")
+            # Note the *shape* of what was asked for, so the divergence checker
+            # can re-ask PCO about it later. Recording only; nothing upstream
+            # happens on this request. Skipped for the checker's own replay, or
+            # it would keep re-enrolling the shapes it is draining.
+            if self.divergence is not None and not internal:
+                self.divergence.observe(path, qs)
             if len(segs) == 1:
                 return self._collection(r, qs, environ)
             if len(segs) == 2:

@@ -82,7 +82,8 @@ class PcoClient:
 
     def request(self, method: str, path: str, params: dict | None = None,
                 json_body: Any = None, priority: str = "reconcile",
-                max_attempts: int = 6, record_outcome: bool = True) -> Response:
+                max_attempts: int = 6, record_outcome: bool = True,
+                max_wait: float | None = None) -> Response:
         """`record_outcome=False` when the caller logs the final result itself.
 
         Intermediate attempts are recorded either way — a retry that eventually
@@ -107,7 +108,7 @@ class PcoClient:
         idempotent = method == "GET"
         target = diagnostics.redact_target(path, params)
         for attempt in range(max_attempts):
-            self.limiter.acquire(priority)
+            self.limiter.acquire(priority, max_wait)
             started = time.monotonic()
             try:
                 resp = self.transport.send(method, url, headers, body)
@@ -185,5 +186,6 @@ class PcoClient:
         resp.attempts = attempt + 1
         return resp
 
-    def get(self, path: str, params: dict | None = None, priority: str = "reconcile") -> Response:
-        return self.request("GET", path, params=params, priority=priority)
+    def get(self, path: str, params: dict | None = None, priority: str = "reconcile",
+            max_wait: float | None = None) -> Response:
+        return self.request("GET", path, params=params, priority=priority, max_wait=max_wait)

@@ -1,6 +1,7 @@
 """Application assembly — wire the components together into one service."""
 from __future__ import annotations
 
+from . import divergence, pseudonym
 from .config import Settings
 from .db import Database
 from .diagnostics import NullRecorder, Recorder
@@ -29,6 +30,13 @@ class Mirror:
         self.webhooks = WebhookProcessor(self.db, self.writer, self.ingestor)
         self.wsgi = Application(self.db, self.writer, self.ingestor,
                                 self.client, self.webhooks, settings, self.diagnostics)
+        # The checker serves through the real WSGI app rather than a
+        # reimplementation of it: what is under test is what callers get.
+        self.pseudonymiser = pseudonym.Pseudonymiser(pseudonym.secret_for(settings))
+        self.divergence = divergence.ShadowChecker(
+            self.db, self.client, settings, self.pseudonymiser,
+            serve=self.wsgi.serve_json, recorder=self.diagnostics)
+        self.wsgi.divergence = self.divergence
 
     def close(self):
         self.db.close()
