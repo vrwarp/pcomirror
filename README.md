@@ -170,9 +170,15 @@ relationship PCO would have sent, and never invents one PCO does not have.
 
 **Ordering follows PCO's, not SQLite's.** Ids sort numerically, because they are
 text columns holding numbers of different lengths and `/emails` carries both
-8- and 9-digit ones. Text sorts case-insensitively, because PCO folds case and
-SQLite's default collation does not. Both are the difference between a page that
-matches PCO and a page that quietly contains different rows.
+8- and 9-digit ones. Text sorts under a **measured** fold — combining marks
+stripped, then lowercased — because PCO folds accents as well as case and
+SQLite does neither by default. `COLLATE NOCASE` fixes only half of that: it
+folds ASCII `A`–`Z` and nothing else, so every accented surname sorts after `z`
+and `Márquez` lands past all the `Mar…` names instead of among them. Walking a
+real 1925-person organization, `NOCASE` disagreed with PCO in 34 positions and
+the fold agreed in all 1925 ([the measurement](docs/mutation-testing.md#how-planning-center-orders-names-2026-07-29-read-only)).
+Each of these is the difference between a page that matches PCO and a page that
+quietly contains different rows.
 
 Nested collections (`/people/{id}/emails`, `/households/{id}/people`, …) take the
 same `where`/`order`/`include`/`per_page` grammar as the top-level ones, served

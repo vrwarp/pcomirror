@@ -93,6 +93,46 @@ sends, because the API will not.
 This is PCO's behaviour, not the mirror's — the mirror faithfully applied what
 PCO returned in every case, including the nulls.
 
+## How Planning Center orders names (2026-07-29, read-only)
+
+Measured by walking the whole 1925-person organization with `order=<attr>` and a
+sparse fieldset, then re-sorting the same rows locally. **GET only** — no
+mutation guard needed, nothing was written.
+
+| Local rule | Positions differing from PCO, `order=last_name` |
+|---|---|
+| `COLLATE NOCASE, id` | **34** of 1925 |
+| NFKD, drop combining marks, `lower()`, then `id` | **0** of 1925 |
+
+`NOCASE` folds ASCII `A`–`Z` and nothing else, so every accented surname sorts
+after `z`: PCO returns `Manríquez, Márquez, Martinez`, and the mirror returned
+`Manríquez, Martinez, … Márquez`. Six of this organization's surnames are
+non-ASCII, which is enough to displace a record by several positions in any page
+that spans them — and that is the shape of the ordering difference a divergence
+report showed, one record eight places out with every attribute agreeing.
+
+Two more facts from the same walk:
+
+- **Ties break on ascending `id`.** 224 runs of equal `last_name`, all 224 in
+  ascending numeric id order. The mirror's existing `_ID_ORDER` tiebreak is right.
+- **Nulls sort first**, contiguously, and then by ascending id.
+
+`pcm_sortkey` implements the measured rule, and `order=last_name` and
+`order=first_name` now reproduce PCO's order for all 1925 people exactly.
+`lower()` rather than `casefold()` deliberately: `lower()` is what was measured
+to agree, and casefolding (`ß`→`ss`) would be a guess.
+
+### One residual, and why it is not chased
+
+`order=nickname` still differs by exactly one record. 784 people have a null
+nickname; PCO returns 783 of them in ascending id and puts `140380947` last of
+the null block — stably, on repeated reads, and a direct `GET` on that person
+also reports `nickname: null`. The position is exactly where an empty string
+would sort under `ORDER BY nickname NULLS FIRST`, which is the likely
+explanation, but PCO's API reports the value as null either way. **A mirror
+cannot reproduce a distinction the API does not expose**, so this is recorded
+rather than worked around.
+
 ## The safety model
 
 The safety is in the transport, not in whoever is driving it being careful.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import unicodedata
 
 from . import registry
 
@@ -187,6 +188,26 @@ def norm_text(value) -> str | None:
     return " ".join(str(value).split()).lower()
 
 
+def sort_key(value) -> str | None:
+    """PCO's name ordering, measured against the live API.
+
+    SQLite's `NOCASE` folds ASCII A–Z and nothing else, so every accented
+    surname sorts after `z` — `Márquez` landed past all the `Mar…` names instead
+    of inside them. Measured on a real 1925-person organization ordered by
+    `last_name`: `NOCASE` put 34 positions differently from PCO; stripping
+    combining marks first reproduced PCO's order for all 1925, exactly.
+
+    `lower()`, not `casefold()`, for the same reason — it is what was measured to
+    agree. Casefolding is more aggressive (`ß`→`ss`) and would be a guess.
+
+    NULL stays NULL, so a missing name keeps sorting where it sorts today.
+    """
+    if value is None:
+        return None
+    flat = unicodedata.normalize("NFKD", str(value))
+    return "".join(c for c in flat if not unicodedata.combining(c)).lower()
+
+
 def norm_digits(value) -> str | None:
     """Digits only — so `555-0100` and `(555) 0100` are the same phone number."""
     if value is None:
@@ -300,6 +321,7 @@ class Database:
             # exact same code that folds the column — a search that disagrees with
             # itself about whitespace is worse than one that does not exist.
             self._conn.create_function("pcm_norm", 1, norm_text, deterministic=True)
+            self._conn.create_function("pcm_sortkey", 1, sort_key, deterministic=True)
             self._conn.create_function("pcm_digits", 1, norm_digits, deterministic=True)
             self._conn.create_function("pcm_name_match", 2, name_matches, deterministic=True)
             self._conn.create_function("pcm_digits_suffix", 2, digits_suffix, deterministic=True)

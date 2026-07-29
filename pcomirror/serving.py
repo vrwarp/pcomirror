@@ -966,10 +966,18 @@ class Application:
                 # `order=-grade` opened on the ninth graders instead of the twelfth.
                 cols.append(f"CAST({col} AS INTEGER) {'DESC' if desc else 'ASC'}")
             else:
-                # PCO sorts names case-insensitively. SQLite's default BINARY
-                # collation puts every capital ahead of every lowercase letter, so a
-                # surname entered in lower case jumped to the end of the roster.
-                cols.append(f"{col} COLLATE NOCASE {'DESC' if desc else 'ASC'}")
+                # PCO sorts names case-insensitively, and SQLite's default BINARY
+                # collation puts every capital ahead of every lowercase letter, so
+                # a surname entered in lower case jumped to the end of the roster.
+                # `NOCASE` fixed that and then made the same mistake one step out:
+                # it folds ASCII A–Z and nothing else, so every accented surname
+                # sorts after `z` — `Márquez` landed past all the `Mar…` names
+                # instead of among them, which is how a real divergence report
+                # came to show one record eight places out of position with every
+                # attribute agreeing. Measured on 1925 people: NOCASE disagreed
+                # with PCO in 34 positions, folding combining marks first agreed
+                # in all 1925.
+                cols.append(f"pcm_sortkey({col}) {'DESC' if desc else 'ASC'}")
         cols.append(_ID_ORDER)
         return "ORDER BY " + ", ".join(cols)
 
