@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 import signal
 import sys
 import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
-from . import apikeys, registry
+from . import apikeys, pcoevents, registry, webhooks
 from .app import Mirror
 from .config import Settings
 from .webhooks import upsert_subscription
@@ -42,13 +43,23 @@ def _receiver_url(s: Settings, token: str) -> str:
 
 
 def _apply_env_subscriptions(m: Mirror) -> None:
-    """Re-apply PCOMIRROR_SUBSCRIPTIONS so a container needs no follow-up command."""
-    for spec in m.settings.subscriptions:
-        token, created = upsert_subscription(m.db, spec.subscription_id, spec.event,
-                                             spec.secret, spec.url_token or None)
-        verb = "registered" if created else "updated"
-        print(f"[serve] subscription {verb}: {spec.event} -> "
-              f"{_receiver_url(m.settings, token)}")
+    """Re-apply PCOMIRROR_SUBSCRIPTIONS so a container needs no follow-up command —
+    unless the operator page has taken the list over, in which case say so rather
+    than silently undoing what somebody set there."""
+    applied = webhooks.apply_env(m.db, m.settings.subscriptions)
+    skipped = [r for r in applied if r["outcome"] == "skipped"]
+    if skipped:
+        # One line, not one per entry: the reason is the same for all of them, and
+        # a wall of identical warnings is how the one that matters gets skimmed.
+        print(f"[serve] PCOMIRROR_SUBSCRIPTIONS not applied ({len(skipped)} entr"
+              f"{'y' if len(skipped) == 1 else 'ies'}): subscriptions are managed from "
+              "the operator page. Hand them back at /admin/webhooks to let the "
+              "environment set them again.")
+    for record in applied:
+        if record["outcome"] == "skipped":
+            continue
+        print(f"[serve] subscription {record['outcome']}: {record['spec'].event} -> "
+              f"{_receiver_url(m.settings, record['token'])}")
 
 
 def cmd_init_db(args):
@@ -110,11 +121,62 @@ def cmd_drift(args):
 
 
 def cmd_add_subscription(args):
-    """Register a webhook subscription record locally (secret from PCO)."""
+    """Register webhook subscription records locally (secrets from PCO).
+
+    `--event` may be repeated: Planning Center makes one subscription per event
+    name, but they can all point at one receiver URL, so several events on one
+    `--url-token` is the normal shape rather than a special case. With more than
+    one event the local id is derived per event, since PCO issues a separate id
+    for each and there is no single one to name them all by.
+    """
     m = _mirror()
-    token, _ = upsert_subscription(m.db, args.subscription_id, args.event,
-                                   args.secret, args.url_token)
-    print(f"subscription {args.event} -> {_receiver_url(m.settings, token)}")
+    events = args.event
+    ids = [args.subscription_id] if len(events) == 1 else [
+        f"{args.subscription_id}:{'.'.join(pcoevents.parse(e))}" for e in events]
+    # Settled once, before the loop, and never invented when one already exists.
+    # Deriving it per call would mint a fresh token for each event — three
+    # receivers where one was asked for — and re-running would rotate the URL PCO
+    # is already delivering to, which is the one thing this must never do.
+    token = args.url_token or _existing_token(m, ids) or secrets.token_hex(16)
+    for sub_id, event in zip(ids, events):
+        upsert_subscription(m.db, sub_id, event, args.secret, token, managed="admin")
+        print(f"subscription {event} -> {_receiver_url(m.settings, token)}")
+
+
+def _existing_token(m: Mirror, subscription_ids: list[str]) -> str | None:
+    for sub_id in subscription_ids:
+        row = m.db.query_one(
+            "SELECT url_token FROM webhook_subscription WHERE subscription_pco_id=?", (sub_id,))
+        if row:
+            return row["url_token"]
+    return None
+
+
+def cmd_list_subscriptions(args):
+    m = _mirror()
+    rows = webhooks.listing(m.db)
+    if not rows:
+        print("no webhook subscriptions")
+        return
+    source = "operator page" if not webhooks.env_is_authoritative(m.db) else "environment"
+    print(f"subscriptions are managed by the {source}\n")
+    print(f"{'ID':28} {'EVENT':46} {'FROM':6} {'STATE':8} LAST EVENT")
+    for r in rows:
+        print(f"{r['subscription_pco_id'][:28]:28} {r['event_name'][:46]:46} "
+              f"{r['managed']:6} {'active' if r['active'] else 'inactive':8} "
+              f"{r['last_event_at'] or 'never'}")
+    print()
+    for rec in webhooks.receivers(m.db):
+        print(f"{_receiver_url(m.settings, rec['url_token'])}  "
+              f"({len(rec['subscriptions'])} event(s))")
+
+
+def cmd_remove_subscription(args):
+    m = _mirror()
+    if webhooks.delete_subscription(m.db, args.subscription_id):
+        print(f"removed {args.subscription_id}")
+    else:
+        sys.exit(f"no subscription {args.subscription_id}")
 
 
 def cmd_create_api_key(args):
@@ -196,12 +258,18 @@ def main(argv=None):
                    help="run an initial backfill for any un-backfilled resource before serving")
     s.set_defaults(func=cmd_serve)
     a = sub.add_parser("add-subscription")
-    a.add_argument("--subscription-id", required=True); a.add_argument("--event", required=True)
+    a.add_argument("--subscription-id", required=True)
+    a.add_argument("--event", required=True, action="append",
+                   help="event name; repeat to point several event types at one receiver")
     a.add_argument("--secret", required=True)
     a.add_argument("--url-token", help="receiver-URL token to use (8-64 chars of [A-Za-z0-9_-]); "
                                        "pick one to know the URL before registering at PCO. "
                                        "Default: keep the existing token, else generate one.")
     a.set_defaults(func=cmd_add_subscription)
+    sub.add_parser("list-subscriptions").set_defaults(func=cmd_list_subscriptions)
+    rs = sub.add_parser("remove-subscription")
+    rs.add_argument("--subscription-id", required=True)
+    rs.set_defaults(func=cmd_remove_subscription)
     k = sub.add_parser("create-api-key")
     k.add_argument("--name", required=True, help="which app this key is for")
     k.add_argument("--scopes", default=apikeys.DEFAULT_SCOPES,

@@ -90,7 +90,9 @@ python3 -m pcomirror backfill                 # initial full load (once)
 python3 -m pcomirror reconcile --audit        # sweep + merger poll + id audit
 python3 -m pcomirror add-subscription \        # register a webhook (secret from PCO)
     --subscription-id <id> --event people.v2.events.person.updated \
-    --secret <authenticity_secret> --url-token person-updated-01
+    --event people.v2.events.person.created \
+    --secret <authenticity_secret> --url-token person-events-01
+python3 -m pcomirror list-subscriptions       # what is registered, and where it delivers
 python3 -m pcomirror serve                    # JSON:API on :8080 + background scheduler
 ```
 
@@ -100,6 +102,19 @@ subscription exists there — otherwise you need PCO's `authenticity_secret` to 
 this command, and PCO needs the URL this command prints. Omit it and a random
 token is generated (or the existing one kept — re-running for the same
 `--subscription-id` rotates the secret without changing the URL).
+
+`--event` may be repeated. Planning Center makes **one subscription per event
+name** — a `WebhookSubscription` carries a single `name`, a single `url` and its
+own `authenticity_secret` — but nothing requires those URLs to differ, which is
+why PCO's own console lets you tick a column of events under one webhook. So one
+receiver URL here carries as many event types as you point at it, and the
+receiver works out which subscription a delivery came from by **the secret that
+signed it**. Mixed secrets on one URL work for the same reason.
+
+Or skip the command line: **the operator page at `/` manages subscriptions**
+(`/admin/webhooks`) with the same event picker Planning Center shows, and takes
+over from `PCOMIRROR_SUBSCRIPTIONS` once you save anything there — see
+[Subscriptions from the page](#subscriptions-from-the-page).
 
 Local apps then point at `http://localhost:8080/people/v2/...` with only a
 base-URL + credential swap. Writes (`POST`/`PATCH`/`DELETE`) proxy to PCO first
@@ -214,6 +229,31 @@ inline on the Person and the members inline on the Household, so
 `include=households`, `include=households.people`, `/people/{id}/households` and
 `/households/{id}/people` all answer from the mirror.
 
+**Every event the People webhook console offers has somewhere to land.** The
+console's list is `person`, `email`, `phone_number`, `address`, `field_datum`,
+`field_definition`, `household`, `person_merger`, `note`, `list`, `list_result`
+and `form_submission`; all twelve are mirrored resources with their own tables,
+so an event for any of them is applied rather than filed.
+
+The four that arrived with this coverage follow the patterns already here.
+`note` and `social_profile` are person-owned children swept like `email`. `list`
+is swept on its own `updated_at`; `form` has no `where[updated_at]` at all, so it
+takes the descending walk `address` takes. `list_result` and `form_submission`
+are served by PCO only under one parent at a time, so they are walked per parent
+exactly as household memberships are — one request per list and per form, daily.
+
+`people.v2.events.list.refreshed` is the one action that is not a record change:
+it fires when a list is re-run, and the payload is the List itself, whose
+attributes may be identical. It is handled by dropping that list's walk record,
+so the next read re-fetches its results — otherwise a refresh would show up as
+nothing but a `refreshed_at` that moved.
+
+An event for a resource with **no** table here — a workflow card, say — is
+captured, marked `ignored` in the inbox with its payload intact, and counted on
+the admin page. Deliberately not dead-lettered: an event the mirror has no use
+for is not a failure, and burying those among the ones that really did break is
+how a dead-letter queue stops being read.
+
 **URLs in responses point back at the mirror.** A caller holds a pcomirror API
 key, not a PCO PAT, so a response must never hand back a URL only PCO can serve.
 Every `api.planningcenteronline.com/people/v2/...` URL — in `links`, in
@@ -292,8 +332,8 @@ on `api_key` are part of the §8.4 design but nothing reads them today.
 ### Admin page
 
 The root path (`http://localhost:8080/`) serves an operator console: create and
-revoke API keys, and read cache statistics. Server-rendered HTML, no JavaScript,
-no external assets.
+revoke API keys, manage webhook subscriptions, and read cache statistics.
+Server-rendered HTML, no JavaScript, no external assets.
 
 **First login** uses your `PCO_SECRET` as the password. That is not a security
 claim — anything that can read the container's environment already holds the PAT,
@@ -315,6 +355,12 @@ What the console shows:
   (the secret is displayed exactly once), and revoke inline.
 - **Webhooks** — registered subscriptions with their receiver tokens and last
   event, delivery and event counts by status, and dead-letter count.
+  `/admin/webhooks` is where they are managed: the same event picker Planning
+  Center's console shows, one receiver URL carrying as many event types as you
+  tick, what the mirror will do with each, and a paste box that reads the
+  `PCOMIRROR_SUBSCRIPTIONS` syntax. Saving there takes the list over from the
+  environment — see
+  [Subscriptions from the page](#subscriptions-from-the-page).
 - **Diagnostics** — a summary, and `/admin/diagnostics` for the full log. See below.
 
 ### Diagnostics
@@ -624,6 +670,35 @@ JSON form instead:
 -e PCOMIRROR_SUBSCRIPTIONS='[{"id":"sub_123","event":"people.v2.events.person.updated","token":"person-updated-01","secret":"whsec_aaa"}]'
 ```
 
+Several entries may share one `url_token`, which is the usual shape: one receiver
+URL registered at PCO, carrying every event type you ticked there.
+
+#### Subscriptions from the page
+
+`PCOMIRROR_SUBSCRIPTIONS` is the *default*, not the last word. `/admin/webhooks`
+manages the same list from the operator console, and **the page wins**: the
+moment you save anything there, the environment stops being applied on start, so
+a restart cannot undo a webhook you fixed at 9pm — the person who can reach the
+page is rarely the person who can edit the container's environment and restart
+it. `serve` says so in its log rather than skipping silently, and a
+*Hand back to the environment* button reverses it.
+
+The page carries the same event picker Planning Center's console does: tick as
+many events as you like, paste the secret, and it registers one subscription per
+event, all pointing at one receiver URL that it then shows you to paste back into
+PCO. It also states, per event, what the mirror will do with it — write it to a
+table, run the merge path, or record it and apply it to nothing (which is what an
+event for a resource with no table here means; those are kept in the inbox marked
+`ignored` rather than dead-lettered, so the dead-letter queue keeps meaning
+"something broke"). Already have a `PCOMIRROR_SUBSCRIPTIONS` value? Paste it into
+the import box — it goes through the same parser.
+
+The offered event list is the People console's, built in. **Refresh from Planning
+Center** replaces it with whatever `GET /webhooks/v2/available_events` returns for
+your organization, which is the only version that stays right when PCO adds an
+event. Any event name can be typed in regardless; nothing here gates what the
+receiver accepts.
+
 **On a Synology specifically:** paste the variables into Container Manager's
 *Environment* tab (or import `docker-compose.yml` as a Project). If you bind-mount
 a share instead of using the named volume, set `PUID`/`PGID` to the host user that
@@ -672,13 +747,18 @@ and exits, rather than surfacing a SQLite traceback:
 - **Persistence:** the DB lives at `/data/pcomirror.db` on the `pcomirror-data`
   volume — the only state to back up (`docker run --rm -v pcomirror-data:/data ...`
   or copy the file). Everything else is disposable.
-- **Config is env-only** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
+- **Config is env-first** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
-  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`, and the container-friendly defaults
-  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
+  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`,
+  `PCO_WEBHOOKS_BASE_URL`, and the container-friendly defaults
+  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`. Two of these are
+  defaults the admin page can override and persist —
+  `PCOMIRROR_SHADOW_PER_MINUTE` and `PCOMIRROR_SUBSCRIPTIONS` — because both are
+  things an operator needs to change mid-incident, from a machine that cannot
+  restart the container.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.
   They are deliberately not settable from the environment — that would mean
@@ -686,8 +766,8 @@ and exits, rather than surfacing a SQLite traceback:
 - **Webhooks need a public HTTPS URL.** PCO must reach this service, so put a
   reverse proxy / tunnel (Caddy, nginx, Cloudflare Tunnel) in front that
   terminates TLS and forwards to the container's `:8080`. Set `PCOMIRROR_PUBLIC_URL`
-  to that URL — both `PCOMIRROR_SUBSCRIPTIONS` and `add-subscription` print the
-  exact receiver URL to register at PCO.
+  to that URL — `PCOMIRROR_SUBSCRIPTIONS`, `add-subscription` and
+  `/admin/webhooks` all show the exact receiver URL to register at PCO.
 - **One-shot commands** override the default `serve` CMD — with compose,
   `docker compose run --rm pcomirror reconcile --audit`; with plain Docker, pass
   the same env and volume and put the subcommand after the image name:
@@ -704,7 +784,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 204 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 485 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write
@@ -719,7 +799,13 @@ audit, include-diff child deletes, drift, webhook verify/dedup/dispatch/thin-
 hydrate/merge, JSON:API reads (where/search/order/include/pagination), the
 410-on-merge redirect, and write-through — including the **fail-if-PCO-fails**
 guarantee — against an in-process fake PCO, so no network or live credentials are
-needed. `tests/test_search.py` covers the query surface a real PCO client sends:
+needed. `tests/test_subscriptions.py` pins the three webhook behaviours whose
+failure modes are silent: a receiver URL carrying several event types verifying
+each against the right secret, the operator page taking precedence over
+`PCOMIRROR_SUBSCRIPTIONS` so a restart cannot undo it, and an event for a
+resource with no table being recorded rather than dead-lettered. It also runs the
+schema migration off the old `url_token UNIQUE` table and asserts the existing
+rows survive. `tests/test_search.py` covers the query surface a real PCO client sends:
 every `where[search_*]` filter, typed/boolean filters, nested collections with
 includes, and a full walk of `links.next` asserting each row is visited exactly
 once.

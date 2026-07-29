@@ -16,10 +16,13 @@ services:
     # First boot: set PCOMIRROR_BACKFILL_ON_START=1 in .env to auto-load, or run
     #   docker compose run --rm pcomirror backfill
     # Webhooks: declare them in .env via PCOMIRROR_SUBSCRIPTIONS (applied on every
-    # start, no follow-up command), or register one ad hoc:
+    # start, no follow-up command), manage them at /admin/webhooks (which takes
+    # over from .env once used), or register some ad hoc — one receiver URL may
+    # carry as many event types as you point at it:
     #   docker compose run --rm pcomirror add-subscription \
     #     --subscription-id <id> --event people.v2.events.person.updated \
-    #     --secret <authenticity_secret> --url-token person-updated-01
+    #     --event people.v2.events.person.created \
+    #     --secret <authenticity_secret> --url-token person-events-01
 
 volumes:
   pcomirror-data:

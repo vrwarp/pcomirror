@@ -9,14 +9,19 @@ from __future__ import annotations
 
 import html
 import json
+import secrets
 import urllib.parse
 
-from . import adminauth, adminstats, apikeys, diagnostics, divergence
+from . import adminauth, adminstats, apikeys, diagnostics, divergence, pcoevents, webhooks
+from .config import now_iso, parse_subscriptions
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics",
          "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear",
-         "/admin/divergence/configure")
+         "/admin/divergence/configure",
+         "/admin/webhooks", "/admin/webhooks/add", "/admin/webhooks/remove",
+         "/admin/webhooks/toggle", "/admin/webhooks/import", "/admin/webhooks/source",
+         "/admin/webhooks/catalogue")
 
 
 def handles(path: str) -> bool:
@@ -26,6 +31,11 @@ def handles(path: str) -> bool:
 def _form(body: bytes) -> dict[str, str]:
     parsed = urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
     return {k: v[0] for k, v in parsed.items()}
+
+
+def _form_multi(body: bytes) -> dict[str, list[str]]:
+    """Every value, not just the first — a checkbox grid sends one name many times."""
+    return urllib.parse.parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
 
 
 def _cookie(environ) -> str | None:
@@ -122,11 +132,14 @@ def _redirect(to: str, extra: dict | None = None):
 
 
 class AdminApp:
-    def __init__(self, db, settings, recorder=None):
+    def __init__(self, db, settings, recorder=None, client=None):
         self.db, self.s = db, settings
         # Only for `last_failure` — the events themselves are read from the table,
         # so the page works the same whether or not recording is currently on.
         self.recorder = recorder
+        # Only for the one button that asks Planning Center which events it can
+        # send. Optional, so the page still renders without a configured client.
+        self.client = client
 
     # -- entry ------------------------------------------------------------
     def handle(self, method, path, qs, body, environ):
@@ -164,6 +177,10 @@ class AdminApp:
             return self._divergence_clear(method, body, session)
         if path == "/admin/divergence/configure":
             return self._divergence_configure(method, body, session)
+        if path == "/admin/webhooks":
+            return self._webhooks_page(qs, session)
+        if path.startswith("/admin/webhooks/"):
+            return self._webhooks_action(path, method, body, session)
         return self._dashboard(session, qs)
 
     # -- login ------------------------------------------------------------
@@ -302,6 +319,7 @@ class AdminApp:
                 f"<button class=link type=submit>sign out</button></form> · "
                 f"<a href=/admin/diagnostics>diagnostics</a> · "
                 f"<a href=/admin/divergence>divergence</a> · "
+                f"<a href=/admin/webhooks>webhooks</a> · "
                 f"<a href=/admin/password>password</a></nav>")
 
     def _stats_section(self, st) -> str:
@@ -651,8 +669,304 @@ class AdminApp:
             f"<td>{_esc(s['last_event_at'], 'never')}</td></tr>"
             for s in w["subscriptions"])
         table = (f"<table><tr><th>event<th>receiver<th>state<th>last event</tr>{rows}</table>"
-                 if rows else "<p class=muted>No subscriptions registered.</p>")
+                 if rows else "<p class=muted>No subscriptions registered — "
+                              "<a href=/admin/webhooks>add one</a>.</p>")
         return f"""
 <h2>Webhooks</h2>{table}
 <p class=muted>{w['deliveries']:,} deliveries · events by status: {statuses} ·
-  {w['dead_letters']:,} dead-lettered · last received {_esc(w['last_received'], 'never')}</p>"""
+  {w['dead_letters']:,} dead-lettered · last received {_esc(w['last_received'], 'never')} ·
+  <a href=/admin/webhooks>manage subscriptions</a></p>"""
+
+    # -- webhooks ---------------------------------------------------------
+    def _receiver_url(self, token: str) -> str:
+        return f"{self.s.public_base_url.rstrip('/')}{self.s.webhook_path_prefix}/{token}"
+
+    def _webhooks_action(self, path, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/webhooks")
+        form = _form(body)
+        if not adminauth.check_csrf(session, form.get("csrf")):
+            return self._webhooks_page({}, session, error="Session expired — try again.")
+        tail = path[len("/admin/webhooks/"):]
+        try:
+            if tail == "add":
+                return self._webhooks_add(body, session)
+            if tail == "import":
+                return self._webhooks_import(form, session)
+            if tail == "remove":
+                webhooks.delete_subscription(self.db, form.get("id", ""))
+                webhooks.take_over(self.db)
+                return _redirect("/admin/webhooks?saved=1")
+            if tail == "toggle":
+                webhooks.set_active(self.db, form.get("id", ""), form.get("to") == "on")
+                webhooks.take_over(self.db)
+                return _redirect("/admin/webhooks?saved=1")
+            if tail == "source":
+                return self._webhooks_source(form, session)
+            if tail == "catalogue":
+                return self._webhooks_catalogue(form, session)
+        except ValueError as e:
+            return self._webhooks_page({}, session, error=str(e))
+        return _redirect("/admin/webhooks")
+
+    def _webhooks_add(self, body, session):
+        """One receiver, however many event types are ticked.
+
+        Planning Center makes one subscription per event name, so this makes one
+        row per ticked box — all pointing at the same receiver URL, which is what
+        ticking a column of boxes in PCO's own console does.
+        """
+        multi = _form_multi(body)
+        form = {k: v[0] for k, v in multi.items()}
+        events = [e.strip() for e in multi.get("event", []) if e.strip()]
+        typed = (form.get("other_event") or "").strip()
+        if typed:
+            events.append(typed)
+        token = (form.get("url_token") or "").strip()
+        secret = (form.get("secret") or "").strip()
+        if not events:
+            return self._webhooks_page({}, session, error="Choose at least one event.")
+        if not secret:
+            return self._webhooks_page(
+                {}, session,
+                error="Paste the authenticity secret Planning Center shows for this webhook.")
+        if token and not webhooks.TOKEN_RE.match(token):
+            return self._webhooks_page(
+                {}, session, error="A receiver token is 8–64 characters of A–Z, a–z, 0–9, - or _.")
+        # Settled before the loop, not by the first upsert: every event on this
+        # receiver has to name the same token, and the ids derived from it would
+        # otherwise disagree about what the receiver was called.
+        token = token or secrets.token_hex(16)
+        chosen = sorted(set(events))
+        given_id = (form.get("subscription_id") or "").strip()
+        for event in chosen:
+            resource, action = pcoevents.parse(event)
+            # Planning Center issues an id per event, so there is no single id to
+            # name a multi-event receiver by; a derived one is stable, is what a
+            # re-tick updates rather than duplicates, and can be replaced with
+            # PCO's own by importing a subscriptions list.
+            sub_id = given_id if (given_id and len(chosen) == 1) else \
+                f"{token}:{resource}.{action}"
+            webhooks.upsert_subscription(self.db, sub_id, event, secret, token,
+                                         managed="admin")
+        webhooks.take_over(self.db)
+        return _redirect(f"/admin/webhooks?saved=1&token={urllib.parse.quote(token)}")
+
+    def _webhooks_import(self, form, session):
+        """Paste the `PCOMIRROR_SUBSCRIPTIONS` value itself.
+
+        The same parser the environment goes through, so a value that works in
+        one place works in the other — and an operator moving off the environment
+        variable can paste what they already have instead of retyping it a row at
+        a time.
+        """
+        text = (form.get("subscriptions") or "").strip()
+        if not text:
+            return self._webhooks_page({}, session, error="Nothing to import.")
+        try:
+            specs = parse_subscriptions(text)
+        except ValueError as e:
+            return self._webhooks_page({}, session, error=str(e))
+        for spec in specs:
+            webhooks.upsert_subscription(self.db, spec.subscription_id, spec.event,
+                                         spec.secret, spec.url_token or None, managed="admin")
+        webhooks.take_over(self.db)
+        return _redirect("/admin/webhooks?saved=1")
+
+    def _webhooks_source(self, form, session):
+        if form.get("to") == "environment":
+            webhooks.hand_back(self.db)
+            return _redirect("/admin/webhooks?handed_back=1")
+        webhooks.take_over(self.db)
+        return _redirect("/admin/webhooks?saved=1")
+
+    def _webhooks_catalogue(self, form, session):
+        if form.get("to") == "builtin":
+            pcoevents.forget(self.db)
+            return _redirect("/admin/webhooks?saved=1")
+        if self.client is None:
+            return self._webhooks_page(
+                {}, session, error="No Planning Center client is configured.")
+        try:
+            pcoevents.refresh(self.db, self.client, now_iso())
+        except Exception as e:  # noqa: BLE001
+            return self._webhooks_page(
+                {}, session,
+                error=f"Could not read the event list from Planning Center: {e}")
+        return _redirect("/admin/webhooks?saved=1")
+
+    def _webhooks_page(self, qs, session, error: str = ""):
+        csrf = E(session["csrf"])
+        banners = ""
+        if qs.get("saved"):
+            banners += "<p class='msg ok'>Saved.</p>"
+        if qs.get("handed_back"):
+            banners += ("<p class='msg ok'>Handed back to the environment. "
+                        "<code>PCOMIRROR_SUBSCRIPTIONS</code> is applied again on the "
+                        "next start — nothing changes until then.</p>")
+        token = (qs.get("token", [""])[0] or "").strip()
+        if token:
+            banners += (f"<div class='msg ok'><b>Receiver URL</b>"
+                        f"<p class=secret>{E(self._receiver_url(token))}</p>"
+                        "<p class=muted>Paste this into Planning Center as the webhook URL. "
+                        "Every event above is delivered here.</p></div>")
+        if error:
+            banners += f"<p class='msg err'>{E(error)}</p>"
+        return 200, _headers(), _page("Webhooks", "".join([
+            "<p class=sub>which events Planning Center sends, and where</p>", banners,
+            self._webhooks_source_section(csrf),
+            self._webhooks_receivers_section(csrf),
+            self._webhooks_add_section(csrf),
+            self._webhooks_import_section(csrf),
+            self._webhooks_catalogue_section(csrf),
+        ]), nav="<nav><a href=/>back</a></nav>")
+
+    def _webhooks_source_section(self, csrf: str) -> str:
+        env_wins = webhooks.env_is_authoritative(self.db)
+        declared = len(getattr(self.s, "subscriptions", []) or [])
+        if env_wins:
+            state = (f"<b>the environment</b> — <code>PCOMIRROR_SUBSCRIPTIONS</code> "
+                     f"declares {declared} subscription(s) and is re-applied on every start"
+                     if declared else
+                     "<b>the environment</b> — <code>PCOMIRROR_SUBSCRIPTIONS</code> is "
+                     "unset, so nothing is applied on start")
+            action = ("<p class=muted>Saving anything below takes the list over: the "
+                      "environment stops being applied, so a restart cannot undo what you "
+                      "set here.</p>")
+        else:
+            state = "<b>this page</b> — <code>PCOMIRROR_SUBSCRIPTIONS</code> is not applied"
+            action = f"""
+<form method=post action=/admin/webhooks/source>
+  <input type=hidden name=csrf value="{csrf}">
+  <input type=hidden name=to value=environment>
+  <button type=submit>Hand back to the environment
+    ({declared} subscription(s) declared there)</button>
+</form>
+<p class=muted>Takes effect on the next start, and re-applies the environment's
+  subscriptions over anything here with the same id.</p>"""
+        return f"""
+<h2>Who sets these</h2>
+<p class=muted>Managed by {state}.</p>{action}"""
+
+    def _webhooks_receivers_section(self, csrf: str) -> str:
+        found = webhooks.receivers(self.db)
+        if not found:
+            return ("<h2>Receivers</h2><p class=muted>None. Planning Center has nowhere "
+                    "to deliver to, so the mirror is running on its reconciliation sweeps "
+                    "alone — correct, but minutes behind instead of seconds.</p>")
+        blocks = []
+        for rec in found:
+            rows = []
+            for s in rec["subscriptions"]:
+                verdict, why = pcoevents.handling(s["event_name"])
+                toggle = "off" if s["active"] else "on"
+                rows.append(f"""
+<tr><td>{E(s['event_name'])}</td>
+    <td class={'muted' if verdict != 'recorded' else 'warn'}>{E(verdict)}</td>
+    <td class=muted style='white-space:normal'>{E(why)}</td>
+    <td>{'active' if s['active'] else '<span class=muted>paused</span>'}</td>
+    <td>{_esc(s['last_event_at'], 'never')}</td>
+    <td>{E(s['managed'])}</td>
+    <td><form method=post action=/admin/webhooks/toggle style='display:inline'>
+      <input type=hidden name=csrf value="{csrf}">
+      <input type=hidden name=id value="{E(s['subscription_pco_id'])}">
+      <input type=hidden name=to value="{toggle}">
+      <button class=link type=submit>{'pause' if s['active'] else 'resume'}</button></form>
+    · <form method=post action=/admin/webhooks/remove style='display:inline'>
+      <input type=hidden name=csrf value="{csrf}">
+      <input type=hidden name=id value="{E(s['subscription_pco_id'])}">
+      <button class=link type=submit>remove</button></form></td></tr>""")
+            blocks.append(f"""
+<h3 style='font-size:.95rem;margin:1.5rem 0 .25rem'>{E(rec['url_token'])}</h3>
+<p class=secret>{E(self._receiver_url(rec['url_token']))}</p>
+<table><tr><th>event<th>handling<th>what happens<th>state<th>last event<th>set by<th></tr>
+{''.join(rows)}</table>""")
+        return f"""
+<h2>Receivers</h2>
+<p class=muted>One URL per receiver, however many event types it carries. Planning
+  Center makes a subscription per event name but lets them share a URL, and each
+  carries its own authenticity secret — the receiver works out which subscription
+  a delivery came from by the secret that signed it.</p>
+{''.join(blocks)}"""
+
+    def _webhooks_add_section(self, csrf: str) -> str:
+        cat = pcoevents.catalogue(self.db)
+        existing = webhooks.receivers(self.db)
+        options = "".join(
+            f"<option value=\"{E(r['url_token'])}\">{E(r['url_token'])}</option>"
+            for r in existing)
+        grid = []
+        for resource, actions in pcoevents.grouped(cat["events"]):
+            boxes = "".join(
+                f"<label class=muted style='display:inline-block;margin:0 1rem 0 0'>"
+                f"<input type=checkbox name=event value=\"{E(name)}\"> {E(action)}</label>"
+                for action, name in actions)
+            verdict, _ = pcoevents.handling(f"people.v2.events.{resource}.created")
+            mark = "" if verdict != "recorded" else " <span class=warn>(recorded only)</span>"
+            grid.append(f"<tr><td>{E(resource)}{mark}</td><td style='white-space:normal'>"
+                        f"{boxes}</td></tr>")
+        return f"""
+<h2>Add a receiver</h2>
+<p class=muted>Tick the events, paste the secret Planning Center shows, and save.
+  Leave the token blank to have one minted — the receiver URL is shown after
+  saving, and can be chosen up front if you would rather register it at Planning
+  Center first.</p>
+<form method=post action=/admin/webhooks/add>
+  <input type=hidden name=csrf value="{csrf}">
+  <label for=tok>Receiver token</label>
+  <input id=tok name=url_token list=existing-receivers placeholder="person-events-01"
+         pattern="[A-Za-z0-9_-]{{8,64}}">
+  <datalist id=existing-receivers>{options}</datalist>
+  <label for=sec>Authenticity secret</label>
+  <input id=sec name=secret required placeholder="whsec_…">
+  <p class=muted>If Planning Center issued a different secret per event, add those
+    events one at a time — the receiver verifies against every secret registered
+    for its URL, so mixed secrets on one URL work.</p>
+  <label for=sid>Subscription id <span class=muted>(optional; used only when one
+    event is ticked)</span></label>
+  <input id=sid name=subscription_id placeholder="Planning Center's id, if you have it">
+  <label>Events <span class=muted>({len(cat['events'])} known, {E(cat['source'])})</span></label>
+  <table><tr><th>resource<th>actions</tr>{''.join(grid)}</table>
+  <label for=other>Another event, by name</label>
+  <input id=other name=other_event placeholder="people.v2.events.workflow_card.created">
+  <p class=muted>Anything Planning Center will send is accepted here, listed above
+    or not.</p>
+  <p><button type=submit>Add</button></p>
+</form>"""
+
+    def _webhooks_import_section(self, csrf: str) -> str:
+        return f"""
+<h2>Paste a subscriptions list</h2>
+<p class=muted>The <code>PCOMIRROR_SUBSCRIPTIONS</code> value itself, in either
+  form — <code>id:event:token:secret</code> separated by commas, or the JSON list.
+  Read by the same parser the environment goes through, so what works in one works
+  in the other.</p>
+<form method=post action=/admin/webhooks/import>
+  <input type=hidden name=csrf value="{csrf}">
+  <label for=subs>Subscriptions</label>
+  <textarea id=subs name=subscriptions rows=4 required
+    style="font:inherit;width:100%;padding:.45rem .55rem;background:var(--bg);
+           color:var(--fg);border:1px solid var(--line);border-radius:4px"
+    placeholder="sub_123:people.v2.events.person.updated:person-events-01:whsec_aaa"></textarea>
+  <p><button type=submit>Import</button></p>
+</form>"""
+
+    def _webhooks_catalogue_section(self, csrf: str) -> str:
+        cat = pcoevents.catalogue(self.db)
+        recorded = [n for n in cat["events"] if pcoevents.handling(n)[0] == "recorded"]
+        origin = ("built into this release" if cat["source"] == "built in" else
+                  f"read from Planning Center at {_esc(cat['fetched_at'])}")
+        coverage = ("Every one is applied to the mirror." if not recorded else
+                    f"{len(cat['events']) - len(recorded)} are applied to the mirror; "
+                    f"{len(recorded)} name a resource with no table here, so they would be "
+                    f"captured and applied to nothing.")
+        revert = "" if cat["source"] == "built in" else f"""
+  <button type=submit name=to value=builtin>Back to the built-in list</button>"""
+        return f"""
+<h2>Event catalogue</h2>
+<p class=muted>{len(cat['events'])} events, {origin}. {coverage} Asking Planning
+  Center directly is the only list that stays right when they add one.</p>
+<form method=post action=/admin/webhooks/catalogue>
+  <input type=hidden name=csrf value="{csrf}">
+  <button type=submit>Refresh from Planning Center</button>{revert}
+</form>"""

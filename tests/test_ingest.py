@@ -248,10 +248,21 @@ class TestAChildCannotOutliveItsOwner(unittest.TestCase):
         self.assertEqual(
             [(c.table, fk) for c, fk in registry.owned_children("person")],
             [("email", "person_pco_id"), ("phone_number", "person_pco_id"),
-             ("address", "person_pco_id"), ("field_datum", "person_pco_id")])
+             ("social_profile", "person_pco_id"), ("address", "person_pco_id"),
+             ("field_datum", "person_pco_id"), ("note", "person_pco_id")])
         self.assertEqual(
             [(c.table, fk) for c, fk in registry.owned_children("household")],
             [("household_membership", "household_pco_id")])
+        # The per-parent collections PCO serves under one owner and nowhere else
+        # are owned by that owner, not by the person they also name. A list
+        # result naming a person is a reference — deleting the person must not
+        # decide what is in somebody's list.
+        self.assertEqual(
+            [(c.table, fk) for c, fk in registry.owned_children("list")],
+            [("list_result", "list_pco_id")])
+        self.assertEqual(
+            [(c.table, fk) for c, fk in registry.owned_children("form")],
+            [("form_submission", "form_pco_id")])
 
 
 class TestTheLastChildIsStillADelete(unittest.TestCase):

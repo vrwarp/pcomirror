@@ -533,7 +533,10 @@ CREATE TABLE webhook_subscription (
   subscription_pco_id text NOT NULL,   -- webhooks/v2 subscription id
   event_name text NOT NULL,
   resource text, action text,
-  url_token text UNIQUE NOT NULL,      -- opaque 128-bit token in the receiver URL path (O(1) secret lookup)
+  url_token text NOT NULL,             -- opaque 128-bit token in the receiver URL path.
+                                       -- NOT unique: PCO makes one subscription per event name but
+                                       -- lets them share a url, so a receiver serves many event
+                                       -- types and the signing secret picks which one (DESIGN §6.2)
   secret_version int NOT NULL,         -- -> org_secret(kind='webhook_secret'); resolves both versions mid-rotation
   active boolean NOT NULL DEFAULT true,
   last_event_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),

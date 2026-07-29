@@ -73,8 +73,8 @@ class PcoClient:
         # explain afterwards.
         self.recorder = recorder or diagnostics.NullRecorder()
 
-    def _url(self, path: str, params: dict | None) -> str:
-        url = self.s.pco_base_url.rstrip("/") + "/" + path.lstrip("/")
+    def _url(self, path: str, params: dict | None, base: str | None = None) -> str:
+        url = (base or self.s.pco_base_url).rstrip("/") + "/" + path.lstrip("/")
         if params:
             flat = {k: v for k, v in params.items() if v is not None}
             url += "?" + urllib.parse.urlencode(flat, safe="")
@@ -83,8 +83,14 @@ class PcoClient:
     def request(self, method: str, path: str, params: dict | None = None,
                 json_body: Any = None, priority: str = "reconcile",
                 max_attempts: int = 6, record_outcome: bool = True,
-                max_wait: float | None = None) -> Response:
+                max_wait: float | None = None, base: str | None = None) -> Response:
         """`record_outcome=False` when the caller logs the final result itself.
+
+        `base` overrides the People base URL for the one caller that needs a
+        different app — the webhooks app, which is where the subscription and
+        available-event endpoints live. Everything else about the exchange (auth,
+        the pinned API version, the shared limiter, the retry rules) is identical,
+        which is exactly why it is a parameter and not a second client.
 
         Intermediate attempts are recorded either way — a retry that eventually
         worked is invisible from outside this method, and it is exactly the
@@ -103,7 +109,7 @@ class PcoClient:
         if json_body is not None:
             body = json.dumps(json_body).encode()
             headers["Content-Type"] = "application/json"
-        url = self._url(path, params)
+        url = self._url(path, params, base)
 
         idempotent = method == "GET"
         target = diagnostics.redact_target(path, params)
@@ -187,5 +193,6 @@ class PcoClient:
         return resp
 
     def get(self, path: str, params: dict | None = None, priority: str = "reconcile",
-            max_wait: float | None = None) -> Response:
-        return self.request("GET", path, params=params, priority=priority, max_wait=max_wait)
+            max_wait: float | None = None, base: str | None = None) -> Response:
+        return self.request("GET", path, params=params, priority=priority,
+                            max_wait=max_wait, base=base)

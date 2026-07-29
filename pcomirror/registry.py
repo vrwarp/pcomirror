@@ -217,6 +217,19 @@ _reg(Resource(
     col_aliases={"primary": "is_primary"},
 ))
 _reg(Resource(
+    name="social_profile", type="SocialProfile", table="social_profile",
+    endpoint="/social_profiles",
+    tier="full", owner_rel="person", incr_interval_s=600, priority=3,
+    projections=(
+        ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
+        ("site", "TEXT", "json", "$.attributes.site"),
+        ("url", "TEXT", "json", "$.attributes.url"),
+        ("verified", "INTEGER", "json", "$.attributes.verified"),
+    ),
+    can_query_by=("created_at", "updated_at", "site", "url", "verified"),
+    can_order_by=("created_at", "updated_at", "site", "url", "verified"),
+))
+_reg(Resource(
     name="address", type="Address", table="address", endpoint="/addresses",
     tier="full", owner_rel="person", supports_uat_filter=False,  # /addresses has no where[updated_at]
     incr_interval_s=300, priority=2,
@@ -345,6 +358,122 @@ _reg(Resource(
     },
     can_query_by=("pending", "household_role"),
     can_order_by=("pending", "household_role", "person_name"),
+))
+
+# --- notes (a person child, like email — but its own collection) ---
+# `people.v2.events.note.{created,destroyed}`: PCO emits no `updated` for a note,
+# which is why the sweep matters as much here as the webhook does.
+_reg(Resource(
+    name="note", type="Note", table="note", endpoint="/notes",
+    tier="full", owner_rel="person", incr_interval_s=600, priority=3,
+    projections=(
+        ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
+        ("note_category_id", "TEXT", "json", "$.relationships.note_category.data.id"),
+        ("created_by_id", "TEXT", "json", "$.relationships.created_by.data.id"),
+        ("display_date", "TEXT", "json", "$.attributes.display_date"),
+        ("note", "TEXT", "json", "$.attributes.note"),
+    ),
+    relationships={"person": Rel("person", "one", local_fk="person_pco_id")},
+    can_query_by=("created_at", "updated_at", "note", "note_category_id"),
+    can_order_by=("created_at", "updated_at", "note", "display_date", "note_category_id"),
+))
+
+# --- lists and their results ---
+_reg(Resource(
+    name="list", type="List", table="list", endpoint="/lists",
+    tier="full", incr_interval_s=900, priority=3,
+    projections=(
+        ("name", "TEXT", "json", "$.attributes.name"),
+        ("description", "TEXT", "json", "$.attributes.description"),
+        ("status", "TEXT", "json", "$.attributes.status"),
+        ("returns", "TEXT", "json", "$.attributes.returns"),
+        ("subset", "TEXT", "json", "$.attributes.subset"),
+        ("auto_refresh", "INTEGER", "json", "$.attributes.auto_refresh"),
+        ("total_people", "INTEGER", "json", "$.attributes.total_people"),
+        ("refreshed_at", "TEXT", "json", "$.attributes.refreshed_at"),
+        ("batch_completed_at", "TEXT", "json", "$.attributes.batch_completed_at"),
+    ),
+    relationships={
+        "list_results": Rel("list_result", "many", child_fk="list_pco_id"),
+    },
+    can_query_by=("created_at", "updated_at", "name", "id", "batch_completed_at"),
+    can_order_by=("created_at", "updated_at", "name", "refreshed_at", "total_people"),
+))
+#: `…/lists/19674701/list_results/59474308` -> `19674701`, for the same reason a
+#: household membership parses its owner out of the link: PCO does not always put
+#: the owning collection in `relationships`, and a child whose parent column is
+#: NULL is a child the per-parent walk can never tombstone.
+_LR_AFTER = f"substr({_SELF}, instr({_SELF}, '/lists/') + 7)"
+_LIST_FROM_SELF_LINK = (
+    f"coalesce(raw ->> '$.relationships.list.data.id', "
+    f"CASE WHEN {_SELF} LIKE '%/lists/%/list_results/%' "
+    f"THEN substr({_LR_AFTER}, 1, instr({_LR_AFTER}, '/') - 1) END)"
+)
+# `GET /list_results` does not exist; the rows live under one list at a time, so
+# this is the household_membership treatment — a periodic full walk, one request
+# per list, plus a `list.refreshed` webhook that drops the walk record for the
+# list that changed so the next read re-fetches it (webhooks._forget_child_walks).
+_reg(Resource(
+    name="list_result", type="ListResult", table="list_result", endpoint="/list_results",
+    tier="lite", method="nested_walk",
+    parent="list", parent_path="/list_results", parent_fk="list_pco_id",
+    supports_uat_filter=False, incr_interval_s=86400, priority=3,
+    projections=(
+        ("list_pco_id", "TEXT", "expr", _LIST_FROM_SELF_LINK),
+        ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
+    ),
+    relationships={
+        "person": Rel("person", "one", local_fk="person_pco_id"),
+        "list": Rel("list", "one", local_fk="list_pco_id"),
+    },
+    can_order_by=("created_at", "updated_at"),
+))
+
+# --- forms and their submissions ---
+# `/forms` offers no `where[updated_at]` — only `where[active]` and `where[id]` —
+# so it takes the descending walk `address` takes, driven off `order=-updated_at`.
+_reg(Resource(
+    name="form", type="Form", table="form", endpoint="/forms",
+    tier="full", supports_uat_filter=False, incr_interval_s=3600, priority=3,
+    projections=(
+        ("name", "TEXT", "json", "$.attributes.name"),
+        ("description", "TEXT", "json", "$.attributes.description"),
+        ("active", "INTEGER", "json", "$.attributes.active"),
+        ("archived", "INTEGER", "json", "$.attributes.archived"),
+        ("submission_count", "INTEGER", "json", "$.attributes.submission_count"),
+        ("campus_id", "TEXT", "json", "$.relationships.campus.data.id"),
+        ("form_category_id", "TEXT", "json", "$.relationships.form_category.data.id"),
+    ),
+    relationships={
+        "form_submissions": Rel("form_submission", "many", child_fk="form_pco_id"),
+        "campus": Rel("campus", "one", local_fk="campus_id"),
+    },
+    can_query_by=("created_at", "updated_at", "active", "id"),
+    can_order_by=("created_at", "updated_at", "name", "active", "submission_count"),
+))
+_FS_AFTER = f"substr({_SELF}, instr({_SELF}, '/forms/') + 7)"
+_FORM_FROM_SELF_LINK = (
+    f"coalesce(raw ->> '$.relationships.form.data.id', "
+    f"CASE WHEN {_SELF} LIKE '%/forms/%/form_submissions/%' "
+    f"THEN substr({_FS_AFTER}, 1, instr({_FS_AFTER}, '/') - 1) END)"
+)
+# Only `created` is ever emitted for a submission — a submission is not edited —
+# so the webhook is the whole fast path and the walk is what repairs a missed one.
+_reg(Resource(
+    name="form_submission", type="FormSubmission", table="form_submission",
+    endpoint="/form_submissions", tier="lite", method="nested_walk",
+    parent="form", parent_path="/form_submissions", parent_fk="form_pco_id",
+    supports_uat_filter=False, incr_interval_s=86400, priority=3,
+    projections=(
+        ("form_pco_id", "TEXT", "expr", _FORM_FROM_SELF_LINK),
+        ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
+        ("verified", "INTEGER", "json", "$.attributes.verified"),
+    ),
+    relationships={
+        "person": Rel("person", "one", local_fk="person_pco_id"),
+        "form": Rel("form", "one", local_fk="form_pco_id"),
+    },
+    can_order_by=("created_at", "updated_at"),
 ))
 
 # --- reference / config (LITE) ---
