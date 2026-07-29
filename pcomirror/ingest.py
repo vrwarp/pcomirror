@@ -20,6 +20,17 @@ def _plus_one_second(iso: str) -> str:
     return (dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _related_ids(resource: dict) -> set[tuple[str, str]]:
+    """Every `(type, id)` a resource's own relationships name."""
+    out: set[tuple[str, str]] = set()
+    for node in (resource.get("relationships") or {}).values():
+        data = node.get("data") if isinstance(node, dict) else None
+        for item in (data if isinstance(data, list) else [data]):
+            if isinstance(item, dict) and item.get("id"):
+                out.add((item.get("type"), str(item["id"])))
+    return out
+
+
 class IngestError(RuntimeError):
     """A sync step could not complete — raised rather than recorded as success."""
 
@@ -147,8 +158,19 @@ class Ingestor:
             resp = self.client.get(f"{parent.endpoint}/{parent_id}{r.parent_path}",
                                    {"per_page": 100, "offset": offset}, priority="reconcile")
             if resp.status == 404:
-                # The parent went away between listing it and walking it; the
-                # parent's own sweep will tombstone it.
+                # The parent went away between listing it and walking it — and
+                # nothing else was ever going to notice. The comment here used to
+                # say the parent's own sweep would tombstone it, which is not
+                # something a sweep can do: it filters on `where[updated_at]`, and
+                # a record that no longer exists cannot come back in a page. So a
+                # household deleted at Planning Center stayed live in the mirror
+                # indefinitely, was still served under `include=households`, and
+                # cost one request per walk to be told again that it was gone.
+                #
+                # This 404 is the evidence. It is one request short of proof, and
+                # that request is only ever spent on a parent whose collection has
+                # just vanished, so it is worth asking.
+                self._tombstone_if_absent(parent, parent_id)
                 return 0
             if not resp.ok:
                 raise IngestError(
@@ -169,6 +191,23 @@ class Ingestor:
             if row["pco_id"] not in seen:
                 self.writer.tombstone(r.table, row["pco_id"], None, "destroyed")
         return len(seen)
+
+    def _tombstone_if_absent(self, r, pco_id: str) -> bool:
+        """Bury a record only once PCO has answered `404` about the record itself.
+
+        Anything short of that answer — a 500, a timeout, an unreachable host —
+        leaves the row exactly as it was. Stale beats wrong: the walk runs again,
+        and burying a live household would take every member's family away with
+        it through the cascade.
+        """
+        try:
+            resp = self.client.get(f"{r.endpoint}/{pco_id}", priority="reconcile")
+        except Exception:  # noqa: BLE001
+            return False
+        if resp.status != 404:
+            return False
+        self.writer.tombstone(r.table, pco_id, None, "audit_absent")
+        return True
 
     def _live_count(self, table: str) -> int:
         return self.db.query_one(f"SELECT count(*) c FROM {table} WHERE deleted_at IS NULL")["c"]
@@ -521,6 +560,91 @@ class Ingestor:
             self.enqueue_hydration(name, row["pco_id"], reason="incomplete")
         return len(rows)
 
+    def repair_dangling(self, name: str, limit: int = 500,
+                        min_age_seconds: int = 3600) -> int:
+        """Queue a re-fetch where a stored relationship names a record we cannot serve.
+
+        `repair_incomplete` above asks whether a relationship *key* is there.
+        This asks the next question: whether the ids under it resolve. They are
+        not the same question, and the gap between them is a shape the mirror was
+        serving live —
+
+          * a person created minutes earlier whose `relationships.emails` named
+            an address the mirror held no row for, so `include=emails` answered
+            with the id in the relationship and nothing in `included[]`;
+          * a person still listing three households that had been deleted at PCO,
+            so the same read named three households and sideloaded none.
+
+        Both are documents no caller can act on and no other check can see. The
+        sweep filters on `updated_at`, and neither record's will ever move again:
+        the person is not edited by their email arriving late, and PCO does not
+        touch the members of a household it deletes. The drift probe counts rows
+        and would find both counts fine. So this is the check that looks.
+
+        Repairing means re-reading **both ends**, because either can be the wrong
+        one. Re-reading the holder is what fixes an edge PCO has dropped — the
+        person comes back with `households: []` and the dangling ids are simply
+        gone. Re-reading the target is what fixes, or finally settles, the other
+        direction: the email arrives, or `/emails/{id}` answers `404` and
+        `hydrate` tombstones it. One of the two always converges.
+
+        Scoped to the relationships in the resource's declared `includes`, for
+        the same reason `repair_incomplete` is: those are the edges every
+        mirrored copy is fetched with, so they are the ones the mirror has
+        undertaken to be able to serve. `min_age_seconds` bounds the cost the
+        same way — if PCO keeps naming an id it will not hand over, this is one
+        re-read per record per interval, not a spin.
+        """
+        r = registry.by_name(name)
+        edges = [(i, r.relationships[i]) for i in r.includes
+                 if i in r.relationships and r.relationships[i].kind in ("many", "json")]
+        if not edges:
+            return 0
+        clauses, params = [], []
+        for rel_name, rel in edges:
+            target = registry.by_name(rel.target)
+            clauses.append(
+                f"EXISTS (SELECT 1 FROM json_each(t.raw, ?) j "
+                f"        WHERE j.value ->> '$.id' IS NOT NULL "
+                f"          AND NOT EXISTS (SELECT 1 FROM {target.table} c "
+                f"                          WHERE c.pco_id = j.value ->> '$.id' "
+                f"                            AND c.deleted_at IS NULL))")
+            params.append(f"$.relationships.{rel_name}.data")
+        rows = self.db.query(
+            f"SELECT pco_id, raw FROM {r.table} t WHERE deleted_at IS NULL "
+            f"  AND ({' OR '.join(clauses)}) "
+            f"  AND last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now',?) "
+            f"ORDER BY CAST(pco_id AS INTEGER), pco_id LIMIT ?",
+            (*params, f"-{int(min_age_seconds)} seconds", limit))
+        queued = 0
+        for row in rows:
+            self.enqueue_hydration(name, row["pco_id"], reason="dangling")
+            queued += 1
+            queued += self._queue_dangling_targets(json.loads(row["raw"]), edges)
+        return queued
+
+    def _queue_dangling_targets(self, resource: dict, edges) -> int:
+        """Fetch the far end of each unresolvable edge, where it is fetchable."""
+        queued = 0
+        for rel_name, rel in edges:
+            target = registry.by_name(rel.target)
+            # A `nested_walk` child has no address of its own — `GET
+            # /household_memberships/{id}` is a 404 — so there is nothing to ask
+            # for, and the parent walk is what repairs those anyway.
+            if target.method in ("nested_walk", "passthrough_only"):
+                continue
+            node = ((resource.get("relationships") or {}).get(rel_name) or {}).get("data") or []
+            for item in (node if isinstance(node, list) else [node]):
+                if not (isinstance(item, dict) and item.get("id")):
+                    continue
+                if self.db.query_one(
+                        f"SELECT 1 FROM {target.table} WHERE pco_id=? AND deleted_at IS NULL",
+                        (str(item["id"]),)):
+                    continue
+                self.enqueue_hydration(target.name, str(item["id"]), reason="dangling")
+                queued += 1
+        return queued
+
     # -- hydration ---------------------------------------------------------
     def enqueue_hydration(self, name: str, pco_id: str, reason: str = "thin_webhook",
                           includes: list[str] | None = None) -> None:
@@ -574,6 +698,15 @@ class Ingestor:
         person's *last* email could be deleted at PCO and stay in the mirror for
         ever — the one shape of single-child delete nothing else catches either.
         The request is not ambiguous, so it is the thing to trust.
+
+        What `included[]` is *not* is the only half of the answer. A compound
+        document has two, and they can disagree: a person created three minutes
+        earlier came back from `/people?include=emails` with
+        `relationships.emails` naming an address that `included[]` did not carry
+        — PCO's own sideload had not caught up with the record it was sideloading
+        from. Read as a delete, that would have buried an email PCO had just said
+        the person has. So the relationship is consulted too, and a child it still
+        names is left alone; a genuine delete removes it from both halves.
         """
         pid = person_obj["id"]
         r = registry.by_name("person")
@@ -584,6 +717,7 @@ class Ingestor:
             cr = registry.by_type(inc.get("type", ""))
             if cr and cr.owner_rel == "person":
                 present.setdefault(cr.name, set()).add(inc["id"])
+        claimed = _related_ids(person_obj)
         for child in registry.RESOURCES.values():
             if child.owner_rel != "person" or child.name not in asked:
                 continue        # not requested -> unknown, which is not empty
@@ -591,7 +725,8 @@ class Ingestor:
             for row in self.db.query(
                     f"SELECT pco_id FROM {child.table} "
                     f"WHERE person_pco_id=? AND deleted_at IS NULL", (pid,)):
-                if row["pco_id"] not in seen_ids:
+                if row["pco_id"] not in seen_ids \
+                        and (child.type, row["pco_id"]) not in claimed:
                     self.writer.tombstone(child.table, row["pco_id"], None, "absent")
 
     def _max_uat(self, table: str) -> str | None:

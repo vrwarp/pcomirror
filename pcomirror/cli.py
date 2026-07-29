@@ -90,8 +90,13 @@ def cmd_repair(args):
         if n:
             print(f"{name}: {n} incomplete record(s) queued")
         queued += n
+        n = m.ingestor.repair_dangling(name)
+        if n:
+            print(f"{name}: {n} re-fetch(es) queued for edges that do not resolve")
+        queued += n
     if not queued:
-        print("nothing to repair — every record carries the relationships it was fetched with")
+        print("nothing to repair — every record carries the relationships it was "
+              "fetched with, and every edge resolves")
         return
     done = 0
     while True:
@@ -110,7 +115,9 @@ def cmd_reconcile(args):
         print(f"sweep {name}: {n} applied")
     print(f"mergers: {m.ingestor.merger_poll()} applied")
     if args.audit:
-        print(f"audit person: {m.ingestor.delete_audit('person')} tombstoned")
+        for r in registry.full_and_lite():
+            if r.audit_interval_s:
+                print(f"audit {r.name}: {m.ingestor.delete_audit(r.name)} tombstoned")
 
 
 def cmd_drift(args):

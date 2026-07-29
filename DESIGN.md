@@ -677,7 +677,7 @@ returning 0 rows). Offset stays 0 forever → never the 75/20s penalty.
 
 ### 7.2 Delete/merge detection (the hard part)
 
-`where[updated_at]` cannot see a vanished id. Three mechanisms, fast→slow:
+`where[updated_at]` cannot see a vanished id. Four mechanisms, fast→slow:
 
 1. **`destroyed` webhooks** — seconds, but lossy → provisional tombstone.
 2. **Merger poll** — tail `/person_mergers` by `created_at` every ~120 s. It's an
@@ -696,13 +696,31 @@ returning 0 rows). Offset stays 0 forever → never the 75/20s penalty.
    advance), diff against the mirror, and for each mirrored-but-absent id issue a
    **confirming `GET`**: `404` → `mirror_tombstone(reason='audit_absent')`; `200`
    → `mirror_confirm_live` (false positive from a race). The confirm GET costs one
-   request *per diff member only* (normally ≈0).
+   request *per diff member only* (normally ≈0). **Every resource that declares
+   `audit_interval_s` gets one**, not `person` alone: a household is hard-deleted
+   by the same click, and a mirror auditing only people kept three abandoned
+   households live — and on their members' `households` arrays — indefinitely.
+   Enumerating a few hundred households is four requests a day.
+4. **A `nested_walk` parent that 404s** — `GET
+   /households/{id}/household_memberships` answering `404` is PCO stating that the
+   household is gone, and for a collection served only under its parent it is the
+   *only* such statement PCO makes. Confirm it with a `GET` on the parent itself
+   (a 404 on the collection is evidence, not proof, and the cascade takes every
+   member's family with it) and tombstone.
 
 **Child deletes ride on include-diff (zero marginal cost):** whenever a person is
-hydrated `include=…`, the `included[]` is the authoritative current child set;
-tombstone any local child of that person not present. This catches single-child
-hard-deletes no `updated_at` sweep can see, piggybacking on requests we already
-make — which is why child types need no full audit of their own.
+hydrated `include=…`, the `included[]` is the current child set; tombstone any
+local child of that person not present. This catches single-child hard-deletes no
+`updated_at` sweep can see, piggybacking on requests we already make — which is
+why child types need no full audit of their own.
+
+**But `included[]` is only half of PCO's answer, and the halves can disagree.**
+Measured minutes after a parent was added to a live organization:
+`/people?include=emails` returned that person with `relationships.emails` naming
+an address and `included[]` not carrying it. So the diff tombstones a child only
+when **both** halves have dropped it — `included[]` did not sideload it *and* the
+person's own relationships no longer name it. A real delete removes it from both;
+a sideload that has not caught up removes it from one.
 
 **Merge-child cascade caveat:** don't blindly cascade-tombstone the merged
 person's children — some were *moved* to the survivor (same child id, now
@@ -915,12 +933,37 @@ recency floor keeps it from spinning on a record PCO will not answer more fully.
 It runs on the scheduler beside the drift probe, and `pcomirror repair` runs it
 now for a mirror that was damaged before the guard existed.
 
-**Include-synthesized relationships are not stored.** PCO answers
-`include=households.people` by adding a `people` relationship to the *Person*.
-It is an artefact of the request rather than part of the record, so the writer
-strips it before storing (on a copy — on a pass-through that same object is the
-caller's response, and they are entitled to PCO's answer verbatim) and the
-serving layer regenerates it whenever a nested include asks for it.
+**An edge that does not resolve is the same bug one question further on.**
+`repair_incomplete` asks whether a relationship *key* is present; `repair_dangling`
+asks whether the ids under it name records the mirror can actually serve. Two of
+these were live at once in one divergence report: a new parent whose `emails`
+named an address the mirror held no row for, and a person still listing three
+households PCO had deleted. Both are documents no caller can act on, and both are
+invisible to everything above — the sweep needs an `updated_at` that will never
+move again, and the drift probe counts rows that are all present. The repair
+re-reads **both ends**: the holder, which is what drops an edge PCO has dropped,
+and the target, which either arrives or answers `404` and is tombstoned. Same
+schedule and same recency floor as `repair_incomplete`.
+
+**Include-synthesized relationships are not stored, and are regenerated exactly.**
+PCO answers `include=households.people` by adding a `people` relationship to the
+*Person*. It is an artefact of the request rather than part of the record, so the
+writer strips it before storing (on a copy — on a pass-through that same object is
+the caller's response, and they are entitled to PCO's answer verbatim) and the
+serving layer regenerates it whenever a nested include asks for it. Three rules,
+each measured rather than assumed:
+
+  * **An empty second level is still a relationship.** A household's memberships
+    read with `include=person,person.emails` give *every* membership an `emails`
+    key, `"data": []` for members with no address. Emitting it only when there
+    were ids to put in it dropped the relationship for exactly the people a newly
+    added family is made of.
+  * **An empty first level is not.** A person with no field data gets no
+    `field_definition` key at all — PCO synthesizes one key per first-level record
+    it resolved.
+  * **It is a concatenation, not a set.** PCO joins each first-level record's
+    array end to end, so a person in two households that share a member is handed
+    that member's id twice, in household order.
 
 **Page links carry the whole query.** `links.self`/`next`/`prev` are rebuilt from
 the caller's own query string with only `offset`/`per_page` replaced, and

@@ -111,6 +111,13 @@ class FakePCO:
         """
         if (seg, rel) != ("households", "household_memberships"):
             return Response(404, {}, b'{"errors":[{"code":"404"}]}')
+        if pco_id not in self.data.get("Household", {}):
+            # A collection served only under its parent 404s when the parent is
+            # gone, and that 404 is the *only* announcement PCO makes of a
+            # deleted household — `where[updated_at]` cannot return one. A fake
+            # that answered "no memberships" instead would hide the one signal
+            # the walk has to act on.
+            return Response(404, {}, b'{"errors":[{"code":"404"}]}')
         items = [r for r in self.data.get("HouseholdMembership", {}).values()
                  if f"/households/{pco_id}/household_memberships/" in (r.get("links") or {}).get("self", "")]
         per_page = int(qs.get("per_page", ["25"])[0])
@@ -143,8 +150,11 @@ class FakePCO:
         per_page = int(qs.get("per_page", ["25"])[0])
         offset = int(qs.get("offset", ["0"])[0])
         page = items[offset:offset + per_page]
-        sparse = "fields[Person]" in qs
-        data = [self._sparse(r, qs["fields[Person]"][0]) if sparse else r for r in page]
+        # `fields[Type]` for whatever type this collection serves, not `Person`
+        # alone: the delete audit asks for `fields[Household]=created_at` too, and
+        # a fake that quietly ignored it would test a request PCO never gets.
+        sparse = f"fields[{rtype}]" in qs
+        data = [self._sparse(r, qs[f"fields[{rtype}]"][0]) if sparse else r for r in page]
         included = self._includes(page, qs.get("include", [None])[0]) if not sparse else []
         meta = {"total_count": total, "count": len(data)}
         if offset + per_page < total:

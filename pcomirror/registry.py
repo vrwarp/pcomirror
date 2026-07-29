@@ -99,6 +99,10 @@ class Resource:
     # reserved-ish word, so the projection is `is_primary`).
     col_aliases: dict[str, str] = field(default_factory=dict)
     incr_interval_s: int = 300
+    #: Declaring one opts this resource into the full-id delete audit — the only
+    #: mechanism that finds a hard delete with no webhook and no merge. The
+    #: cadence is the deployment's (`PCOMIRROR_AUDIT_INTERVAL_HOURS`); this says
+    #: which resources get looked at, not how often.
     audit_interval_s: int | None = None
     priority: int = 2
 
@@ -299,7 +303,11 @@ _reg(Resource(
 # --- households (many-to-many) ---
 _reg(Resource(
     name="household", type="Household", table="household", endpoint="/households",
-    tier="full", incr_interval_s=600, priority=2,
+    # Audited, for the same reason a person is: a household is hard-deleted by a
+    # click in the UI, and no sweep can see that. `where[updated_at]` cannot
+    # return a record that no longer exists, so without this a household deleted
+    # at PCO stayed live in the mirror and on every member's `households` array.
+    tier="full", incr_interval_s=600, audit_interval_s=86400, priority=2,
     projections=(
         ("name", "TEXT", "json", "$.attributes.name"),
         ("member_count", "INTEGER", "json", "$.attributes.member_count"),

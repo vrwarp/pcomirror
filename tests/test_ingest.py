@@ -292,6 +292,94 @@ class TestTheLastChildIsStillADelete(unittest.TestCase):
             m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
 
 
+class TestBothHalvesHaveToAgreeBeforeAChildIsBuried(unittest.TestCase):
+    """A compound document has two halves and they can disagree.
+
+    Measured live, three minutes after a parent was added to a real
+    organization: `/people?include=emails` came back with the new person's
+    `relationships.emails` naming an address and `included[]` not carrying it.
+    Reading `included[]` alone as the answer would have buried an email Planning
+    Center had, in the same breath, said the person has.
+    """
+
+    TS = "2026-01-01T00:00:00Z"
+
+    def _person_naming_their_email(self):
+        m, fake = build()
+        fake.add_person("1", "Jemima", "Allen", self.TS,
+                        emails={"data": [{"type": "Email", "id": "e1"}]})
+        fake.add_child("Email", "e1", "1", {"address": "jemima@x.org"}, self.TS)
+        m.ingestor.backfill("person")
+        return m, fake
+
+    def test_a_relationship_pco_still_names_is_not_a_delete(self):
+        m, fake = self._person_naming_their_email()
+        # PCO stops sideloading the email but goes on naming it — the inconsistent
+        # document the live report caught.
+        fake.destroy("Email", "e1")
+        m.ingestor.hydrate("person", "1")
+        self.assertIsNone(
+            m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"],
+            "an email PCO still lists on the person was buried on the strength "
+            "of a sideload that did not arrive")
+
+    def test_dropping_it_from_both_halves_is_still_a_delete(self):
+        m, fake = self._person_naming_their_email()
+        fake.data["Person"]["1"]["relationships"]["emails"] = {"data": []}
+        fake.destroy("Email", "e1")
+        m.ingestor.hydrate("person", "1")
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
+
+
+class TestAVanishedCollectionBuriesItsParent(unittest.TestCase):
+    """`GET /households/{id}/household_memberships` answering 404 is the only
+    announcement PCO makes that a household is gone — no webhook is guaranteed,
+    and `where[updated_at]` cannot return a record that no longer exists. The
+    walk used to shrug it off, so three households abandoned while somebody added
+    a family were still live in a mirror a day later."""
+
+    TS = "2026-01-01T00:00:00Z"
+
+    def _walked(self):
+        m, fake = build()
+        fake.add_person("1", "Debra", "Allen", self.TS)
+        fake.add(res("Household", "h1", {"name": "Allen Household"}, updated=self.TS))
+        fake.add_membership("hm1", "h1", "1")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        m.ingestor.nested_walk("household_membership")
+        return m, fake
+
+    def test_the_household_and_its_memberships_are_tombstoned(self):
+        m, fake = self._walked()
+        fake.destroy("Household", "h1")
+        m.ingestor.nested_walk("household_membership")
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM household WHERE pco_id='h1'")["deleted_at"])
+        self.assertIsNotNone(
+            m.db.query_one(
+                "SELECT deleted_at FROM household_membership WHERE pco_id='hm1'")["deleted_at"])
+
+    def test_it_stops_being_served(self):
+        m, fake = self._walked()
+        fake.destroy("Household", "h1")
+        m.ingestor.nested_walk("household_membership")
+        status, _, _ = wsgi_get(m.wsgi, "/people/v2/households/h1", "")
+        self.assertEqual(status, 410)
+
+    def test_the_404_is_confirmed_before_anything_is_buried(self):
+        """The nested 404 is evidence, not proof. A household PCO still answers
+        for keeps every member's family — the cascade is not something to run on
+        a guess."""
+        m, fake = self._walked()
+        from pcomirror.pcoclient import Response
+        fake._nested = lambda *a, **k: Response(404, {}, b'{"errors":[{"code":"404"}]}')
+        m.ingestor.nested_walk("household_membership")
+        self.assertIsNone(
+            m.db.query_one("SELECT deleted_at FROM household WHERE pco_id='h1'")["deleted_at"])
+
+
 class TestScheduledAudit(unittest.TestCase):
     """The delete audit is the only mechanism that finds a hard delete with no
     webhook and no merge. It was written, tested, documented and exposed on the
@@ -328,6 +416,21 @@ class TestScheduledAudit(unittest.TestCase):
         sched.run_once()
         self.assertIsNone(m.ingestor.state("person")["last_audit_completed_at"])
 
+    def test_the_audit_covers_every_resource_that_declares_one(self):
+        """A household is hard-deleted by the same click a person is, and was
+        just as invisible: the audit ran for `person` and nothing else."""
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        fake.add_person("1", "Debra", "Allen", "2026-01-01T00:00:00Z")
+        fake.add(res("Household", "h1", {"name": "Allen Household"},
+                     updated="2026-01-01T00:00:00Z"))
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        fake.destroy("Household", "h1")
+        Scheduler(m).run_once()
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM household WHERE pco_id='h1'")["deleted_at"])
+
     def test_a_failed_audit_waits_rather_than_retrying_every_tick(self):
         """Due-ness reads the later of started/completed, so an audit that dies
         partway does not re-enumerate the organization on the next 5s tick."""
@@ -341,6 +444,81 @@ class TestScheduledAudit(unittest.TestCase):
         self.assertIsNone(st["last_audit_completed_at"])
         self.assertIsNotNone(st["last_audit_started_at"])
         self.assertFalse(sched._audit_due("person", now_iso()))
+
+
+class TestAnEdgeThatDoesNotResolve(unittest.TestCase):
+    """A relationship naming a record the mirror cannot serve.
+
+    Two of these were live at once in a divergence report taken minutes after a
+    family was added, and neither was visible to anything else the mirror runs.
+    The sweep filters on `updated_at` and neither record's would ever move again;
+    the drift probe counts rows and both counts were fine; `repair_incomplete`
+    asks whether the relationship *key* is there, and it was.
+
+      * a new parent whose `emails` named an address the mirror held no row for,
+        so `include=emails` answered with the id in the relationship and an empty
+        `included[]`;
+      * a person still listing three households that had been deleted at PCO.
+    """
+
+    TS = "2026-01-01T00:00:00Z"
+
+    def test_a_child_pco_named_but_never_sent_is_fetched_by_id(self):
+        m, fake = build()
+        fake.add_person("1", "Jemima", "Allen", self.TS,
+                        emails={"data": [{"type": "Email", "id": "e1"}]})
+        m.ingestor.backfill("person")     # the person names e1; nothing sideloaded it
+        self.assertIsNone(m.db.query_one("SELECT 1 FROM email WHERE pco_id='e1'"))
+        fake.add_child("Email", "e1", "1", {"address": "jemima@x.org"}, self.TS)
+
+        self.assertTrue(m.ingestor.repair_dangling("person", min_age_seconds=0))
+        m.ingestor.drain_hydration()
+
+        row = m.db.query_one("SELECT person_pco_id, deleted_at FROM email WHERE pco_id='e1'")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["person_pco_id"], "1")
+        self.assertIsNone(row["deleted_at"])
+        _, _, body = wsgi_get(m.wsgi, "/people/v2/people/1", "include=emails")
+        self.assertEqual([r["id"] for r in body["included"]], ["e1"])
+
+    def test_an_edge_pco_has_dropped_is_re_read_from_the_holder(self):
+        """The households were gone and the person's own record still listed
+        them — with an `updated_at` PCO never moved, so no sweep would ever
+        re-read it."""
+        m, fake = build()
+        fake.add_person("1", "Debra", "Allen", self.TS,
+                        households={"data": [{"type": "Household", "id": "h1"}]})
+        fake.add(res("Household", "h1", {"name": "Allen Household"}, updated=self.TS))
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        # Deleted at PCO and dropped from the person, without their record moving.
+        fake.destroy("Household", "h1")
+        fake.data["Person"]["1"]["relationships"]["households"] = {"data": []}
+        m.ingestor.delete_audit("household")
+
+        self.assertTrue(m.ingestor.repair_dangling("person", min_age_seconds=0))
+        m.ingestor.drain_hydration()
+
+        _, _, body = wsgi_get(m.wsgi, "/people/v2/people/1", "include=households")
+        self.assertEqual(body["data"]["relationships"]["households"]["data"], [])
+        self.assertNotIn("included", body)
+
+    def test_a_record_whose_edges_all_resolve_is_left_alone(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", self.TS,
+                        emails={"data": [{"type": "Email", "id": "e1"}]})
+        fake.add_child("Email", "e1", "1", {"address": "ada@x.org"}, self.TS)
+        m.ingestor.backfill("person")
+        self.assertEqual(m.ingestor.repair_dangling("person", min_age_seconds=0), 0)
+
+    def test_a_record_just_synced_waits_rather_than_spinning(self):
+        """If PCO keeps naming an id it will not hand over, this has to cost one
+        re-read per interval, not one per pass."""
+        m, fake = build()
+        fake.add_person("1", "Jemima", "Allen", self.TS,
+                        emails={"data": [{"type": "Email", "id": "e1"}]})
+        m.ingestor.backfill("person")
+        self.assertEqual(m.ingestor.repair_dangling("person"), 0)
 
 
 class TestReferenceRefresh(unittest.TestCase):
