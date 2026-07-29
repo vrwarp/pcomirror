@@ -87,6 +87,11 @@ class Writer:
             {"pid": pco_id, "raw": json.dumps(raw, separators=(",", ":")),
              "now": now, "source": source, "av": self.api_version},
         )
+        # The realistic way a wrongly-buried person comes back: a webhook or a
+        # sweep carrying a strictly newer payload. `confirm_live` is the other,
+        # and only the audit's `200` branch reaches it — which never sees a
+        # tombstoned row, because it only considers rows the mirror thinks live.
+        self._uncascade(t, pco_id, now)
         if t == "field_datum":
             self._project_field_datum(pco_id)
 
@@ -104,6 +109,16 @@ class Writer:
              "now": now, "source": source, "av": self.api_version},
         )
 
+    #: Reasons that mean the record is *gone*, as opposed to folded into another
+    #: one. A merge does not delete a person's emails — PCO moves them to the
+    #: survivor — so cascading on `merged` would tombstone rows PCO had just
+    #: reassigned, and the survivor's hydration re-routes them at their existing
+    #: `updated_at`, which the monotonic guard would refuse to resurrect.
+    GONE = frozenset({"destroyed", "audit_absent", "absent"})
+    #: Written on a child so the cascade is legible in the log and reversible as a
+    #: unit: these rows were never independently deleted.
+    OWNER_DELETED = "owner_deleted"
+
     # -- 7c. tombstone (destroyed / merge / audit-absent) -----------------
     def tombstone(self, table: str, pco_id: str, uat: str | None, reason: str,
                   merged_into: str | None = None, now: str | None = None) -> None:
@@ -117,6 +132,32 @@ class Writer:
                                        OR coalesce(:uat,pco_updated_at)>=pco_updated_at)""",
             {"pid": pco_id, "uat": _stable_ts(uat), "reason": reason, "merged": merged_into, "now": now},
         )
+        if reason in self.GONE:
+            self._cascade(t, pco_id, now)
+
+    def _cascade(self, table: str, pco_id: str, now: str) -> None:
+        """A child cannot outlive the record that owns it.
+
+        Every other way a child gets tombstoned needs the owner to still be there
+        to ask about: `_include_diff` compares a fetched person's `include=` set
+        against what the mirror holds, and `_walk_one` re-reads a live household's
+        memberships. When the owner itself is gone — a `404` on hydration, an
+        absence the audit confirmed, a `destroyed` webhook — neither can run
+        again, and nothing else looks: a child's own sweep filters on
+        `where[updated_at]`, which cannot return a row that no longer exists.
+
+        So the emails, phone numbers and addresses of a hard-deleted person
+        stayed live in the mirror **for ever**, and `GET /emails` kept serving
+        that person's address after `GET /people/{id}` had started answering 404.
+        """
+        owner = registry.by_table(table)
+        for child, fk in registry.owned_children(owner.name) if owner else ():
+            self.db.execute(
+                f"""UPDATE {child.table}
+                      SET deleted_at=:now, tombstone_uat=coalesce(pco_updated_at,:now),
+                          tombstone_reason=:reason, last_synced_at=:now, source='reconcile'
+                    WHERE {fk}=:pid AND deleted_at IS NULL""",
+                {"pid": pco_id, "now": now, "reason": self.OWNER_DELETED})
 
     # -- 7d. authoritative live confirmation (audit 200 / list-replace) ---
     def confirm_live(self, table: str, pco_id: str, raw: dict, source: str, now: str | None = None) -> None:
@@ -131,8 +172,35 @@ class Writer:
             {"pid": pco_id, "raw": json.dumps(raw, separators=(",", ":")),
              "now": now, "source": source, "av": self.api_version},
         )
+        self._uncascade(t, pco_id, now)
         if t == "field_datum":
             self._project_field_datum(pco_id)
+
+    def _uncascade(self, table: str, pco_id: str, now: str) -> None:
+        """The other half of `_cascade`: this record is authoritatively alive, so
+        the children that were only ever tombstoned *because it wasn't* are too.
+
+        Only rows carrying `owner_deleted` — a child deleted on its own evidence
+        keeps its tombstone. Without this, putting the owner back would leave its
+        emails buried: the re-fetched copies carry their existing `updated_at`,
+        and the monotonic guard resurrects only on strictly newer.
+
+        The `EXISTS` is what makes this safe to call after *every* write rather
+        than only after one known to have resurrected something. An ordinary
+        upsert of a still-tombstoned person — a sweep re-reading a record it
+        already has, at a timestamp too old to revive it — would otherwise dig up
+        children whose owner is still buried.
+        """
+        owner = registry.by_table(table)
+        for child, fk in registry.owned_children(owner.name) if owner else ():
+            self.db.execute(
+                f"""UPDATE {child.table}
+                      SET deleted_at=NULL, tombstone_uat=NULL, tombstone_reason=NULL,
+                          last_synced_at=:now
+                    WHERE {fk}=:pid AND tombstone_reason=:reason
+                      AND EXISTS (SELECT 1 FROM {owner.table}
+                                   WHERE pco_id=:pid AND deleted_at IS NULL)""",
+                {"pid": pco_id, "now": now, "reason": self.OWNER_DELETED})
 
     # -- sideload router ---------------------------------------------------
     def route(self, resource: dict, source: str, owner_hint: dict | None = None,

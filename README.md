@@ -395,6 +395,24 @@ The boundary this draws is deliberate: it verifies the mirror **against the
 traffic it serves**. A record no caller has ever asked for is outside it, and the
 reconcile sweep, drift probe and delete audit own that ground.
 
+**A child cannot outlive the record that owns it.** Every other way a child gets
+tombstoned needs the owner still to be there to ask about: the include-diff
+compares a fetched person's `include=` set against what the mirror holds, and the
+per-parent walk re-reads a live household's memberships. When the owner itself is
+gone — a `404` on hydration, an absence the audit confirmed, a `destroyed`
+webhook — neither can run again, and nothing else looks, because a child's own
+sweep filters on `where[updated_at]` and that cannot return a row which no longer
+exists. So the emails, phone numbers and addresses of a hard-deleted person
+stayed live in the mirror **for ever**, and `GET /emails` kept serving that
+person's address long after `GET /people/{id}` had started answering 404. The
+canonical writer now cascades along the declared ownership edges, and revives
+those children if the owner comes back.
+
+Ownership, not reference: `person.primary_campus` points at a campus, and a
+campus being deleted must never tombstone the people in it. A **merge** is
+excluded too — PCO moves a merged person's children to the survivor rather than
+deleting them.
+
 The **delete audit** is the third and slowest of the delete mechanisms (DESIGN
 §7.2) and the only one that needs no signal from PCO: webhooks are lossy and the
 merger poll only covers the merge path, so a person hard-deleted in the UI is

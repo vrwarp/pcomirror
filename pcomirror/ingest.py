@@ -283,7 +283,7 @@ class Ingestor:
                 applied += self.writer.route_page(body, "reconcile")
             if r.name == "person":
                 for d in data:
-                    self._include_diff(d, body.get("included", []))
+                    self._include_diff(d, body.get("included", []), list(r.includes))
             max_ts = max(d["attributes"]["updated_at"] for d in data)
             all_boundary = all(d["attributes"]["updated_at"] == cursor for d in data)
             if max_ts == cursor and len(data) == 100:
@@ -559,28 +559,39 @@ class Ingestor:
             for i in body.get("included", []) or []:
                 self.writer.route(i, "reconcile", owner_hint={"type": r.type, "id": pco_id})
             if name == "person":
-                self._include_diff(obj, body.get("included", []))
+                self._include_diff(obj, body.get("included", []),
+                                   includes if includes is not None else list(r.includes))
 
-    def _include_diff(self, person_obj: dict, included: list) -> None:
+    def _include_diff(self, person_obj: dict, included: list, requested: list) -> None:
         """Tombstone local children of a person that are absent from the fetched
-        include set — catches single-child hard deletes (DESIGN §7.2)."""
+        include set — catches single-child hard deletes (DESIGN §7.2).
+
+        Which children to diff comes from what was **asked for**, not from what
+        came back. Those are the same question right up until the answer is
+        "none", and that is exactly the case this is for: PCO returns
+        `"included": []` both for a person whose emails were not requested and for
+        a person who has no emails left. Reading it off the response meant a
+        person's *last* email could be deleted at PCO and stay in the mirror for
+        ever — the one shape of single-child delete nothing else catches either.
+        The request is not ambiguous, so it is the thing to trust.
+        """
         pid = person_obj["id"]
+        r = registry.by_name("person")
+        asked = {rel.target for name in requested
+                 if (rel := r.relationships.get(name)) and rel.kind == "many"}
         present: dict[str, set] = {}
         for inc in included or []:
             cr = registry.by_type(inc.get("type", ""))
             if cr and cr.owner_rel == "person":
-                present.setdefault(cr.table, set()).add(inc["id"])
+                present.setdefault(cr.name, set()).add(inc["id"])
         for child in registry.RESOURCES.values():
-            if child.owner_rel != "person":
-                continue
-            seen_ids = present.get(child.table)
-            if seen_ids is None and not any(i.get("type") == child.type for i in included or []):
-                # this include was not requested/returned -> don't diff (avoid false deletes)
-                continue
+            if child.owner_rel != "person" or child.name not in asked:
+                continue        # not requested -> unknown, which is not empty
+            seen_ids = present.get(child.name, set())
             for row in self.db.query(
                     f"SELECT pco_id FROM {child.table} "
                     f"WHERE person_pco_id=? AND deleted_at IS NULL", (pid,)):
-                if row["pco_id"] not in (seen_ids or set()):
+                if row["pco_id"] not in seen_ids:
                     self.writer.tombstone(child.table, row["pco_id"], None, "absent")
 
     def _max_uat(self, table: str) -> str | None:
