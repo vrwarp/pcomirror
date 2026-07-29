@@ -128,22 +128,25 @@ CREATE TABLE IF NOT EXISTS diagnostic_event (
 );
 CREATE INDEX IF NOT EXISTS diagnostic_event_kind_idx ON diagnostic_event (kind, event_id);
 CREATE INDEX IF NOT EXISTS diagnostic_event_sev_idx  ON diagnostic_event (severity, event_id);
--- One row per distinct *shape* of read the mirror has served, so the divergence
--- checker covers the API surface rather than a thousand copies of the busiest
--- query. `shape` has ids and paging removed; `path`/`query` are a concrete
--- example of it, kept so the check has something real to replay.
-CREATE TABLE IF NOT EXISTS shadow_probe (
-  shape TEXT PRIMARY KEY,
+-- A live golden corpus: the distinct reads this mirror has actually been asked
+-- for, kept so each can be re-asked of PCO and the two answers compared.
+--
+-- Every row is a request a caller really made. The checker never invents one —
+-- a synthesised query tests something nobody does, and worse, spends the PCO
+-- budget doing it. `shape` is the request with ids and paging removed, and is
+-- only a grouping: it is what stops the busiest query in the building taking
+-- every check, while the rows within it cover the records callers actually
+-- touch.
+CREATE TABLE IF NOT EXISTS shadow_sample (
+  sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shape TEXT NOT NULL,
   path TEXT NOT NULL, query TEXT NOT NULL DEFAULT '{}',
   seen INTEGER NOT NULL DEFAULT 0,
   first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   last_checked_at TEXT, last_agreed_at TEXT,
-  -- Where in the *data* this shape got to. A shape collapses every record it
-  -- could address into one row, so without a cursor it would re-check the same
-  -- person for ever — and every divergence found so far lived in one record, not
-  -- in the query. Holds the last record id checked, or the last page offset.
-  cursor TEXT
+  UNIQUE (shape, path, query)
 );
+CREATE INDEX IF NOT EXISTS shadow_sample_shape_idx ON shadow_sample (shape, last_checked_at);
 -- Where the mirror and PCO disagreed. Both bodies are stored **pseudonymised**;
 -- there is no unpseudonymised copy anywhere, so an export cannot forget to strip
 -- one. `verdict` separates lag the sweep will fix from divergence nothing will.

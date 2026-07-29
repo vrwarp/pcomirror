@@ -23,10 +23,17 @@ what keeps them near-simultaneous: an edit landing between a stored response and
 a later upstream read looks exactly like a bug, and this way that window is
 milliseconds instead of hours.
 
-**Sampling by shape, not by request.** A uniform sampler spends the whole budget
-on a thousand copies of the roster read. Keying on shape and taking the
-least-recently-checked covers the API *surface* for the same cost — and the
-surface is where the bugs were: search filters, includes, ordering, nested reads.
+**A live golden corpus.** Every row kept is a request a caller really made. The
+checker never invents one: a synthesised query tests something nobody does, and
+spends the PCO budget doing it. `tests/golden/` is the same idea recorded by hand
+once; this is the same idea kept current by the traffic itself.
+
+**Shape is a fairness unit, not the sample.** Requests are grouped by shape — the
+path with ids and paging removed — and checking takes the least-recently-checked
+shape, then the least-recently-checked request *within* it. Grouping is what stops
+the busiest query in the building taking every check; the several requests inside
+a group are what cover the records callers actually touch, so a shape does not
+mean re-verifying one person for ever.
 
 **What is stored.** Both bodies, pseudonymised (`pcomirror.pseudonym`), plus the
 computed differences. Pseudonyms are what make the log safe to hand to somebody
@@ -47,12 +54,14 @@ from .rules import Difference, classify, compare
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
-           "MAX_PER_MINUTE", "OVERRIDE_KEY", "PAGE_SIZE"]
+           "MAX_PER_MINUTE", "OVERRIDE_KEY", "SAMPLES_PER_SHAPE"]
 
-#: Page size used only when the observed request did not name one — the same
-#: default the mirror and PCO both apply, so an unadorned collection read is
-#: checked exactly as it was served.
-PAGE_SIZE = 25
+#: How many distinct requests to keep per shape. Enough that a shape covers a
+#: spread of records rather than one, bounded so a caller iterating a thousand
+#: ids cannot turn the corpus into a log of its own traffic. The busiest are
+#: kept: a request made once may never be made again, and one made constantly is
+#: the one whose breaking would be noticed.
+SAMPLES_PER_SHAPE = 25
 
 #: Where an operator's choice is kept. Absent means "whatever the environment
 #: said", which is what a fresh install and a `docker run -e …` both expect.
@@ -163,123 +172,57 @@ class ShadowChecker:
         self._tokens = max(0.0, self._tokens - n)
 
     def observe(self, path: str, qs: dict) -> None:
-        """Note that a shape was asked for. Cheap, and never fails a read."""
+        """Keep this request in the corpus. Cheap, and never fails a read."""
         if not self.enabled:
             return
         try:
             shape = shape_of(path, qs.keys())
+            query = json.dumps({k: v[0] for k, v in qs.items()}, sort_keys=True)
             self.db.execute(
-                "INSERT INTO shadow_probe(shape, path, query, first_seen_at, seen) "
-                "VALUES(?,?,?,?,1) ON CONFLICT(shape) DO UPDATE SET "
-                "seen = seen + 1, path = excluded.path, query = excluded.query",
-                (shape, path, json.dumps({k: v[0] for k, v in qs.items()}, sort_keys=True),
-                 now_iso()))
+                "INSERT INTO shadow_sample(shape, path, query, first_seen_at, seen) "
+                "VALUES(?,?,?,?,1) ON CONFLICT(shape, path, query) DO UPDATE SET "
+                "seen = seen + 1",
+                (shape, path, query, now_iso()))
+            self._trim_samples(shape)
         except Exception:  # noqa: BLE001
             pass
 
+    def _trim_samples(self, shape: str) -> None:
+        """Hold the busiest `SAMPLES_PER_SHAPE` requests for this shape.
 
-    # -- rotating the window onto the data ---------------------------------
-    #
-    # A shape deliberately collapses every record it could address into one row:
-    # `/people/1` and `/people/99999` are the same *question*. But the answers
-    # are not, and the mirror is a copy of the answers — every divergence found
-    # so far lived in one record and would have been invisible in another.
-    # Checking a shape against whichever record happened to be in the last
-    # request would re-verify that one person for ever and never look at anybody
-    # else.
-    #
-    # So each shape carries a cursor through its own data, and every check moves
-    # it on: a `{id}` shape walks the mirrored ids in order, a collection shape
-    # walks its pages. Coverage of the *surface* comes from picking shapes
-    # round-robin; coverage of the *data* comes from here.
-
-    def _id_resource(self, shape: str):
-        """The resource whose id a `{id}` shape addresses, if it is one."""
-        segments = [s for s in shape.split("?")[0].split("/") if s]
-        try:
-            marker = segments.index("{id}")
-        except ValueError:
-            return None
-        from ..serving import _SEG
-        return _SEG.get(segments[marker - 1]) if marker else None
-
-    def _next_id(self, resource, cursor):
-        """The next live id after the cursor, wrapping at the end.
-
-        Ordered the way PCO orders ids — numerically — so a walk covers the
-        organization once rather than jumping about, and so the wrap is
-        detectable rather than looking like an ordinary step.
+        Busiest rather than newest: a request made once may never be made again,
+        and the one made constantly is the one whose breaking gets noticed. A
+        caller walking a thousand ids would otherwise turn the corpus into a
+        transcript of its own traffic and push everything else out.
         """
-        row = self.db.query_one(
-            f"SELECT pco_id FROM {resource.table} WHERE deleted_at IS NULL "
-            f"AND CAST(pco_id AS INTEGER) > CAST(? AS INTEGER) "
-            f"ORDER BY CAST(pco_id AS INTEGER) LIMIT 1", (cursor or "0",))
-        if row:
-            return row["pco_id"]
-        first = self.db.query_one(
-            f"SELECT pco_id FROM {resource.table} WHERE deleted_at IS NULL "
-            f"ORDER BY CAST(pco_id AS INTEGER) LIMIT 1")
-        return first["pco_id"] if first else None
-
-    def _next_offset(self, path: str, cursor, page: int) -> int:
-        """The next page of a collection, wrapping once the end is passed."""
-        segments = [s for s in path.split("?")[0].split("/") if s]
-        from ..serving import _SEG
-        resource = _SEG.get(segments[-1]) if segments else None
-        if resource is None:
-            return 0
-        held = self.db.query_one(
-            f"SELECT count(*) c FROM {resource.table} WHERE deleted_at IS NULL")["c"]
-        try:
-            nxt = int(cursor or -page) + page
-        except (TypeError, ValueError):
-            nxt = 0
-        return 0 if nxt >= max(1, held) else nxt
-
-    def target_for(self, probe) -> tuple:
-        """`(path, params, cursor)` — the shape aimed at the next slice of data.
-
-        Everything the observed request asked for is kept except *where* in the
-        collection it looked. `per_page` in particular is preserved: page size
-        decides where a page boundary falls, and a page boundary is where the
-        ordering bugs live — `/emails` came back with all twenty-five rows of
-        page one in the wrong places because ids sort numerically at PCO and
-        lexically in SQLite. Rewriting it to some convenient number would check a
-        query nobody makes and quietly stop testing the one they do.
-        """
-        path, cursor = probe["path"], probe["cursor"]
-        params = dict(json.loads(probe["query"] or "{}"))
-        observed_page = params.pop("per_page", None)
-        params.pop("offset", None)
-
-        resource = self._id_resource(probe["shape"])
-        if resource is not None:
-            # Paging means nothing addressing one record, so it is dropped rather
-            # than carried; what rotates here is which record.
-            nxt = self._next_id(resource, cursor)
-            if nxt is None:
-                return path, params, cursor          # nothing mirrored yet
-            segments = probe["shape"].split("?")[0].split("/")
-            concrete = [nxt if s == "{id}" else s for s in segments]
-            return "/".join(concrete), params, nxt
-
-        try:
-            page = max(1, min(100, int(observed_page))) if observed_page else PAGE_SIZE
-        except (TypeError, ValueError):
-            page = PAGE_SIZE
-        offset = self._next_offset(path, cursor, page)
-        if observed_page is not None:
-            params["per_page"] = observed_page
-        if offset:
-            params["offset"] = offset
-        return path, params, str(offset)
+        self.db.execute(
+            "DELETE FROM shadow_sample WHERE shape = ? AND sample_id NOT IN ("
+            "  SELECT sample_id FROM shadow_sample WHERE shape = ? "
+            "  ORDER BY seen DESC, sample_id ASC LIMIT ?)",
+            (shape, shape, SAMPLES_PER_SHAPE))
 
     # -- draining ----------------------------------------------------------
     def due(self, limit: int):
-        """Least-recently-checked shapes first, so coverage spreads."""
-        return self.db.query(
-            "SELECT * FROM shadow_probe ORDER BY coalesce(last_checked_at,'') ASC, "
-            "shape ASC LIMIT ?", (max(0, limit),))
+        """One request per shape, least-recently-checked shape first.
+
+        Two levels, because they answer different questions. Across shapes it
+        keeps the busiest query in the building from taking every check. Within a
+        shape it moves through the requests callers actually made, so a shape
+        covers a spread of records instead of re-verifying one for ever.
+        """
+        shapes = self.db.query(
+            "SELECT shape, max(coalesce(last_checked_at,'')) AS touched "
+            "FROM shadow_sample GROUP BY shape "
+            "ORDER BY touched ASC, shape ASC LIMIT ?", (max(0, limit),))
+        picked = []
+        for row in shapes:
+            sample = self.db.query_one(
+                "SELECT * FROM shadow_sample WHERE shape = ? "
+                "ORDER BY coalesce(last_checked_at,'') ASC, sample_id ASC LIMIT 1",
+                (row["shape"],))
+            if sample is not None:
+                picked.append(sample)
+        return picked
 
     def run_once(self, limit: int | None = None) -> int:
         """One pass. Returns how many shapes were checked."""
@@ -289,23 +232,22 @@ class ShadowChecker:
         if budget <= 0:
             return 0
         checked = 0
-        for probe in self.due(budget):
-            path, params, cursor = self.target_for(probe)
+        for sample in self.due(budget):
             try:
-                self.check(probe["shape"], path, params)
+                self.check(sample["sample_id"], sample["path"],
+                           json.loads(sample["query"] or "{}"))
             except Exception as e:  # noqa: BLE001
-                self._note_failure(probe["shape"], e)
-            # The cursor advances whether or not the check succeeded, so one
-            # record PCO keeps failing on cannot stall the walk behind it.
-            self.db.execute(
-                "UPDATE shadow_probe SET last_checked_at=?, cursor=? WHERE shape=?",
-                (now_iso(), cursor, probe["shape"]))
+                self._note_failure(sample["shape"], e)
+            # Marked checked whether or not it succeeded, so one request PCO
+            # keeps failing on cannot stall every other request behind it.
+            self.db.execute("UPDATE shadow_sample SET last_checked_at=? WHERE sample_id=?",
+                            (now_iso(), sample["sample_id"]))
             checked += 1
         if limit is None:
             self._spend(checked)
         return checked
 
-    def check(self, shape: str, path: str, params: dict) -> str:
+    def check(self, sample_id, path: str, params: dict) -> str:
         """Serve one query both ways and record what differs.
 
         Both sides are asked *now*, back to back, rather than one of them being
@@ -322,8 +264,8 @@ class ShadowChecker:
         differences = compare(mirror_body, pco_body, mirror_status, upstream.status)
         verdict = classify(differences, mirror_body, pco_body)
         if verdict == "match":
-            self.db.execute(
-                "UPDATE shadow_probe SET last_agreed_at=? WHERE shape=?", (now_iso(), shape))
+            self.db.execute("UPDATE shadow_sample SET last_agreed_at=? WHERE sample_id=?",
+                            (now_iso(), sample_id))
             return verdict
 
         p = self.pseudonymiser
@@ -332,7 +274,8 @@ class ShadowChecker:
                  (at, shape, path, verdict, difference_count, differences,
                   mirror_status, pco_status, mirror_body, pco_body, pco_request_id)
                VALUES (:at,:shape,:path,:verdict,:n,:diffs,:ms,:ps,:mb,:pb,:rid)""",
-            {"at": now_iso(), "shape": shape, "path": path, "verdict": verdict,
+            {"at": now_iso(), "shape": self._shape_of_sample(sample_id, path),
+             "path": path, "verdict": verdict,
              "n": len(differences),
              "diffs": json.dumps([_safe_difference(p, d) for d in differences]),
              "ms": mirror_status, "ps": upstream.status,
@@ -341,6 +284,11 @@ class ShadowChecker:
              "rid": getattr(upstream, "request_id", None)})
         self._trim()
         return verdict
+
+    def _shape_of_sample(self, sample_id, path: str) -> str:
+        row = self.db.query_one("SELECT shape FROM shadow_sample WHERE sample_id=?",
+                                (sample_id,))
+        return row["shape"] if row else shape_of(path.split("?")[0], [])
 
     def _note_failure(self, shape: str, error: Exception) -> None:
         if self._recorder is None:
@@ -389,17 +337,19 @@ def recent(db, limit: int = 100, verdict: str = ""):
 def summary(db) -> dict:
     by_verdict = {r["verdict"]: r["n"] for r in db.query(
         "SELECT verdict, count(*) n FROM shadow_report GROUP BY verdict")}
-    probes = db.query_one(
-        "SELECT count(*) shapes, sum(seen) seen, max(last_checked_at) last_checked, "
-        "count(last_checked_at) checked FROM shadow_probe") or {}
+    corpus = db.query_one(
+        "SELECT count(*) samples, count(DISTINCT shape) shapes, sum(seen) seen, "
+        "max(last_checked_at) last_checked, count(last_checked_at) checked "
+        "FROM shadow_sample") or {}
     return {
         "divergence": by_verdict.get("divergence", 0),
         "staleness": by_verdict.get("staleness", 0),
         "total": sum(by_verdict.values()),
-        "shapes": probes["shapes"] or 0,
-        "checked": probes["checked"] or 0,
-        "requests_seen": probes["seen"] or 0,
-        "last_checked": probes["last_checked"],
+        "shapes": corpus["shapes"] or 0,
+        "samples": corpus["samples"] or 0,
+        "checked": corpus["checked"] or 0,
+        "requests_seen": corpus["seen"] or 0,
+        "last_checked": corpus["last_checked"],
     }
 
 

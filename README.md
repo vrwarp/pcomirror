@@ -362,32 +362,32 @@ that timestamp so the record never comes back; the monotonic writer would refuse
 it as not-newer if something did fetch it; drift counts rows and the count does
 not change. Nothing converges on it, ever. Asking PCO is the only way to see it.
 
-**How it works.** Reads served from the mirror record their *shape* — the path
-with ids and paging removed, plus the query keys. The scheduler drains that queue
-under the rate cap, and for each shape replays the query against the mirror *and*
-PCO, back to back, then compares. Replaying both sides at comparison time is what
-keeps them near-simultaneous: an edit landing between a stored response and a
-later upstream read is indistinguishable from a bug.
+**How it works.** It keeps a **live golden corpus**: the distinct reads the
+mirror has actually been asked for. The scheduler works through it under the rate
+cap, replaying each request against the mirror *and* PCO back to back, then
+comparing. `tests/golden/` is the same idea recorded by hand once; this is the
+same idea kept current by the traffic itself.
 
-Sampling by shape rather than uniformly is deliberate. A uniform sampler spends
-the whole budget on a thousand copies of the roster read; taking the
-least-recently-checked shape covers the API *surface* for the same cost — and the
-surface is where several of the bugs were, in search filters, includes, ordering
-and nested reads.
+Nothing is synthesised. Every request checked is one a caller really made — a
+made-up query tests something nobody does, and spends the PCO budget doing it.
 
-**But a shape collapses records, and the mirror is a copy of records.** Every
-divergence found so far lived in *one* record and would have been invisible in
-another — a demoted `primary` on one email, a stale `people` array on one
-household. So each shape also carries a cursor through its own data and every
-check moves it on: a `/people/{id}` shape walks the mirrored ids in order, a
-collection shape walks its pages, both wrapping at the end. Coverage of the
-surface comes from picking shapes round-robin; coverage of the *data* comes from
-the cursor. A record nobody has ever asked the mirror for still gets verified,
-which is the case that matters, because a record nobody reads is a record nobody
-notices is wrong.
+Replaying both sides at comparison time is what keeps them near-simultaneous: an
+edit landing between a stored response and a later upstream read is
+indistinguishable from a bug.
 
-The cursor advances whether or not a check succeeded, so one record PCO keeps
-failing on cannot stall the walk behind it.
+**Shape is a fairness unit, not the sample.** Requests are grouped by shape — the
+path with ids and paging removed, so `/people/1` and `/people/99999` group
+together. Checking takes the least-recently-checked *shape*, then the
+least-recently-checked request within it. The grouping stops the busiest query in
+the building taking every check; the several requests inside a group are what
+cover the records callers actually touch, so a shape does not mean re-verifying
+one person for ever. Up to `SAMPLES_PER_SHAPE` (25) requests are kept per shape,
+the busiest ones — a request made once may never be made again, and the one made
+constantly is the one whose breaking gets noticed.
+
+The boundary this draws is deliberate: it verifies the mirror **against the
+traffic it serves**. A record no caller has ever asked for is outside it, and the
+reconcile sweep and drift probe own that ground.
 
 **Two verdicts, and the difference is the point:**
 

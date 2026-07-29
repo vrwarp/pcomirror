@@ -361,7 +361,7 @@ class TestDivergencePage(AdminCase):
         self.fake.add_person("1", "Ada", "Lovelace", "2026-01-01T00:00:00Z")
         self.m.ingestor.backfill("person")
         self.fake.data["Person"]["1"]["attributes"]["first_name"] = "Grace"
-        self.m.divergence.check("/people/v2/people/{id}", "/people/v2/people/1", {})
+        self.m.divergence.check(1, "/people/v2/people/1", {})
 
     def test_every_route_needs_a_session(self):
         for path in ("/admin/divergence", "/admin/divergence/download"):

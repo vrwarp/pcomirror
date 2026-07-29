@@ -181,44 +181,44 @@ class ShadowCase(unittest.TestCase):
 class TestObservingAndDraining(ShadowCase):
     def test_a_read_enrols_its_shape(self):
         wsgi_get(self.m.wsgi, "/people/v2/people", "where[status]=active")
-        shapes = [r["shape"] for r in self.m.db.query("SELECT shape FROM shadow_probe")]
+        shapes = [r["shape"] for r in self.m.db.query("SELECT shape FROM shadow_sample")]
         self.assertEqual(shapes, ["/people/v2/people?where[status]"])
 
     def test_repeat_reads_are_counted_not_duplicated(self):
         for _ in range(5):
             wsgi_get(self.m.wsgi, "/people/v2/people")
-        row = self.m.db.query_one("SELECT shape, seen FROM shadow_probe")
+        row = self.m.db.query_one("SELECT shape, sum(seen) seen FROM shadow_sample")
         self.assertEqual(row["seen"], 5)
 
     def test_nothing_is_enrolled_while_it_is_off(self):
         self.m.settings.shadow_per_minute = 0
         wsgi_get(self.m.wsgi, "/people/v2/people")
-        self.assertEqual(self.m.db.query("SELECT * FROM shadow_probe"), [])
+        self.assertEqual(self.m.db.query("SELECT * FROM shadow_sample"), [])
 
     def test_draining_checks_and_records_nothing_when_they_agree(self):
         wsgi_get(self.m.wsgi, "/people/v2/people/1")
         self.assertEqual(self.m.divergence.run_once(), 1)
         self.assertEqual(divergence.recent(self.m.db), [])
         self.assertIsNotNone(
-            self.m.db.query_one("SELECT last_agreed_at FROM shadow_probe")["last_agreed_at"])
+            self.m.db.query_one("SELECT last_agreed_at FROM shadow_sample")["last_agreed_at"])
 
     def test_the_least_recently_checked_shape_goes_first(self):
         wsgi_get(self.m.wsgi, "/people/v2/people")
         wsgi_get(self.m.wsgi, "/people/v2/people", "where[status]=active")
         self.m.divergence.run_once(limit=1)
         checked = self.m.db.query(
-            "SELECT shape FROM shadow_probe WHERE last_checked_at IS NOT NULL")
+            "SELECT shape FROM shadow_sample WHERE last_checked_at IS NOT NULL")
         self.assertEqual(len(checked), 1)
         self.m.divergence.run_once(limit=1)
         still = self.m.db.query(
-            "SELECT shape FROM shadow_probe WHERE last_checked_at IS NOT NULL")
+            "SELECT shape FROM shadow_sample WHERE last_checked_at IS NOT NULL")
         self.assertEqual(len(still), 2, "the second pass should pick the other shape")
 
     def test_the_checkers_own_reads_do_not_enrol_themselves(self):
         wsgi_get(self.m.wsgi, "/people/v2/people/1")
-        before = self.m.db.query_one("SELECT count(*) c FROM shadow_probe")["c"]
+        before = self.m.db.query_one("SELECT count(*) c FROM shadow_sample")["c"]
         self.m.divergence.run_once()
-        self.assertEqual(self.m.db.query_one("SELECT count(*) c FROM shadow_probe")["c"],
+        self.assertEqual(self.m.db.query_one("SELECT count(*) c FROM shadow_sample")["c"],
                          before)
 
     def test_a_failed_check_does_not_stop_the_pass(self):
@@ -226,7 +226,7 @@ class TestObservingAndDraining(ShadowCase):
         self.fake.unreachable = True
         self.assertEqual(self.m.divergence.run_once(), 1)
         self.assertIsNotNone(
-            self.m.db.query_one("SELECT last_checked_at FROM shadow_probe")["last_checked_at"])
+            self.m.db.query_one("SELECT last_checked_at FROM shadow_sample")["last_checked_at"])
 
 
 class TestTheCaseThisExistsFor(ShadowCase):
@@ -288,7 +288,7 @@ class TestWhatGetsStored(ShadowCase):
         self.m.settings.shadow_keep = 3
         for i in range(6):
             self.fake.data["Person"]["1"]["attributes"]["first_name"] = f"Name{i}"
-            self.m.divergence.check("/people/{id}", "/people/1", {})
+            self.m.divergence.check(1, "/people/v2/people/1", {})
         self.assertEqual(
             self.m.db.query_one("SELECT count(*) c FROM shadow_report")["c"], 3)
 
@@ -326,7 +326,7 @@ class TestTheRateMeansPerMinute(ShadowCase):
         for endpoint in ("emails", "phone_numbers", "addresses", "households"):
             wsgi_get(self.m.wsgi, f"/people/v2/{endpoint}")
         self.assertGreaterEqual(
-            self.m.db.query_one("SELECT count(*) c FROM shadow_probe")["c"], 12)
+            self.m.db.query_one("SELECT count(*) c FROM shadow_sample")["c"], 12)
         divergence.configure(self.m.db, 6)
 
     def test_the_first_pass_gets_a_full_allowance(self):
@@ -353,7 +353,7 @@ class TestTheRateMeansPerMinute(ShadowCase):
             self.m.divergence.run_once()
         self.assertGreaterEqual(
             self.m.db.query_one(
-                "SELECT count(*) c FROM shadow_probe WHERE last_checked_at IS NOT NULL")["c"],
+                "SELECT count(*) c FROM shadow_sample WHERE last_checked_at IS NOT NULL")["c"],
             12)
 
     def test_the_allowance_does_not_bank_forever(self):
@@ -407,20 +407,18 @@ class TestTurningItOnAndOff(unittest.TestCase):
     def test_turning_it_on_makes_reads_start_enrolling(self):
         divergence.configure(self.m.db, 0)
         wsgi_get(self.m.wsgi, "/people/v2/people")
-        self.assertEqual(self.m.db.query("SELECT * FROM shadow_probe"), [])
+        self.assertEqual(self.m.db.query("SELECT * FROM shadow_sample"), [])
         divergence.configure(self.m.db, 5)
         wsgi_get(self.m.wsgi, "/people/v2/people")
-        self.assertEqual(len(self.m.db.query("SELECT * FROM shadow_probe")), 1)
+        self.assertEqual(len(self.m.db.query("SELECT * FROM shadow_sample")), 1)
 
 
-class TestEachShapeWalksItsOwnData(unittest.TestCase):
-    """A shape collapses records; the mirror is a copy of records.
+class TestTheCorpusIsRealTraffic(unittest.TestCase):
+    """Every request checked is one a caller really made.
 
-    Every divergence found so far lived in one record and would have been
-    invisible in another — a demoted `primary` on one email, a stale `people`
-    array on one household. Checking a shape against whichever record was in the
-    last request would re-verify that one person for ever, so the shape carries
-    a cursor and every check moves it on.
+    The alternative — synthesising requests to walk the data — tests queries
+    nobody makes and spends the PCO budget doing it. This is `tests/golden/`
+    kept current by the traffic itself rather than recorded by hand once.
     """
 
     def setUp(self):
@@ -430,101 +428,111 @@ class TestEachShapeWalksItsOwnData(unittest.TestCase):
             self.fake.add_person(str(i), f"P{i}", "Reed", "2026-01-01T00:00:00Z")
         self.m.ingestor.backfill("person")
 
-    def _walk(self, passes):
+    def _paths_checked(self, passes):
         seen = []
         for _ in range(passes):
-            probe = self.m.db.query_one("SELECT * FROM shadow_probe")
-            path, params, cursor = self.m.divergence.target_for(probe)
-            self.m.db.execute("UPDATE shadow_probe SET cursor=? WHERE shape=?",
-                              (cursor, probe["shape"]))
-            seen.append(path)
+            for sample in self.m.divergence.due(1):
+                seen.append(sample["path"])
+                self.m.db.execute(
+                    "UPDATE shadow_sample SET last_checked_at=? WHERE sample_id=?",
+                    (f"2026-01-01T00:00:{len(seen):02d}Z", sample["sample_id"]))
         return seen
 
-    def test_an_id_shape_visits_a_different_record_each_time(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people/3")
-        self.assertEqual(self._walk(4), [f"/people/v2/people/{i}" for i in (1, 2, 3, 4)])
+    def test_several_records_under_one_shape_are_all_kept(self):
+        for pid in (3, 5, 7):
+            wsgi_get(self.m.wsgi, f"/people/v2/people/{pid}")
+        rows = self.m.db.query("SELECT shape, path FROM shadow_sample ORDER BY path")
+        self.assertEqual({r["shape"] for r in rows}, {"/people/v2/people/{id}"})
+        self.assertEqual([r["path"] for r in rows],
+                         ["/people/v2/people/3", "/people/v2/people/5",
+                          "/people/v2/people/7"])
 
-    def test_it_wraps_at_the_end_rather_than_stopping(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people/1")
-        visited = self._walk(10)
-        self.assertEqual(len(set(visited)), 8, "should cover all eight, then wrap")
-        self.assertEqual(visited[8], "/people/v2/people/1")
+    def test_checking_moves_through_them(self):
+        for pid in (3, 5, 7):
+            wsgi_get(self.m.wsgi, f"/people/v2/people/{pid}")
+        self.assertEqual(sorted(self._paths_checked(3)),
+                         ["/people/v2/people/3", "/people/v2/people/5",
+                          "/people/v2/people/7"])
 
-    def test_a_nested_shape_walks_its_parent(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people/5/emails")
-        self.assertEqual(self._walk(2),
-                         ["/people/v2/people/1/emails", "/people/v2/people/2/emails"])
-
-    def test_a_tombstoned_record_is_not_visited(self):
-        self.m.writer.tombstone("person", "2", None, "destroyed")
-        wsgi_get(self.m.wsgi, "/people/v2/people/1")
-        self.assertNotIn("/people/v2/people/2", self._walk(8))
-
-    def _offsets(self, passes=4):
-        out = []
-        for _ in range(passes):
-            probe = self.m.db.query_one("SELECT * FROM shadow_probe")
-            _, params, cursor = self.m.divergence.target_for(probe)
-            out.append((params.get("offset", 0), params.get("per_page")))
-            self.m.db.execute("UPDATE shadow_probe SET cursor=? WHERE shape=?",
-                              (cursor, probe["shape"]))
-        return out
-
-    def test_a_collection_shape_walks_its_pages(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=3")
-        self.assertEqual([o for o, _ in self._offsets()], [0, 3, 6, 0],
-                         "should walk the pages and wrap")
-
-    def test_it_walks_at_the_page_size_the_caller_used(self):
-        """Page size decides where a boundary falls, and a boundary is where the
-        ordering bugs live. Rewriting it would stop testing the real query."""
-        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=3&order=last_name")
-        steps = self._offsets(3)
-        self.assertEqual([p for _, p in steps], ["3", "3", "3"])
-        self.assertEqual([o for o, _ in steps], [0, 3, 6])
-
-    def test_a_caller_who_named_no_page_size_is_replayed_without_one(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people")
-        _, params, _ = self.m.divergence.target_for(
-            self.m.db.query_one("SELECT * FROM shadow_probe"))
-        self.assertNotIn("per_page", params)
-
-    def test_everything_else_the_caller_asked_for_survives(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people",
-                 "where[child]=true&order=-last_name&include=emails")
-        _, params, _ = self.m.divergence.target_for(
-            self.m.db.query_one("SELECT * FROM shadow_probe"))
-        self.assertEqual(params["where[child]"], "true")
-        self.assertEqual(params["order"], "-last_name")
-        self.assertEqual(params["include"], "emails")
-
-    def test_a_collection_that_fits_on_one_page_stays_at_the_start(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people")
-        probe = self.m.db.query_one("SELECT * FROM shadow_probe")
-        _, params, _ = self.m.divergence.target_for(probe)
-        self.assertEqual(params.get("offset", 0), 0)
-
-    def test_a_divergence_in_a_record_nobody_asked_for_is_still_found(self):
-        """The whole point. One read of person 2 is the only traffic there is;
-        the bug is in person 6, at an unchanged timestamp so no sweep collects it."""
+    def test_nothing_is_ever_synthesised(self):
+        """A path never asked for must never be asked of PCO."""
         wsgi_get(self.m.wsgi, "/people/v2/people/2")
-        self.fake.data["Person"]["6"]["attributes"]["first_name"] = "Changed"
-        for _ in range(8):
+        for _ in range(6):
             self.m.divergence.run_once(limit=1)
-            if divergence.recent(self.m.db):
-                break
+        asked = [path for method, path in self.fake.request_log if method == "GET"]
+        self.assertTrue(all(p in ("/people/2", "/people") or p.startswith("/people?")
+                            for p in asked), asked)
+        self.assertNotIn("/people/3", asked)
+
+    def test_a_busy_shape_does_not_starve_a_quiet_one(self):
+        """Grouping exists for exactly this: one hot query must not take every
+        check while a filter nobody runs twice is never verified at all."""
+        for pid in range(1, 9):
+            wsgi_get(self.m.wsgi, f"/people/v2/people/{pid}")
+        wsgi_get(self.m.wsgi, "/people/v2/people", "where[child]=true")
+        shapes = {self.m.db.query_one(
+            "SELECT shape FROM shadow_sample WHERE path=? OR query LIKE ?",
+            (p, "%child%"))["shape"] for p in ("/people/v2/people/1",)}
+        checked = self._paths_checked(2)
+        self.assertIn("/people/v2/people", checked,
+                      "the quiet shape should be reached on the second check")
+        self.assertEqual(len(shapes), 1)
+
+    def test_the_corpus_is_capped_per_shape(self):
+        original = divergence.SAMPLES_PER_SHAPE
+        divergence.SAMPLES_PER_SHAPE = 3
+        try:
+            for pid in range(1, 9):
+                wsgi_get(self.m.wsgi, f"/people/v2/people/{pid}")
+        finally:
+            divergence.SAMPLES_PER_SHAPE = original
+        self.assertEqual(
+            self.m.db.query_one("SELECT count(*) c FROM shadow_sample")["c"], 3)
+
+    def test_the_busiest_requests_are_the_ones_kept(self):
+        """A request made once may never be made again; the one made constantly
+        is the one whose breaking gets noticed."""
+        original = divergence.SAMPLES_PER_SHAPE
+        divergence.SAMPLES_PER_SHAPE = 2
+        try:
+            for _ in range(5):
+                wsgi_get(self.m.wsgi, "/people/v2/people/1")
+            for _ in range(4):
+                wsgi_get(self.m.wsgi, "/people/v2/people/2")
+            wsgi_get(self.m.wsgi, "/people/v2/people/3")       # a one-off
+        finally:
+            divergence.SAMPLES_PER_SHAPE = original
+        kept = {r["path"] for r in self.m.db.query("SELECT path FROM shadow_sample")}
+        self.assertEqual(kept, {"/people/v2/people/1", "/people/v2/people/2"})
+
+    def test_a_divergence_in_a_record_callers_do_read_is_found(self):
+        wsgi_get(self.m.wsgi, "/people/v2/people/6")
+        self.fake.data["Person"]["6"]["attributes"]["first_name"] = "Changed"
+        self.m.divergence.run_once(limit=1)
         found = divergence.recent(self.m.db)
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["path"], "/people/v2/people/6")
         self.assertEqual(found[0]["verdict"], "divergence")
 
-    def test_a_failing_record_does_not_stall_the_walk_behind_it(self):
-        wsgi_get(self.m.wsgi, "/people/v2/people/1")
+    def test_a_record_nobody_reads_is_not_checked(self):
+        """Stated so the boundary is deliberate rather than discovered. This
+        verifies the mirror against the traffic it serves; a record no caller
+        has ever asked for is outside that, and the reconcile sweep owns it."""
+        wsgi_get(self.m.wsgi, "/people/v2/people/2")
+        self.fake.data["Person"]["6"]["attributes"]["first_name"] = "Changed"
+        for _ in range(6):
+            self.m.divergence.run_once(limit=1)
+        self.assertEqual(divergence.recent(self.m.db), [])
+
+    def test_a_failing_request_does_not_stall_the_ones_behind_it(self):
+        for pid in (1, 2):
+            wsgi_get(self.m.wsgi, f"/people/v2/people/{pid}")
         self.fake.unreachable = True
         self.m.divergence.run_once(limit=1)
         self.fake.unreachable = False
-        probe = self.m.db.query_one("SELECT * FROM shadow_probe")
-        self.assertEqual(probe["cursor"], "1", "the cursor should have moved on regardless")
+        checked = self.m.db.query_one(
+            "SELECT count(last_checked_at) c FROM shadow_sample")["c"]
+        self.assertEqual(checked, 1, "it should have been marked checked regardless")
 
 
 if __name__ == "__main__":

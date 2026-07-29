@@ -489,8 +489,8 @@ class AdminApp:
                     "chasing something.</p>")
         cards = [("divergences", f"{s['divergence']:,}"),
                  ("stale (self-healing)", f"{s['staleness']:,}"),
-                 ("shapes seen", f"{s['shapes']:,}"),
-                 ("shapes checked", f"{s['checked']:,}")]
+                 ("requests kept", f"{s['samples']:,}"),
+                 ("checked", f"{s['checked']:,}")]
         cards_html = "".join(
             f"<div class=card><b class={'warn' if k == 'divergences' and v != '0' else ''}>"
             f"{E(v)}</b><span>{E(k)}</span></div>" for k, v in cards)
@@ -502,7 +502,8 @@ class AdminApp:
 <h2>Divergence</h2>
 <div class=cards>{cards_html}</div>{alarm}
 <p class=muted>checking {rate['per_minute']}/min · last checked
-  {_esc(s['last_checked'], 'never')} · {s['requests_seen']:,} reads observed ·
+  {_esc(s['last_checked'], 'never')} · {s['samples']:,} distinct requests kept
+  across {s['shapes']:,} shapes, from {s['requests_seen']:,} reads ·
   <a href=/admin/divergence>full log</a></p>"""
 
     _REPORT_HEAD = ("<tr><th>when<th>verdict<th>request<th>status"
@@ -556,9 +557,10 @@ class AdminApp:
 <h2>Log</h2>
 <p class=muted>show: {tabs}</p>
 {body}
-<p class=muted>Showing {len(reports):,} of {s['total']:,} kept.
-  Values are pseudonymised — consistent per organization, reversible by nobody —
-  so this is safe to send on. Record ids and structure are real.</p>
+<p class=muted>Showing {len(reports):,} of {s['total']:,} kept. Every request
+  checked is one a caller really made — nothing here is synthesised. Values are
+  pseudonymised, consistent per organization and reversible by nobody, so this is
+  safe to send on; record ids and structure are real.</p>
 <form method=get action=/admin/divergence/download style='display:inline'>
   <button type=submit>Download the log</button></form>
 <form method=post action=/admin/divergence/clear style='display:inline'>
