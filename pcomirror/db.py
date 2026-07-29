@@ -24,6 +24,32 @@ _BOOKKEEPING = """
   deleted_at     TEXT, tombstone_uat TEXT, tombstone_reason TEXT, merged_into_pco_id TEXT
 """
 
+# One row per *subscription*, which at Planning Center is one row per event
+# name: a WebhookSubscription carries a single `name`, a `url` and its own
+# `authenticity_secret`. Several of them may share a `url`, which is what PCO's
+# console does when you tick a dozen events under one webhook — so `url_token`
+# is deliberately NOT unique here, and the receiver identifies which subscription
+# a delivery came from by the secret that signed it.
+#
+# `managed` records who last wrote the row: 'env' for PCOMIRROR_SUBSCRIPTIONS,
+# 'admin' for the operator page.
+#
+# Kept out of `_OPS_SCHEMA` as its own constant because the migration that
+# rebuilds this table needs the identical definition, and two copies of a CREATE
+# TABLE is how a migrated database quietly stops matching a fresh one.
+_WEBHOOK_SUBSCRIPTION_DDL = """
+CREATE TABLE IF NOT EXISTS webhook_subscription (
+  subscription_pco_id TEXT PRIMARY KEY, event_name TEXT NOT NULL, resource TEXT, action TEXT,
+  url_token TEXT NOT NULL,
+  authenticity_secret TEXT NOT NULL,   -- encrypt at rest in production (keyring / KMS); see DESIGN §9.1
+  active INTEGER NOT NULL DEFAULT 1, last_event_at TEXT,
+  managed TEXT NOT NULL DEFAULT 'env',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS webhook_subscription_token_idx
+  ON webhook_subscription (url_token, active);
+"""
+
 _OPS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS mirror_sync_state (
   resource_type TEXT PRIMARY KEY,
@@ -67,13 +93,6 @@ CREATE TABLE IF NOT EXISTS reconcile_run (
   started_at TEXT, completed_at TEXT, status TEXT,
   watermark_before TEXT, watermark_after TEXT,
   rows_seen INTEGER, rows_upserted INTEGER, rows_tombstoned INTEGER, requests_used INTEGER, error TEXT
-);
-CREATE TABLE IF NOT EXISTS webhook_subscription (
-  subscription_pco_id TEXT PRIMARY KEY, event_name TEXT NOT NULL, resource TEXT, action TEXT,
-  url_token TEXT UNIQUE NOT NULL,
-  authenticity_secret TEXT NOT NULL,   -- encrypt at rest in production (keyring / KMS); see DESIGN §9.1
-  active INTEGER NOT NULL DEFAULT 1, last_event_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE TABLE IF NOT EXISTS api_key (
   id TEXT PRIMARY KEY, prefix TEXT NOT NULL, key_hash BLOB NOT NULL, name TEXT,
@@ -299,6 +318,7 @@ def schema_sql() -> str:
     parts: list[str] = ["PRAGMA foreign_keys=ON;"]
     for r in registry.RESOURCES.values():
         parts += _table_ddl(r)
+    parts.append(_WEBHOOK_SUBSCRIPTION_DDL)
     parts.append(_OPS_SCHEMA)
     return "\n".join(parts)
 
@@ -340,6 +360,10 @@ class Database:
         """
         with self._lock:
             self._conn.executescript(schema_sql())
+            # Before the column reconcile, not after: the rebuild recreates the
+            # table at the current DDL, so anything it restores is already there
+            # and `_reconcile_ops_columns` has nothing left to add.
+            self._migrate_webhook_subscription()
             added = self._reconcile_columns() + self._reconcile_ops_columns()
             self._seed_walk_ledger()
             self._conn.commit()
@@ -353,6 +377,7 @@ class Database:
     #: from, so they are listed. Definitions must match the DDL exactly.
     _OPS_COLUMNS = (
         ("shadow_report", "query", "TEXT NOT NULL DEFAULT '{}'"),
+        ("webhook_subscription", "managed", "TEXT NOT NULL DEFAULT 'env'"),
     )
 
     def _reconcile_ops_columns(self) -> list[str]:
@@ -369,6 +394,45 @@ class Database:
             self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
             changes.append(f"+{table}.{col}")
         return changes
+
+    def _migrate_webhook_subscription(self) -> bool:
+        """Rebuild `webhook_subscription` when it predates shared receiver URLs.
+
+        The original table declared `url_token TEXT UNIQUE`, back when a receiver
+        served exactly one event. It serves as many as an operator points at it
+        now — and a dropped column is the one shape `_reconcile_ops_columns`
+        cannot reach, because SQLite has no way to drop the implicit index a
+        column-level UNIQUE creates. Only a rebuild will, so this is the one
+        table that gets one.
+
+        Returns whether it rebuilt anything.
+        """
+        columns = {row["name"] for row in
+                   self._conn.execute("PRAGMA table_info(webhook_subscription)")}
+        if not columns:
+            return False                        # no such table — the schema has not run yet
+        token_unique = False
+        for index in self._conn.execute("PRAGMA index_list(webhook_subscription)"):
+            if not index["unique"]:
+                continue
+            on = [c["name"] for c in
+                  self._conn.execute(f"PRAGMA index_info({index['name']!r})")]
+            token_unique = token_unique or on == ["url_token"]
+        if not token_unique:
+            return False
+        carried = ",".join(c for c in (
+            "subscription_pco_id", "event_name", "resource", "action", "url_token",
+            "authenticity_secret", "active", "last_event_at", "managed",
+            "created_at") if c in columns)
+        self._conn.executescript(f"""
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE webhook_subscription RENAME TO webhook_subscription_old;
+            {_WEBHOOK_SUBSCRIPTION_DDL}
+            INSERT INTO webhook_subscription({carried}) SELECT {carried} FROM webhook_subscription_old;
+            DROP TABLE webhook_subscription_old;
+            PRAGMA foreign_keys=ON;
+        """)
+        return True
 
     def _seed_walk_ledger(self) -> None:
         """Credit parents whose rows prove they were already walked.

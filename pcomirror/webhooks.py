@@ -3,6 +3,16 @@
 Edge is thin: verify HMAC over the raw bytes, durably capture (per-event dedup),
 ack fast. All real work is async in `process_event`, which dispatches through the
 canonical writer and enqueues hydration for thin payloads.
+
+**One receiver URL, many event types.** Planning Center's model is one
+subscription per event name — a WebhookSubscription carries a single `name`, a
+single `url`, and its own `authenticity_secret` — but nothing requires those URLs
+to differ, and PCO's own console points every event you tick at one address. So
+several subscription rows may share a `url_token`, and the receiver works out
+which one is delivering from **the secret that signed the body**: it is the one
+piece of the exchange only the right subscription can produce. Falling back to the
+event name in the payload would be trusting the attacker-supplied half of the
+request to choose the key it is checked against.
 """
 from __future__ import annotations
 
@@ -20,6 +30,14 @@ BURST_THRESHOLD = 200  # pending per-id hydrations above which we defer to a swe
 # A url_token is the last path segment of the receiver URL, so keep it to
 # characters that survive a URL untouched (DESIGN §6, `POST /pco/webhooks/<url_token>`).
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+#: Set once the operator saves anything on the subscriptions page. From then on
+#: the page is authoritative and PCOMIRROR_SUBSCRIPTIONS is not applied — the
+#: same shape as the divergence override, and for the same reason: whoever needs
+#: to fix a webhook at 9pm is rarely whoever can edit the container's environment
+#: and restart it. Cleared by handing control back, which takes effect on the
+#: next `serve`.
+OVERRIDE_KEY = "subscriptions_managed_here"
 
 
 def verify(secret: str, raw: bytes, signature: str | None) -> bool:
@@ -41,7 +59,8 @@ def parse_event_name(name: str) -> tuple[str, str]:
 
 
 def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
-                        url_token: str | None = None) -> tuple[str, bool]:
+                        url_token: str | None = None,
+                        managed: str = "env") -> tuple[str, bool]:
     """Register (or refresh) a subscription row; returns `(url_token, created)`.
 
     Idempotent by `subscription_pco_id` so it can run on every container start:
@@ -51,23 +70,121 @@ def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
 
     Passing `url_token` lets the caller pick the token up front, so the receiver
     URL is known before the subscription exists at PCO (which is what supplies
-    the `authenticity_secret`), breaking that ordering cycle.
+    the `authenticity_secret`), breaking that ordering cycle. Several
+    subscriptions may name the same token: that is a receiver serving several
+    event types, which is the normal shape rather than an error.
+
+    `managed` records who wrote the row — 'env' or 'admin' — so the page can say
+    where each subscription came from.
     """
     if url_token is not None and not TOKEN_RE.match(url_token):
         raise ValueError(f"invalid url_token {url_token!r}: expected 8-64 chars of [A-Za-z0-9_-]")
+    if not (subscription_id or "").strip():
+        raise ValueError("a subscription needs an id")
+    if not (event_name or "").strip():
+        raise ValueError("a subscription needs an event name")
+    if not (secret or "").strip():
+        raise ValueError("a subscription needs an authenticity secret")
     row = db.query_one(
         "SELECT url_token FROM webhook_subscription WHERE subscription_pco_id=?", (subscription_id,))
     token = url_token or (row["url_token"] if row else secrets.token_hex(16))
     resource, action = parse_event_name(event_name)
     db.execute(
         "INSERT INTO webhook_subscription"
-        "(subscription_pco_id,event_name,resource,action,url_token,authenticity_secret) "
-        "VALUES(?,?,?,?,?,?) "
+        "(subscription_pco_id,event_name,resource,action,url_token,authenticity_secret,managed) "
+        "VALUES(?,?,?,?,?,?,?) "
         "ON CONFLICT(subscription_pco_id) DO UPDATE SET "
         "event_name=excluded.event_name, resource=excluded.resource, action=excluded.action, "
-        "url_token=excluded.url_token, authenticity_secret=excluded.authenticity_secret, active=1",
-        (subscription_id, event_name, resource, action, token, secret))
+        "url_token=excluded.url_token, authenticity_secret=excluded.authenticity_secret, "
+        "managed=excluded.managed, active=1",
+        (subscription_id, event_name, resource, action, token, secret, managed))
     return token, row is None
+
+
+def delete_subscription(db, subscription_id: str) -> bool:
+    """Forget a subscription. Deliveries already captured keep their id."""
+    before = db.query_one("SELECT 1 FROM webhook_subscription WHERE subscription_pco_id=?",
+                          (subscription_id,))
+    db.execute("DELETE FROM webhook_subscription WHERE subscription_pco_id=?", (subscription_id,))
+    return before is not None
+
+
+def set_active(db, subscription_id: str, active: bool) -> bool:
+    before = db.query_one("SELECT 1 FROM webhook_subscription WHERE subscription_pco_id=?",
+                          (subscription_id,))
+    db.execute("UPDATE webhook_subscription SET active=? WHERE subscription_pco_id=?",
+               (1 if active else 0, subscription_id))
+    return before is not None
+
+
+def listing(db) -> list:
+    """Every subscription, grouped-friendly: receiver first, then event."""
+    return db.query(
+        "SELECT subscription_pco_id, event_name, resource, action, url_token, active, "
+        "       last_event_at, managed, created_at "
+        "FROM webhook_subscription ORDER BY url_token, event_name")
+
+
+def receivers(db) -> list[dict]:
+    """Subscriptions folded into the receiver URLs they share.
+
+    This is the unit an operator actually thinks in — one address pasted into
+    Planning Center, carrying however many event types they ticked.
+    """
+    grouped: dict[str, dict] = {}
+    for row in listing(db):
+        bucket = grouped.setdefault(row["url_token"], {
+            "url_token": row["url_token"], "subscriptions": [],
+            "active": 0, "inactive": 0, "last_event_at": None, "managed": set()})
+        bucket["subscriptions"].append(dict(row))
+        bucket["active" if row["active"] else "inactive"] += 1
+        bucket["managed"].add(row["managed"])
+        if row["last_event_at"] and (bucket["last_event_at"] or "") < row["last_event_at"]:
+            bucket["last_event_at"] = row["last_event_at"]
+    for bucket in grouped.values():
+        bucket["managed"] = "both" if len(bucket["managed"]) > 1 else next(iter(bucket["managed"]))
+    return [grouped[k] for k in sorted(grouped)]
+
+
+# -- who owns the list: the environment, or the page ------------------------
+def env_is_authoritative(db) -> bool:
+    """Should `PCOMIRROR_SUBSCRIPTIONS` be applied on this `serve` start?
+
+    Only until the operator saves something on the page. After that the stored
+    list wins, because re-applying the environment would silently undo whatever
+    they came to the page to fix — and a restart is exactly when nobody is
+    watching.
+    """
+    return db.get_meta(OVERRIDE_KEY) != "1"
+
+
+def take_over(db) -> None:
+    db.set_meta(OVERRIDE_KEY, "1")
+
+
+def hand_back(db) -> None:
+    db.execute("DELETE FROM mirror_meta WHERE key=?", (OVERRIDE_KEY,))
+
+
+def apply_env(db, specs) -> list[dict]:
+    """Apply `PCOMIRROR_SUBSCRIPTIONS`, unless the page has taken over.
+
+    Returns one record per spec describing what happened, so the caller can say
+    it out loud rather than leaving an operator to guess why their environment
+    variable appears to do nothing.
+    """
+    if not specs:
+        return []
+    if not env_is_authoritative(db):
+        return [{"spec": s, "outcome": "skipped", "token": None} for s in specs]
+    out = []
+    for spec in specs:
+        token, created = upsert_subscription(
+            db, spec.subscription_id, spec.event, spec.secret,
+            spec.url_token or None, managed="env")
+        out.append({"spec": spec, "outcome": "registered" if created else "updated",
+                    "token": token})
+    return out
 
 
 class WebhookProcessor:
@@ -78,12 +195,26 @@ class WebhookProcessor:
 
     # -- edge: verify + capture + ack -------------------------------------
     def receive(self, url_token: str, raw: bytes, signature: str | None) -> tuple[int, str]:
-        sub = self.db.query_one(
-            "SELECT * FROM webhook_subscription WHERE url_token=? AND active=1", (url_token,))
-        if sub is None:
+        """Verify, capture, ack. One token may carry several subscriptions.
+
+        The signature is what selects which of them is delivering: every
+        candidate secret is tried, and the one that verifies is by construction
+        the subscription Planning Center sent this from. The loop does not break
+        on a match, so how long it takes does not say *which* subscription
+        matched — only the per-comparison constant-time guarantee is `verify`'s.
+        """
+        subs = self.db.query(
+            "SELECT * FROM webhook_subscription WHERE url_token=? AND active=1 "
+            "ORDER BY event_name, subscription_pco_id", (url_token,))
+        if not subs:
             return 404, "unknown token"                         # NOT 410
-        if not verify(sub["authenticity_secret"], raw, signature):
+        matched = None
+        for candidate in subs:
+            if verify(candidate["authenticity_secret"], raw, signature) and matched is None:
+                matched = candidate
+        if matched is None:
             return 401, "bad signature"                         # NOT 410
+        sub = matched
         try:
             env = json.loads(raw)
         except json.JSONDecodeError:
@@ -108,6 +239,9 @@ class WebhookProcessor:
                     "VALUES(?,?,?,?,?,?,?)",
                     (item["id"], delivery_id, name, res, act,
                      json.loads(payload).get("id") if payload else None, payload))
+            self.db.execute(
+                "UPDATE webhook_subscription SET last_event_at=? WHERE subscription_pco_id=?",
+                (now_iso(), sub["subscription_pco_id"]))
         except Exception:
             return 503, "capture failed"
         return 204, "ok"
@@ -132,17 +266,24 @@ class WebhookProcessor:
         except json.JSONDecodeError:
             return self._dead(ev, "unparseable payload")
         if r is None and res_token != "person_merger":
-            return self._dead(ev, f"unmapped resource {res_token}")
+            # Not a failure. Planning Center offers events for resources this
+            # mirror holds no table for, and an operator may legitimately
+            # subscribe to one — to see it arriving, or because they ticked the
+            # whole list. Dead-lettering those buried the events that really did
+            # break among ones that were only ever going to be filed.
+            return self._ignore(ev, f"no table for {res_token}")
         try:
             if res_token == "person_merger":
                 self._handle_merge(payload)
             elif action == "destroyed":
                 uat = (payload.get("attributes") or {}).get("updated_at")
                 self.writer.tombstone(r.table, payload["id"], uat, "destroyed")
-            else:  # created | updated
+            else:  # created | updated | refreshed
                 self.writer.route(payload, "webhook")
                 if self._is_thin(r, payload):
                     self._enqueue_or_defer(r, payload["id"])
+                if action == "refreshed":
+                    self._forget_child_walks(r, payload["id"])
             self.db.execute(
                 "UPDATE webhook_event SET status='done', processed_at=? WHERE event_id=?",
                 (now_iso(), ev["event_id"]))
@@ -163,6 +304,23 @@ class WebhookProcessor:
         if keep:
             self.ingestor.enqueue_hydration("person", keep, reason="merge_survivor")
         self.ingestor._record_merger(merger_id, payload, "webhook")
+
+    def _forget_child_walks(self, r, pco_id: str) -> None:
+        """`refreshed` says the *contents* changed, not the record.
+
+        `people.v2.events.list.refreshed` fires when a list is re-run, and the
+        payload is the List itself — whose own attributes may be identical. The
+        thing that changed is its results, which are walked per parent, so the
+        answer is to drop this parent's walk record: the read path re-walks a
+        parent it has never seen, and now it has never seen this one. Without
+        this, the only visible effect of a refresh event would be a `refreshed_at`
+        that moved.
+        """
+        for child in registry.RESOURCES.values():
+            if child.method == "nested_walk" and child.parent == r.name:
+                self.db.execute(
+                    "DELETE FROM nested_walk_state WHERE resource_type=? AND parent_pco_id=?",
+                    (child.name, pco_id))
 
     def _is_thin(self, r, payload: dict) -> bool:
         # webhook payloads never embed includes; if we project children/relationships
@@ -188,6 +346,16 @@ class WebhookProcessor:
                 "UPDATE webhook_event SET process_attempts=?, last_error=?, "
                 "next_attempt_at=strftime('%Y-%m-%dT%H:%M:%SZ','now',?) WHERE event_id=?",
                 (attempts, err, f"+{delay} seconds", ev["event_id"]))
+
+    def _ignore(self, ev: dict, why: str) -> None:
+        """Kept, applied to nothing, and counted — not buried in the dead letters.
+
+        The row stays in the inbox with the payload intact, so adding a table for
+        the resource later leaves the evidence that it was arriving all along.
+        """
+        self.db.execute(
+            "UPDATE webhook_event SET status='ignored', processed_at=?, last_error=? "
+            "WHERE event_id=?", (now_iso(), why, ev["event_id"]))
 
     def _dead(self, ev: dict, err: str) -> None:
         self.db.execute(

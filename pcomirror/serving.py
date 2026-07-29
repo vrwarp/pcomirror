@@ -136,7 +136,7 @@ class Application:
         #: Set by `Mirror`. Absent in the plain-Application tests, which is why
         #: every use of it is guarded rather than assumed.
         self.divergence = None
-        self.admin = AdminApp(db, settings, self.diagnostics)
+        self.admin = AdminApp(db, settings, self.diagnostics, client)
 
     # -- WSGI --------------------------------------------------------------
     def __call__(self, environ, start_response):

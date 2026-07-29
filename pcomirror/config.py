@@ -80,6 +80,10 @@ def parse_subscriptions(value: str | None) -> list[SubscriptionSpec]:
 class Settings:
     db_path: str = "pcomirror.db"
     pco_base_url: str = "https://api.planningcenteronline.com/people/v2"
+    # The webhooks app, where subscriptions and the available-event list live.
+    # Empty = derived from `pco_base_url`, so pointing that at a stand-in moves
+    # both together instead of leaving one aimed at production.
+    pco_webhooks_base_url: str = ""
     pco_app_id: str = ""
     pco_secret: str = ""
     api_version: str = "2026-06-04"
@@ -126,6 +130,7 @@ class Settings:
         s = cls()
         s.db_path = e.get("PCOMIRROR_DB", s.db_path)
         s.pco_base_url = e.get("PCO_BASE_URL", s.pco_base_url)
+        s.pco_webhooks_base_url = e.get("PCO_WEBHOOKS_BASE_URL", s.pco_webhooks_base_url)
         s.pco_app_id = e.get("PCO_APP_ID", s.pco_app_id)
         s.pco_secret = e.get("PCO_SECRET", s.pco_secret)
         s.api_version = e.get("PCO_API_VERSION", s.api_version)

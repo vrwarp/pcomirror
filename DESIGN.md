@@ -470,24 +470,54 @@ work async, so PCO never sees a slow or failing endpoint.
 ### 6.1 Subscription bootstrap
 
 `GET /webhooks/v2/available_events` → subscribe to `people.v2.events.<resource>.<action>`
-(create/update/destroy) for every mirrored type, **one subscription per event**.
-Anything in `DESIRED \ AVAILABLE` is logged as a capability gap so reconciliation
-knows those types have **no fast path**. Each subscription gets a **unique
-receiver URL** `POST /pco/webhooks/<url_token>` so the authenticity secret is an
-O(1) lookup (the auth header carries only the HMAC, not the subscription id).
-Secrets are stored via the **version-pointer model** (`webhook_subscription.secret_version
-→ org_secret`, envelope-encrypted) so rotation can accept **two live secrets**
-during an overlap window. Re-checked hourly by a health job (re-create missing,
-re-activate any PCO reports inactive).
+for every mirrored type, **one subscription per event** — that is PCO's model, not
+a choice: a `WebhookSubscription` carries a single `name`, a single `url`, and its
+own `authenticity_secret`. Anything in `DESIRED \ AVAILABLE` is logged as a
+capability gap so reconciliation knows those types have **no fast path**.
+
+**Many subscriptions may share one receiver URL.** Nothing at PCO requires the
+URLs to differ, and its own console points every event you tick at one address —
+so `POST /pco/webhooks/<url_token>` serves as many event types as an operator
+registers on it, and `webhook_subscription.url_token` is not unique. The lookup is
+therefore *token → the few subscriptions on it*, and **the secret that signed the
+body selects which one is delivering**: it is the one part of the exchange only
+the right subscription can produce. Reading the event name out of the payload to
+choose a key would let the attacker-supplied half of the request pick the key it
+is checked against, which is not a check. Every candidate secret is compared even
+after a match, so timing does not leak which one was right.
+
+That the receiver already tries a *set* of secrets is what makes rotation cheap:
+two live secrets during an overlap window is the same code path as two events.
+Secrets are stored via the **version-pointer model**
+(`webhook_subscription.secret_version → org_secret`, envelope-encrypted).
+Re-checked hourly by a health job (re-create missing, re-activate any PCO reports
+inactive).
+
+**Who owns the subscription list.** `PCOMIRROR_SUBSCRIPTIONS` is applied on every
+`serve` start, which is what makes a container need no follow-up command — and is
+also what would silently undo an operator's fix on the next restart. So the
+operator page takes precedence once it has been used: saving anything at
+`/admin/webhooks` sets `mirror_meta.subscriptions_managed_here`, after which the
+environment is reported-and-skipped rather than applied, until it is handed back.
+Same shape as the divergence override (§10), for the same reason — whoever can
+reach the page at 9pm is rarely whoever can edit the container's environment.
+
+**Events with no table.** The console offers events for resources this mirror
+does not hold, and an operator may reasonably subscribe to one. Those are
+captured, marked `status='ignored'` with the payload intact, and counted — *not*
+dead-lettered. The dead-letter queue is the thing an alert points at; filling it
+with events that were only ever going to be filed is how it stops being read.
 
 ### 6.2 Receiver — verify, capture, ack fast (< 500 ms)
 
 ```
 POST /pco/webhooks/<url_token>
-  raw = request.raw_body_bytes                       # EXACT pre-parse bytes
-  sub = subscription_cache[url_token]  or  return 404          # unknown token — NOT 410
+  raw  = request.raw_body_bytes                      # EXACT pre-parse bytes
+  subs = active_subscriptions_on(url_token)          # 1..n — a URL may carry many events
+  if not subs:                                                 return 404   # unknown token — NOT 410
   sig = header["X-PCO-Webhooks-Authenticity"]        or  return 401
-  if not constant_time_eq(hmac_sha256(sub.secret, raw), sig):  return 401   # bad sig — NOT 410
+  sub = first s in subs with constant_time_eq(hmac_sha256(s.secret, raw), sig)   # all compared
+  if sub is None:                                              return 401   # bad sig — NOT 410
   try:
      env = json_parse(raw)
      upsert webhook_delivery(delivery_id=env.id, raw_body=raw, signature=sig)  ON CONFLICT DO NOTHING
@@ -1141,6 +1171,9 @@ uses the simpler equivalents from [§0](#0-deployment-profile-decided).
 | 18 | Webhook secret storage inline vs version-pointer; pgcrypto vs envelope | Version-pointer `org_secret` + envelope encryption (KMS) (§9.1, §6.1) |
 | 19 | `field_datum` typed columns not re-derived when its definition arrives later | Re-projection job on any `field_definition` (re)mirror, from retained `raw` (§4.3) |
 | 20 | Dropped `form_submission`/`workflow_card_activity`/`person_app` without rationale | Added to LITE/FULL tiers (Appendix A) |
+| 21 | "A unique receiver URL per subscription" read PCO's *model* (one subscription per event) as a *constraint* on URLs, which it is not — its own console points every ticked event at one URL. `url_token UNIQUE` made the normal setup impossible to register | `url_token` not unique; the receiver resolves the delivering subscription by **the secret that signed the body**, never by the event name in the payload (§6.1–6.2) |
+| 22 | `PCOMIRROR_SUBSCRIPTIONS` re-applied on every start would silently overwrite a webhook fixed from the operator page, at the moment nobody is watching | The page takes precedence once used (`mirror_meta.subscriptions_managed_here`); the environment is reported-and-skipped, and handed back explicitly (§6.1) |
+| 23 | An event for a resource with no table dead-lettered, so subscribing to the whole console list filled the queue an alert points at with events that were only ever going to be filed | Captured and marked `ignored`, payload intact, counted on the page; dead letters keep meaning "something broke" (§6.1) |
 
 ---
 
@@ -1207,6 +1240,15 @@ unchanged.
 `household_membership`) have no `updated_at`, so they use `mirror_upsert_untimed`
 + list-and-replace reconcile.
 
+*Built so far*, in tier order: `person`, `email`, `phone_number`, `address`,
+`social_profile`, `field_datum`, `note`, `household`, `list`, `form` (FULL);
+`field_definition`, `household_membership`, `list_result`, `form_submission`,
+`campus`, `marital_status`, `name_prefix`, `name_suffix`, `inactive_reason`
+(LITE); `person_merger` (derived side-effect). That set is exactly the resources
+the People webhook console emits events for, so every offered event has a table
+to land in. The rest of the tiers above remain pass-through, and an event for one
+of them is captured and marked `ignored` rather than dead-lettered (§6.1).
+
 ## Appendix B — Per-resource sync policy (seed)
 
 | resource | endpoint | method | uat filter | incr | audit | pri | include |
@@ -1219,7 +1261,11 @@ unchanged.
 | household | `/households` | incremental | yes | 600 s | monthly | P2 | — |
 | household_membership | (via household, per parent) | nested walk, list-and-replace per parent | n/a (untimed) | 86400 s + filled on read for an unwalked parent | — | P3 | — |
 | note | `/notes` | incremental | yes | 600 s | monthly | P2 | note_category |
-| social_profile | `/social_profiles` | incremental | yes | 600 s | — | P2 | — |
+| social_profile | `/social_profiles` | incremental | yes | 600 s | — | P3 | — |
+| list | `/lists` | incremental | yes | 900 s | — | P3 | — |
+| list_result | (via list, per parent) | nested walk, list-and-replace per parent — `GET /list_results` does not exist | **no** | 86400 s + filled on read for an unwalked parent, and on `list.refreshed` | — | P3 | — |
+| form | `/forms` | incremental (descending-walk) — no `where[updated_at]` on `/forms` | **no** | 3600 s | — | P3 | — |
+| form_submission | (via form, per parent) | nested walk, list-and-replace per parent | **no** | 86400 s + filled on read for an unwalked parent | — | P3 | — |
 | background_check | `/background_checks` | incremental | yes | 900 s | monthly | P3 | — |
 | person_merger | `/person_mergers` | merger_poll (created_at) | n/a | 120 s | n/a | P1 | — |
 | reference/config (campus, field_definition, tab, list, marital_status, …) | `/…` | reference_periodic | mixed | 6–24 h | — | P3 | small |

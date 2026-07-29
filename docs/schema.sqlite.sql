@@ -340,17 +340,26 @@ CREATE TABLE reconcile_run (
   rows_seen INTEGER, rows_upserted INTEGER, rows_tombstoned INTEGER, requests_used INTEGER, error TEXT
 );
 
--- webhook subscriptions: map the per-subscription receiver URL token -> its secret.
+-- webhook subscriptions: one row per event name, which is PCO's own unit — a
+-- WebhookSubscription carries a single `name`, a single `url` and its own
+-- `authenticity_secret`. `url_token` is deliberately NOT unique: several
+-- subscriptions may point at one receiver URL, which is what PCO's console does
+-- when you tick a column of events, and the receiver resolves which one is
+-- delivering by the secret that signed the body (DESIGN §6.1-6.2).
 -- secret_ref points at where the encrypted authenticity_secret is kept (OS keyring / a
 -- 0600 secrets file / an app-held key) — NOT stored in plaintext here.
+-- `managed` records who last wrote the row: 'env' (PCOMIRROR_SUBSCRIPTIONS) or
+-- 'admin' (the operator page, which takes precedence once used).
 CREATE TABLE webhook_subscription (
   subscription_pco_id TEXT PRIMARY KEY,
   event_name TEXT NOT NULL, resource TEXT, action TEXT,
-  url_token TEXT UNIQUE NOT NULL,
+  url_token TEXT NOT NULL,
   secret_ref TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1,
+  managed TEXT NOT NULL DEFAULT 'env',
   last_event_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE INDEX webhook_subscription_token_idx ON webhook_subscription (url_token, active);
 
 -- Local API keys for the serving plane (separate from the upstream PCO PAT).
 CREATE TABLE api_key (
