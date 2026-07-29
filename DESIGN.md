@@ -549,17 +549,46 @@ the secret is the only thing a check could be made of — a separate switch woul
 be a second setting that can disagree with the first, and the way that resolves
 is a receiver verifying against the empty string.
 
-Wanted for senders that cannot sign, and for a stand-in during a rebuild. The
-cost is precise and belongs written down:
+Wanted for senders that cannot sign, and for a stand-in during a rebuild.
 
-- The URL token becomes the receiver's only secret, so it is now a bearer
-  credential for writing to the mirror — including tombstones.
+**It moves the authentication rather than removing it.** The check leaves the
+body's signature and lands on the token in the URL, and a URL whose token is
+unguessable is a bearer credential — the same model as an API key in a header,
+and the model half the webhook senders in the world actually use. `mint_token`
+issues 32 characters of base64url (192 bits), so *no secret + minted token* is an
+ordinary configuration. What is left over is *no secret + a token somebody could
+guess*, which authenticates nothing at all.
+
+Those two are not the same thing and are not reported the same way. The rule is
+`webhooks.token_is_credential`: at least `CREDENTIAL_MIN_LEN` (24) characters and
+at least `CREDENTIAL_BITS` (100) bits by `len × log2(distinct symbols used)` —
+scored over the alphabet the token *actually* uses, so a 32-character run of one
+character is zero bits rather than 32. A minted token scores ~149; a typed name
+like `person-events-01` scores ~55.
+
+The estimate assumes the characters were chosen independently, which is true of a
+minted token and false of a phrase — a long descriptive slug scores like
+randomness and is not. That limit is documented on `token_bits` rather than
+papered over, and the page steers an operator turning the secret off towards
+leaving the token blank, which is the case the estimate is exactly right about.
+
+The bar also has to be one a minted token never trips, or it fires at random.
+That is not hypothetical: minting was `token_hex(16)`, whose 32 characters draw
+on 16 symbols, and about one token in ten thousand used nine or fewer and scored
+under 100 — the mirror minting a token and then calling it guessable on its own
+page. `token_urlsafe(24)` is the same length over 64 symbols; the worst of 300k
+draws scored 131.
+
+The rest of the cost is unchanged by any of this and belongs written down:
+
 - A receiver is only as checked as its **least**-checked subscription. Signed
   subscriptions on the same URL still verify and are still attributed to
-  themselves, but nothing is turned away any more, and a body may claim any event
-  name (§6.2 files events by the *item's* name, not the subscription's).
+  themselves, but the URL's authentication is now the token, and a body may claim
+  any event name (§6.2 files events by the *item's* name, not the subscription's).
 - Nothing else is relaxed: an unknown token is still 404, the token format is
   still enforced, and pausing the last unverified subscription closes the URL.
+- If the URL is the credential it wants a password's handling: TLS, and out of
+  anything that logs or forwards URLs.
 
 Two consequences fall out of the code rather than the policy. `sig` is used for
 *attribution* only once a match is found, so with no secrets there is nothing
@@ -569,12 +598,16 @@ guess and is only a label on the audit row. And `webhook_delivery.signature` is
 the absence is stored as `''`; letting that insert fail would have answered 503
 and had the sender redeliver, for ever.
 
-Because this cannot be made safe, it is made **loud**: `serve` names every
-unverified receiver URL at every start (not once at configuration time — the
-person reading the log on a Tuesday is not the person who ticked the box), the
-dashboard raises a banner, `/admin/webhooks` marks the receiver and every
-subscription on it, and `list-subscriptions` has a `CHECKED` column. Same
-treatment as `PCOMIRROR_ALLOW_ANONYMOUS` (§8.4), for the same reason.
+**Loud only for the case that warrants it.** `webhooks.unprotected_tokens` is the
+single definition — no secret *and* no credential-grade token — read by the
+`serve` log, the dashboard banner and the receivers page alike, because an alarm
+computed in three places eventually disagrees with itself about when to go off.
+It is said at every start rather than once at configuration time, because the
+person reading the log on a Tuesday is not the person who ticked the box: same
+treatment as `PCOMIRROR_ALLOW_ANONYMOUS` (§8.4), for the same reason. A
+credential-grade receiver gets a note explaining what its URL now is, and
+nothing else — banner every secretless receiver and an operator learns to scroll
+past the banner, which costs more than it buys.
 
 ### 6.3 Async worker — dispatch, guard, hydrate
 
@@ -1213,7 +1246,9 @@ uses the simpler equivalents from [§0](#0-deployment-profile-decided).
 | 21 | "A unique receiver URL per subscription" read PCO's *model* (one subscription per event) as a *constraint* on URLs, which it is not — its own console points every ticked event at one URL. `url_token UNIQUE` made the normal setup impossible to register | `url_token` not unique; the receiver resolves the delivering subscription by **the secret that signed the body**, never by the event name in the payload (§6.1–6.2) |
 | 22 | `PCOMIRROR_SUBSCRIPTIONS` re-applied on every start would silently overwrite a webhook fixed from the operator page, at the moment nobody is watching | The page takes precedence once used (`mirror_meta.subscriptions_managed_here`); the environment is reported-and-skipped, and handed back explicitly (§6.1) |
 | 23 | An event for a resource with no table dead-lettered, so subscribing to the whole console list filled the queue an alert points at with events that were only ever going to be filed | Captured and marked `ignored`, payload intact, counted on the page; dead letters keep meaning "something broke" (§6.1) |
-| 24 | A secret was mandatory, which shut out senders that cannot sign — and `webhook_delivery.signature NOT NULL` would have turned the unsigned delivery into a 503 and an endless redelivery loop rather than a stored one | A blank secret means no check (§6.2.1); the absent header stores as `''`; the receiver is loud about it at every start rather than safe-looking and silent |
+| 24 | A secret was mandatory, which shut out senders that cannot sign — and `webhook_delivery.signature NOT NULL` would have turned the unsigned delivery into a 503 and an endless redelivery loop rather than a stored one | A blank secret means no check (§6.2.1); the absent header stores as `''` |
+| 25 | Every secretless receiver was reported as a hole, including ones whose minted 192-bit URL *is* a bearer credential — an alarm that fires on the ordinary case is one an operator learns to scroll past, and it would then be scrolled past for the receiver that mattered | Report the combination that authenticates nothing: no secret **and** no credential-grade token, defined once in `unprotected_tokens` (§6.2.1) |
+| 26 | The credential-grade bar was measured against `token_hex(16)`, which draws 32 characters from 16 symbols — roughly 1 in 10⁴ minted tokens scored under it, so the mirror would mint a token and then call it guessable on its own page | `mint_token` is `token_urlsafe(24)`: same length, 64 symbols, worst of 300k draws 131 bits against a bar of 100 (§6.2.1). Caught by a test that mints thousands rather than one |
 
 ---
 

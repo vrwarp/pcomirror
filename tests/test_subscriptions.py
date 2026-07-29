@@ -198,6 +198,83 @@ class TestASubscriptionWithNoSecret(unittest.TestCase):
             self.m.webhooks.receive(self.token, raw, _sign("whsec_now", raw))[0], 204)
 
 
+class TestWhenTheUrlIsTheCredential(unittest.TestCase):
+    """A receiver URL with an unguessable token is a bearer credential, so a
+    subscription with no secret is only a *hole* when the token is guessable.
+    That distinction is what decides whether anything shouts, so it is pinned
+    from both ends: minted tokens must always pass, typed names must not."""
+
+    def test_a_minted_token_always_clears_the_bar(self):
+        """The threshold is only useful if the mirror's own tokens never trip it,
+        and this is the test that caught them doing so.
+
+        `token_bits` scores the alphabet a token actually uses. Minting was
+        `token_hex(16)` — 32 characters from 16 symbols — and roughly one in ten
+        thousand draws used nine or fewer of them and came out under the bar, so
+        the mirror would have minted a token and then called it guessable on its
+        own page. Hence `mint_token`, and hence this running thousands of draws
+        rather than one: a one-in-ten-thousand failure is invisible to a single
+        sample and perfectly visible in production.
+        """
+        for _ in range(5000):
+            token = webhooks.mint_token()
+            self.assertTrue(webhooks.token_is_credential(token),
+                            f"{token} scored {webhooks.token_bits(token):.1f}")
+            self.assertRegex(token, webhooks.TOKEN_RE)      # still URL-safe
+
+    def test_names_somebody_typed_do_not(self):
+        for token in ("person-events-01", "person-updated-01", "test-webhook-1",
+                      "webhooks", "pco-hook", "short12345"):
+            self.assertFalse(webhooks.token_is_credential(token), token)
+
+    def test_length_alone_is_not_enough(self):
+        """A long run of one character is 32 characters and no entropy. Scoring
+        the alphabet the token actually uses is what catches it — scoring the
+        alphabet `TOKEN_RE` permits would have called this 190 bits."""
+        self.assertEqual(webhooks.token_bits("a" * 32), 0.0)
+        self.assertFalse(webhooks.token_is_credential("a" * 32))
+        self.assertFalse(webhooks.token_is_credential("ab" * 16))     # 32 chars, 1 bit each
+
+    def test_the_bar_has_both_a_length_and_a_bits_floor(self):
+        # 20 distinct characters over 20 is 86 bits — random-looking but short.
+        self.assertFalse(webhooks.token_is_credential("Qf7mR2xK9pLd4vTn8yZc"[:20]))
+        self.assertTrue(webhooks.token_is_credential("Qf7mR2xK9pLd4vTn8yZc3wBh"))
+
+    def test_a_guessable_token_with_a_secret_is_not_reported(self):
+        """The alarm is about the *combination*. A short token is unremarkable
+        when a signature is doing the authenticating — which is the ordinary
+        case, and the reason this is not simply a token-length rule."""
+        m, _ = build()
+        webhooks.upsert_subscription(
+            m.db, "s1", "people.v2.events.person.updated", "whsec_a", "person-events-01")
+        self.assertEqual(webhooks.unprotected_tokens(m.db), [])
+
+    def test_only_the_combination_is_reported(self):
+        m, _ = build()
+        webhooks.upsert_subscription(
+            m.db, "weak", "people.v2.events.person.updated", "", "person-events-01")
+        strong = webhooks.mint_token()
+        webhooks.upsert_subscription(
+            m.db, "strong", "people.v2.events.person.created", "", strong)
+        self.assertEqual(webhooks.unprotected_tokens(m.db), ["person-events-01"])
+
+    def test_pausing_the_last_unchecked_subscription_clears_the_report(self):
+        m, _ = build()
+        webhooks.upsert_subscription(
+            m.db, "weak", "people.v2.events.person.updated", "", "person-events-01")
+        self.assertEqual(webhooks.unprotected_tokens(m.db), ["person-events-01"])
+        webhooks.set_active(m.db, "weak", False)
+        self.assertEqual(webhooks.unprotected_tokens(m.db), [])
+
+    def test_adding_a_secret_clears_the_report(self):
+        m, _ = build()
+        webhooks.upsert_subscription(
+            m.db, "weak", "people.v2.events.person.updated", "", "person-events-01")
+        webhooks.upsert_subscription(
+            m.db, "weak", "people.v2.events.person.updated", "whsec_a", "person-events-01")
+        self.assertEqual(webhooks.unprotected_tokens(m.db), [])
+
+
 class TestMixingCheckedAndUnchecked(unittest.TestCase):
     """One URL, one subscription signed and one not. The signed one has to keep
     working and keep being attributed correctly — an unchecked sibling must not
@@ -586,12 +663,14 @@ def _form(**fields) -> bytes:
 
 
 class TestWebhooksPage(unittest.TestCase):
-    #: The two banners that mean "this receiver is not checking anything". Both
-    #: pages also *explain* unverified receivers in their standing copy, so these
+    #: The two banners that mean "nothing authenticates a delivery here". Both
+    #: pages also *explain* secretless receivers in their standing copy, so these
     #: are anchored on wording only the alarm itself uses — otherwise the quiet
     #: case would pass by matching the explanation.
-    RECEIVER_ALARM = b"deliveries to this receiver are"
-    DASHBOARD_ALARM = b"webhook receiver"
+    RECEIVER_ALARM = b"enough to guess"
+    DASHBOARD_ALARM = b"guessable token"
+    #: The calm note for a secretless receiver whose token *is* the credential.
+    RECEIVER_CREDENTIAL_NOTE = b"is</b> the credential"
 
     def setUp(self):
         self.m, _ = build(allow_anonymous=False)
@@ -730,7 +809,9 @@ class TestWebhooksPage(unittest.TestCase):
         raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
         self.assertEqual(self.m.webhooks.receive("open-token-01", raw, None)[0], 204)
 
-    def test_an_unchecked_receiver_is_flagged_on_both_pages(self):
+    def test_no_secret_and_a_guessable_token_is_flagged_on_both_pages(self):
+        """`open-token-01` is a name somebody typed. With the signature off there
+        is nothing left, and that is what the alarms are for."""
         self.post("/admin/webhooks/add", urllib.parse.urlencode([
             ("csrf", self.csrf()), ("url_token", "open-token-01"), ("unverified", "1"),
             ("event", "people.v2.events.person.updated")]).encode())
@@ -741,6 +822,35 @@ class TestWebhooksPage(unittest.TestCase):
         self.assertIn(self.DASHBOARD_ALARM, dashboard)
         self.assertIn(b"open-token-01", dashboard)
 
+    def test_no_secret_on_a_minted_token_is_quiet(self):
+        """Leaving the token blank mints an unguessable one, which makes the URL
+        a bearer credential. That is a security model, not a hole — so no alarm,
+        just the note explaining what the URL now is."""
+        _, headers, _ = self.post("/admin/webhooks/add", urllib.parse.urlencode([
+            ("csrf", self.csrf()), ("unverified", "1"),
+            ("event", "people.v2.events.person.updated")]).encode())
+        token = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(headers["Location"]).query)["token"][0]
+        self.assertTrue(webhooks.token_is_credential(token))
+        page = self.get("/admin/webhooks")[2]
+        self.assertNotIn(self.RECEIVER_ALARM, page)
+        self.assertIn(self.RECEIVER_CREDENTIAL_NOTE, page)
+        self.assertNotIn(self.DASHBOARD_ALARM, self.get("/")[2])
+        raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
+        self.assertEqual(self.m.webhooks.receive(token, raw, None)[0], 204)
+
+    def test_a_pasted_random_token_counts_as_a_credential_too(self):
+        """Nothing here depends on *us* having minted it — an operator pasting a
+        generated token gets the same quiet treatment, because the property that
+        matters is the token being unguessable, not its provenance."""
+        token = "Qf7mR2xK9pLd4vTn8yZc3wBh"      # 24 chars, no structure
+        self.assertTrue(webhooks.token_is_credential(token))
+        self.post("/admin/webhooks/add", urllib.parse.urlencode([
+            ("csrf", self.csrf()), ("url_token", token), ("unverified", "1"),
+            ("event", "people.v2.events.person.updated")]).encode())
+        self.assertNotIn(self.RECEIVER_ALARM, self.get("/admin/webhooks")[2])
+        self.assertNotIn(self.DASHBOARD_ALARM, self.get("/")[2])
+
     def test_a_checked_receiver_raises_no_alarm(self):
         """The alarms have to be quiet in the ordinary case or they stop being
         alarms — asserted on the exact banners, not on wording that also appears
@@ -749,6 +859,7 @@ class TestWebhooksPage(unittest.TestCase):
             ("csrf", self.csrf()), ("url_token", "person-events-01"), ("secret", "whsec_a"),
             ("event", "people.v2.events.person.updated")]).encode())
         self.assertNotIn(self.RECEIVER_ALARM, self.get("/admin/webhooks")[2])
+        self.assertNotIn(self.RECEIVER_CREDENTIAL_NOTE, self.get("/admin/webhooks")[2])
         self.assertNotIn(self.DASHBOARD_ALARM, self.get("/")[2])
 
     def test_an_event_typed_by_hand_is_accepted(self):
