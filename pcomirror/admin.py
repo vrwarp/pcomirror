@@ -522,9 +522,15 @@ class AdminApp:
             if len(diffs) > 6:
                 shown += f"<div class=muted>…and {len(diffs) - 6} more</div>"
             klass = "warn" if r["verdict"] == "divergence" else "muted"
+            # The parameters, not only the path: an ordering difference is
+            # meaningless without the `order=` that produced it.
+            query = json.loads((r["query"] if "query" in r.keys() else "") or "{}")
+            shown_query = "".join(
+                f"<div class=muted><code>{E(k)}={E(str(v))}</code></div>"
+                for k, v in sorted(query.items()))
             rows.append(
                 f"<tr><td>{_esc(r['at'])}</td><td class={klass}>{E(r['verdict'])}</td>"
-                f"<td>{_esc(r['path'])}</td>"
+                f"<td style='white-space:normal'>{_esc(r['path'])}{shown_query}</td>"
                 f"<td>{_esc(r['mirror_status'])} vs {_esc(r['pco_status'])}</td>"
                 f"<td style='white-space:normal'>{shown}</td>"
                 f"<td>{('<code>' + E(r['pco_request_id']) + '</code>') if r['pco_request_id'] else '—'}"

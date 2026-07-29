@@ -1,7 +1,9 @@
 import unittest
 
-from base import build
+from base import build, wsgi_get
 from fakepco import res
+from pcomirror import registry
+from pcomirror.config import now_iso
 
 
 class TestBackfill(unittest.TestCase):
@@ -68,6 +70,44 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(row["merged_into_pco_id"], "1")
         self.assertEqual(row["tombstone_reason"], "merged")
 
+    def test_merger_poll_applies_each_merge_exactly_once(self):
+        """The watermark filter is `gte`, so the newest merge comes back for ever.
+
+        Applying it every time is what put a permanent `GET /people/{survivor}`
+        on a 120-second cadence in a real mirror — answered `404`, because that
+        survivor had since been deleted, for ever.
+        """
+        m, fake = self._seed()
+        fake.add_person("2", "Ada", "Dup", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        fake.merge(keep="1", remove="2", created="2026-04-01T00:00:00Z")
+        self.assertEqual(m.ingestor.merger_poll(), 1)
+        m.ingestor.drain_hydration()
+
+        # The same merge, still the newest, still returned by `gte`.
+        self.assertEqual(m.ingestor.merger_poll(), 0)
+        self.assertEqual(m.db.query_one("SELECT count(*) c FROM hydration_task")["c"], 0)
+        # ...and nothing was re-fetched on its behalf.
+        fake.request_log.clear()
+        m.ingestor.merger_poll()
+        m.ingestor.drain_hydration()
+        self.assertEqual([p for meth, p in fake.request_log if p.startswith("/people/")], [])
+
+    def test_merger_poll_terminates_when_a_page_shares_one_second(self):
+        """`per_page` merges at one `created_at` cannot advance the cursor.
+
+        `gte` then returns the identical full page every time, so paging on asks
+        for it again for ever.
+        """
+        m, fake = self._seed()
+        for i in range(2, 152):
+            fake.add_person(str(i), f"Dup{i}", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        for i in range(2, 152):
+            fake.merge(keep="1", remove=str(i), created="2026-04-01T00:00:00Z")
+        self.assertEqual(m.ingestor.merger_poll(), 100)   # one page, then stuck
+        self.assertEqual(m.ingestor.merger_poll(), 0)     # and it stops, rather than spinning
+
     def test_delete_audit_tombstones_hard_deleted(self):
         m, fake = self._seed()
         fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
@@ -98,6 +138,198 @@ class TestReconcile(unittest.TestCase):
         self.assertEqual(d["total_count"], 1)
         self.assertEqual(d["mirror_live"], 1)
         self.assertEqual(d["delta"], 0)
+
+    def test_drift_probe_does_not_ask_for_a_collection_pco_will_not_serve(self):
+        """`GET /household_memberships` is a 404 by design — there is no such
+        collection, only `/households/{id}/household_memberships`. Probing it
+        spent a request every 15 minutes to log a permanent error."""
+        m, fake = self._seed()
+        fake.request_log.clear()
+        d = m.ingestor.drift_probe("household_membership")
+        self.assertEqual(fake.request_log, [])
+        self.assertIsNone(d["total_count"])
+        self.assertIsNone(d["delta"])
+        self.assertEqual(d["mirror_live"], 0)
+
+
+class TestAChildCannotOutliveItsOwner(unittest.TestCase):
+    """Every other way a child gets tombstoned needs the owner still to be there
+    to ask about. When the owner itself is gone — a 404 on hydration, an absence
+    the audit confirmed, a `destroyed` webhook — nothing looked, and the emails
+    and phone numbers of a hard-deleted person stayed live for ever."""
+
+    def _seed(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "Lovelace", "2026-01-01T00:00:00Z")
+        fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e1", "1", {"address": "ada@x.org"}, "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e2", "2", {"address": "gone@x.org"}, "2026-01-01T00:00:00Z")
+        fake.add_child("PhoneNumber", "p2", "2", {"number": "5550100"}, "2026-01-01T00:00:00Z")
+        fake.add(res("Household", "h1", {"name": "The Persons"}, updated="2026-01-01T00:00:00Z"))
+        fake.add_membership("hm2", "h1", "2")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        m.ingestor.nested_walk("household_membership")
+        return m, fake
+
+    def _live(self, m, table):
+        return [r["pco_id"] for r in m.db.query(
+            f"SELECT pco_id FROM {table} WHERE deleted_at IS NULL")]
+
+    def test_the_audit_takes_the_children_with_the_person(self):
+        m, fake = self._seed()
+        fake.destroy("Person", "2")
+        self.assertEqual(m.ingestor.delete_audit("person"), 1)
+        self.assertEqual(self._live(m, "email"), ["e1"])
+        self.assertEqual(self._live(m, "phone_number"), [])
+
+    def test_a_deleted_person_stops_being_served_from_the_child_collection(self):
+        m, fake = self._seed()
+        fake.destroy("Person", "2")
+        m.ingestor.delete_audit("person")
+        _, _, body = wsgi_get(m.wsgi, "/people/v2/emails", "per_page=100")
+        self.assertEqual([d["attributes"]["address"] for d in body["data"]], ["ada@x.org"])
+        self.assertEqual(body["meta"]["total_count"], 1)
+
+    def test_a_404_on_hydration_takes_them_too(self):
+        m, fake = self._seed()
+        fake.destroy("Person", "2")
+        m.ingestor.hydrate("person", "2")
+        self.assertEqual(self._live(m, "email"), ["e1"])
+
+    def test_a_deleted_household_takes_its_memberships(self):
+        """The walk only ever visits *live* households, so a membership under a
+        deleted one is never revisited and would never be tombstoned."""
+        m, fake = self._seed()
+        m.writer.tombstone("household", "h1", None, "destroyed")
+        self.assertEqual(self._live(m, "household_membership"), [])
+
+    def test_a_merge_does_not_take_them(self):
+        """PCO moves a merged person's children to the survivor rather than
+        deleting them, and the survivor's hydration re-routes them at their
+        existing `updated_at` — which the monotonic guard would refuse to
+        resurrect. Cascading here would bury them permanently."""
+        m, fake = self._seed()
+        fake.merge(keep="1", remove="2", created="2026-04-01T00:00:00Z")
+        m.ingestor.merger_poll()
+        self.assertEqual(self._live(m, "email"), ["e1", "e2"])
+
+    def test_a_person_who_comes_back_brings_the_children_with_them(self):
+        m, fake = self._seed()
+        m.writer.tombstone("person", "2", None, "audit_absent")
+        self.assertEqual(self._live(m, "email"), ["e1"])
+        fake.data["Person"]["2"]["attributes"]["updated_at"] = "2026-06-01T00:00:00Z"
+        m.ingestor.hydrate("person", "2")
+        self.assertEqual(self._live(m, "person"), ["1", "2"])
+        self.assertEqual(self._live(m, "email"), ["e1", "e2"])
+
+    def test_a_re_read_too_old_to_revive_the_owner_leaves_the_children_buried(self):
+        """The `EXISTS` guard: an ordinary sweep re-reading a still-tombstoned
+        person at a timestamp too old to revive them must not dig up their
+        children on its own."""
+        m, fake = self._seed()
+        m.writer.tombstone("person", "2", None, "audit_absent")
+        m.ingestor.incremental_sweep("person")
+        self.assertEqual(self._live(m, "person"), ["1"])
+        self.assertEqual(self._live(m, "email"), ["e1"])
+
+    def test_a_child_deleted_on_its_own_evidence_keeps_its_tombstone(self):
+        m, fake = self._seed()
+        fake.destroy("Email", "e2")
+        m.ingestor.hydrate("person", "2")
+        self.assertEqual(self._live(m, "email"), ["e1"])
+        m.ingestor.hydrate("person", "2")       # a later re-read must not revive it
+        self.assertEqual(self._live(m, "email"), ["e1"])
+
+    def test_ownership_is_containment_not_reference(self):
+        """`person.primary_campus` points at a campus. Deleting a campus must
+        never tombstone the people in it."""
+        self.assertEqual(registry.owned_children("campus"), ())
+        self.assertEqual(
+            [(c.table, fk) for c, fk in registry.owned_children("person")],
+            [("email", "person_pco_id"), ("phone_number", "person_pco_id"),
+             ("address", "person_pco_id"), ("field_datum", "person_pco_id")])
+        self.assertEqual(
+            [(c.table, fk) for c, fk in registry.owned_children("household")],
+            [("household_membership", "household_pco_id")])
+
+
+class TestTheLastChildIsStillADelete(unittest.TestCase):
+    """PCO answers `"included": []` both for a person whose emails were not
+    requested and for one who has no emails left. Reading which children to diff
+    off the *response* meant a person's last email could be deleted at PCO and
+    stay in the mirror for ever."""
+
+    def test_deleting_the_only_email_is_noticed(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e1", "1", {"address": "ada@x.org"}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        fake.destroy("Email", "e1")
+        m.ingestor.hydrate("person", "1")
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
+
+    def test_a_narrower_hydrate_does_not_touch_what_it_did_not_ask_about(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e1", "1", {"address": "a@x.org"}, "2026-01-01T00:00:00Z")
+        fake.add_child("PhoneNumber", "p1", "1", {"number": "555"}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.ingestor.hydrate("person", "1", includes=["phone_numbers"])
+        self.assertIsNone(
+            m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
+
+
+class TestScheduledAudit(unittest.TestCase):
+    """The delete audit is the only mechanism that finds a hard delete with no
+    webhook and no merge. It was written, tested, documented and exposed on the
+    CLI — and never scheduled."""
+
+    def _seeded(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        return m, fake, Scheduler(m)
+
+    def test_scheduler_runs_the_delete_audit(self):
+        m, fake, sched = self._seeded()
+        fake.destroy("Person", "2")
+        sched.run_once()
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
+
+    def test_audit_is_not_repeated_within_its_interval(self):
+        m, fake, sched = self._seeded()
+        sched.run_once()
+        first = m.ingestor.state("person")["last_audit_completed_at"]
+        self.assertIsNotNone(first)
+        fake.request_log.clear()
+        sched.run_once()
+        self.assertEqual([p for meth, p in fake.request_log if "fields[Person]" in p], [])
+
+    def test_audit_interval_of_zero_switches_it_off(self):
+        m, fake, sched = self._seeded()
+        m.settings.audit_interval_hours = 0
+        fake.destroy("Person", "2")
+        sched.run_once()
+        self.assertIsNone(m.ingestor.state("person")["last_audit_completed_at"])
+
+    def test_a_failed_audit_waits_rather_than_retrying_every_tick(self):
+        """Due-ness reads the later of started/completed, so an audit that dies
+        partway does not re-enumerate the organization on the next 5s tick."""
+        m, fake, sched = self._seeded()
+
+        def explode(*a, **k):
+            raise ConnectionResetError("PCO is unreachable")
+        m.ingestor.client.get = explode
+        sched.run_once()
+        st = m.ingestor.state("person")
+        self.assertIsNone(st["last_audit_completed_at"])
+        self.assertIsNotNone(st["last_audit_started_at"])
+        self.assertFalse(sched._audit_due("person", now_iso()))
 
 
 class TestReferenceRefresh(unittest.TestCase):

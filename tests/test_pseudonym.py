@@ -240,6 +240,64 @@ class TestWholeDocuments(unittest.TestCase):
                          {"errors": [{"code": "404"}]})
 
 
+class TestQueryParameters(unittest.TestCase):
+    """A query string holds both halves of the problem at once: the parameters
+    that say what the request *was*, which are the whole reason for keeping it,
+    and filter values, which are routinely somebody's surname."""
+
+    def test_the_parameters_that_describe_the_request_survive_verbatim(self):
+        out = P().query({"order": "last_name", "per_page": "25", "offset": "300",
+                         "include": "emails", "fields[Person]": "first_name"})
+        self.assertEqual(out, {"order": "last_name", "per_page": "25", "offset": "300",
+                               "include": "emails", "fields[Person]": "first_name"})
+
+    def test_a_filter_value_is_classified_like_the_attribute_it_filters_on(self):
+        p = P()
+        out = p.query({"where[last_name]": "Lovelace"})
+        self.assertNotEqual(out["where[last_name]"], "Lovelace")
+        self.assertEqual(out["where[last_name]"], p.value("last_name", "Lovelace"))
+
+    def test_a_comparison_filter_keeps_the_name_that_says_what_the_value_is(self):
+        p = P()
+        out = p.query({"where[created_at][gte]": "2026-01-01T00:00:00Z"})
+        self.assertEqual(out["where[created_at][gte]"],
+                         p.value("created_at", "2026-01-01T00:00:00Z"))
+
+    def test_a_parameter_nobody_classified_is_redacted_rather_than_trusted(self):
+        out = P().query({"where[search_name_or_email]": "lovelace@x.org"})
+        self.assertNotIn("lovelace", out["where[search_name_or_email]"])
+        self.assertTrue(out["where[search_name_or_email]"].startswith(pseudonym.REDACTED_PREFIX))
+
+    def test_two_requests_looking_for_the_same_thing_still_look_alike(self):
+        p = P()
+        self.assertEqual(p.query({"where[search_name_or_email]": "a@x.org"}),
+                         p.query({"where[search_name_or_email]": "a@x.org"}))
+        self.assertNotEqual(p.query({"where[search_name_or_email]": "a@x.org"}),
+                            p.query({"where[search_name_or_email]": "b@x.org"}))
+
+
+class TestLinksCarryQueriesToo(unittest.TestCase):
+    """Links were exempted as "ids and paths", which holds until one carries a
+    search term — and a collection's `self` always does."""
+
+    def test_a_collection_self_link_does_not_leak_its_filter(self):
+        doc = {"data": [], "links": {
+            "self": "/people/v2/people?where[last_name]=Lovelace&order=last_name&per_page=25"}}
+        out = P().document(doc)
+        self.assertNotIn("Lovelace", out["links"]["self"])
+        self.assertIn("order=last_name", out["links"]["self"])
+        self.assertIn("per_page=25", out["links"]["self"])
+        self.assertTrue(out["links"]["self"].startswith("/people/v2/people?"))
+
+    def test_a_link_without_a_query_is_untouched(self):
+        self.assertEqual(P().link("/people/v2/people/1/emails"), "/people/v2/people/1/emails")
+
+    def test_a_resource_link_is_covered_by_the_same_rule(self):
+        out = P().resource({"id": "1", "type": "Person", "attributes": {},
+                            "links": {"self": "/people/v2/people/1?where[first_name]=Ada"}})
+        self.assertNotIn("Ada", out["links"]["self"])
+
+
 class TestARedactionIsStillComparable(unittest.TestCase):
     """A constant marker would make every hidden value equal to every other.
 

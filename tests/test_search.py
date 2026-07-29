@@ -523,6 +523,30 @@ class TestPcoOrdering(unittest.TestCase):
         self.assertEqual(surnames, sorted(surnames, key=str.lower))
         self.assertEqual(surnames[0].lower(), "apple")
 
+    def test_an_accented_surname_sorts_where_pco_puts_it(self):
+        """`NOCASE` folds ASCII A–Z and nothing else, so every accented surname
+        sorted after `z` — `Márquez` landed past all the `Mar…` names instead of
+        among them. Measured against a live 1925-person organization ordered by
+        `last_name`: NOCASE disagreed with PCO in 34 positions; folding combining
+        marks first agreed in all 1925."""
+        for pid, last in (("91", "Manriquez"), ("92", "Márquez"),
+                          ("93", "Martinez"), ("94", "Mee")):
+            self.fake.add_person(pid, "N", last, "2026-05-01T00:00:00Z")
+        self.m.ingestor.backfill("person")
+        _, _, body = wsgi_get(self.m.wsgi, "/people/v2/people",
+                              "order=last_name&where[first_name]=N&per_page=100")
+        self.assertEqual([d["attributes"]["last_name"] for d in body["data"]],
+                         ["Manriquez", "Márquez", "Martinez", "Mee"])
+
+    def test_folding_does_not_disturb_the_case_rule_it_replaced(self):
+        for pid, last in (("95", "apple"), ("96", "Ápple"), ("97", "Banana")):
+            self.fake.add_person(pid, "F", last, "2026-05-01T00:00:00Z")
+        self.m.ingestor.backfill("person")
+        _, _, body = wsgi_get(self.m.wsgi, "/people/v2/people",
+                              "order=last_name&where[first_name]=F&per_page=100")
+        self.assertEqual([d["attributes"]["last_name"] for d in body["data"]],
+                         ["apple", "Ápple", "Banana"])
+
     def test_ordering_ties_break_on_numeric_id(self):
         for pid in ("300", "40"):
             self.fake.add_person(pid, "Tie", "Byron", "2026-05-01T00:00:00Z")

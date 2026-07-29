@@ -422,3 +422,42 @@ def mirrored_tables() -> list[str]:
 
 def full_and_lite() -> list[Resource]:
     return [r for r in RESOURCES.values() if r.tier in ("full", "lite")]
+
+
+def _owned_children() -> dict[str, tuple[tuple[Resource, str], ...]]:
+    """owner name -> ((child, the child's fk column), …).
+
+    **Ownership, not reference.** `person.primary_campus` points at a campus, and
+    a campus being deleted must never tombstone the people in it — so this reads
+    only the two declarations that mean containment: `owner_rel` (the child hangs
+    off a person and is fetched in that person's `include=`) and `parent` (the
+    child is a `nested_walk` collection served under one parent and nowhere else).
+
+    Note what that deliberately excludes. `household_membership` declares a
+    `person` relationship, but its owner here is the *household*: `_walk_one`
+    re-reads every live household's memberships daily and tombstones whatever PCO
+    stopped returning, so the person edge already has an authority — one that
+    reads PCO's answer instead of guessing at it. Cascading a membership from the
+    person as well would be the mirror asserting what PCO does on a delete, and
+    the row is untimed, so `upsert_untimed` could never undo it.
+    """
+    out: dict[str, list[tuple[Resource, str]]] = {}
+    for c in RESOURCES.values():
+        edges = []
+        if c.owner_rel:
+            rel = c.relationships.get(c.owner_rel)
+            edges.append(((rel.target if rel else c.owner_rel),
+                          (rel.local_fk if rel and rel.local_fk else f"{c.owner_rel}_pco_id")))
+        if c.parent and c.parent_fk:
+            edges.append((c.parent, c.parent_fk))
+        for owner, fk in edges:
+            out.setdefault(owner, []).append((c, fk))
+    return {k: tuple(v) for k, v in out.items()}
+
+
+_OWNED_CHILDREN = _owned_children()
+
+
+def owned_children(owner_name: str) -> tuple[tuple[Resource, str], ...]:
+    """Children that cannot outlive `owner_name`. See `_owned_children`."""
+    return _OWNED_CHILDREN.get(owner_name, ())

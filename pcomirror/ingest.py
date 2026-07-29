@@ -283,7 +283,7 @@ class Ingestor:
                 applied += self.writer.route_page(body, "reconcile")
             if r.name == "person":
                 for d in data:
-                    self._include_diff(d, body.get("included", []))
+                    self._include_diff(d, body.get("included", []), list(r.includes))
             max_ts = max(d["attributes"]["updated_at"] for d in data)
             all_boundary = all(d["attributes"]["updated_at"] == cursor for d in data)
             if max_ts == cursor and len(data) == 100:
@@ -349,6 +349,23 @@ class Ingestor:
 
     # -- merger poll -------------------------------------------------------
     def merger_poll(self) -> int:
+        """Tail `/person_mergers` and apply anything not applied already.
+
+        The watermark filter is `gte`, deliberately (DESIGN §7.2): two merges in
+        one second with a crash between them would permanently skip the second
+        under `gt`. The cost is that every poll re-reads the merges sharing the
+        newest `created_at`, for ever — so whether a merge is *new* has to be
+        decided by the append-only log, not by the filter.
+
+        It used to be decided by neither. The side effects ran on every row the
+        filter returned, so the newest merge re-tombstoned its removed id and
+        re-queued its survivor every 120 seconds, permanently: in a real mirror
+        that showed up as `GET /people/{survivor}?include=…` on a perfect
+        two-minute cadence, answered `404` because the survivor had since been
+        deleted, in the diagnostics log for ever. `INSERT OR IGNORE` on the log
+        below shows the row was always meant to be de-duplicated; only the work
+        hanging off it was not.
+        """
         st = self.state("person_merger")
         wm = st["merger_watermark"] or ""
         applied = 0
@@ -360,21 +377,39 @@ class Ingestor:
             data = body.get("data", [])
             if not data:
                 break
+            before, fresh = wm, 0
             for m in data:
                 a = m["attributes"]
+                wm = max(wm, a["created_at"])
+                if not self._merger_is_new(m["id"]):
+                    continue
                 keep, gone = a["person_to_keep_id"], a["person_to_remove_id"]
-                self.db.execute(
-                    "INSERT OR IGNORE INTO person_merger(pco_id,raw,source,api_version) "
-                    "VALUES(?,?,?,?)",
-                    (m["id"], json.dumps(m), "reconcile", self.writer.api_version))
                 self.writer.tombstone("person", gone, None, "merged", merged_into=keep)
                 self.enqueue_hydration("person", keep, reason="merge_survivor")
-                wm = max(wm, a["created_at"])
-                applied += 1
+                # Recorded last: a crash before this leaves the merge looking new,
+                # and re-applying one is idempotent. Recording first would make a
+                # failed tombstone permanent.
+                self._record_merger(m["id"], m, "reconcile")
+                fresh += 1
+            applied += fresh
             self._set("person_merger", merger_watermark=wm)
-            if len(data) < 100:
+            # A full page that taught us nothing *and* could not move the cursor is
+            # a spin, not progress: it means at least `per_page` merges share one
+            # second, so `gte` keeps returning the same page. Paging on would ask
+            # for it again for ever.
+            if len(data) < 100 or (fresh == 0 and wm == before):
                 break
         return applied
+
+    def _merger_is_new(self, merger_id: str) -> bool:
+        return self.db.query_one(
+            "SELECT 1 FROM person_merger WHERE pco_id=?", (merger_id,)) is None
+
+    def _record_merger(self, merger_id: str, raw: dict, source: str) -> None:
+        self.db.execute(
+            "INSERT OR IGNORE INTO person_merger(pco_id,raw,source,api_version) "
+            "VALUES(?,?,?,?)",
+            (merger_id, json.dumps(raw), source, self.writer.api_version))
 
     # -- delete audit ------------------------------------------------------
     def delete_audit(self, name: str = "person") -> int:
@@ -383,9 +418,14 @@ class Ingestor:
         # during the audit are never candidates (avoids a second-precision race).
         candidates = {row["pco_id"] for row in
                       self.db.query(f"SELECT pco_id FROM {r.table} WHERE deleted_at IS NULL")}
+        # Stamped before the work, not after: the scheduler reads the later of
+        # started/completed to decide whether an audit is due, so an audit that
+        # dies partway waits its interval instead of restarting on the next tick.
+        self._set(name, last_audit_started_at=now_iso())
         live, cursor = set(), ""
         while True:
-            params = {"order": "created_at", "per_page": 100, "fields[Person]": "created_at"}
+            params = {"order": "created_at", "per_page": 100,
+                      f"fields[{r.type}]": "created_at"}
             if cursor:
                 params["where[created_at][gte]"] = cursor
             body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
@@ -412,12 +452,27 @@ class Ingestor:
 
     # -- drift probe -------------------------------------------------------
     def drift_probe(self, name: str) -> dict:
+        """Compare PCO's `total_count` with how many live rows the mirror holds.
+
+        A `nested_walk` resource has no collection to count. `GET
+        /household_memberships` is a 404 by design — the rows exist only under
+        `/households/{id}/household_memberships` — so probing it spent a request
+        every 15 minutes to write a permanent `404` into the diagnostics log, next
+        to the real failures somebody is trying to read. Counting the mirror side
+        is still worth doing: it is what `/admin` shows, and it costs nothing.
+        """
         r = registry.by_name(name)
-        body = self.client.get(r.endpoint, {"per_page": 1}, priority="reconcile").json() or {}
-        total = (body.get("meta") or {}).get("total_count")
         mirror = self.db.query_one(
             f"SELECT count(*) c FROM {r.table} WHERE deleted_at IS NULL")["c"]
-        self._set(name, total_count_last=total, mirror_count_last=mirror, last_drift_at=now_iso())
+        countable = r.method != "nested_walk"
+        total = None
+        if countable:
+            body = self.client.get(r.endpoint, {"per_page": 1}, priority="reconcile").json() or {}
+            total = (body.get("meta") or {}).get("total_count")
+        cols = {"mirror_count_last": mirror, "last_drift_at": now_iso()}
+        if countable:
+            cols["total_count_last"] = total
+        self._set(name, **cols)
         return {"resource": name, "total_count": total, "mirror_live": mirror,
                 "delta": (mirror - total) if total is not None else None}
 
@@ -504,28 +559,39 @@ class Ingestor:
             for i in body.get("included", []) or []:
                 self.writer.route(i, "reconcile", owner_hint={"type": r.type, "id": pco_id})
             if name == "person":
-                self._include_diff(obj, body.get("included", []))
+                self._include_diff(obj, body.get("included", []),
+                                   includes if includes is not None else list(r.includes))
 
-    def _include_diff(self, person_obj: dict, included: list) -> None:
+    def _include_diff(self, person_obj: dict, included: list, requested: list) -> None:
         """Tombstone local children of a person that are absent from the fetched
-        include set — catches single-child hard deletes (DESIGN §7.2)."""
+        include set — catches single-child hard deletes (DESIGN §7.2).
+
+        Which children to diff comes from what was **asked for**, not from what
+        came back. Those are the same question right up until the answer is
+        "none", and that is exactly the case this is for: PCO returns
+        `"included": []` both for a person whose emails were not requested and for
+        a person who has no emails left. Reading it off the response meant a
+        person's *last* email could be deleted at PCO and stay in the mirror for
+        ever — the one shape of single-child delete nothing else catches either.
+        The request is not ambiguous, so it is the thing to trust.
+        """
         pid = person_obj["id"]
+        r = registry.by_name("person")
+        asked = {rel.target for name in requested
+                 if (rel := r.relationships.get(name)) and rel.kind == "many"}
         present: dict[str, set] = {}
         for inc in included or []:
             cr = registry.by_type(inc.get("type", ""))
             if cr and cr.owner_rel == "person":
-                present.setdefault(cr.table, set()).add(inc["id"])
+                present.setdefault(cr.name, set()).add(inc["id"])
         for child in registry.RESOURCES.values():
-            if child.owner_rel != "person":
-                continue
-            seen_ids = present.get(child.table)
-            if seen_ids is None and not any(i.get("type") == child.type for i in included or []):
-                # this include was not requested/returned -> don't diff (avoid false deletes)
-                continue
+            if child.owner_rel != "person" or child.name not in asked:
+                continue        # not requested -> unknown, which is not empty
+            seen_ids = present.get(child.name, set())
             for row in self.db.query(
                     f"SELECT pco_id FROM {child.table} "
                     f"WHERE person_pco_id=? AND deleted_at IS NULL", (pid,)):
-                if row["pco_id"] not in (seen_ids or set()):
+                if row["pco_id"] not in seen_ids:
                     self.writer.tombstone(child.table, row["pco_id"], None, "absent")
 
     def _max_uat(self, table: str) -> str | None:

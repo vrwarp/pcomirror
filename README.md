@@ -170,9 +170,15 @@ relationship PCO would have sent, and never invents one PCO does not have.
 
 **Ordering follows PCO's, not SQLite's.** Ids sort numerically, because they are
 text columns holding numbers of different lengths and `/emails` carries both
-8- and 9-digit ones. Text sorts case-insensitively, because PCO folds case and
-SQLite's default collation does not. Both are the difference between a page that
-matches PCO and a page that quietly contains different rows.
+8- and 9-digit ones. Text sorts under a **measured** fold — combining marks
+stripped, then lowercased — because PCO folds accents as well as case and
+SQLite does neither by default. `COLLATE NOCASE` fixes only half of that: it
+folds ASCII `A`–`Z` and nothing else, so every accented surname sorts after `z`
+and `Márquez` lands past all the `Mar…` names instead of among them. Walking a
+real 1925-person organization, `NOCASE` disagreed with PCO in 34 positions and
+the fold agreed in all 1925 ([the measurement](docs/mutation-testing.md#how-planning-center-orders-names-2026-07-29-read-only)).
+Each of these is the difference between a page that matches PCO and a page that
+quietly contains different rows.
 
 Nested collections (`/people/{id}/emails`, `/households/{id}/people`, …) take the
 same `where`/`order`/`include`/`per_page` grammar as the top-level ones, served
@@ -387,7 +393,34 @@ constantly is the one whose breaking gets noticed.
 
 The boundary this draws is deliberate: it verifies the mirror **against the
 traffic it serves**. A record no caller has ever asked for is outside it, and the
-reconcile sweep and drift probe own that ground.
+reconcile sweep, drift probe and delete audit own that ground.
+
+**A child cannot outlive the record that owns it.** Every other way a child gets
+tombstoned needs the owner still to be there to ask about: the include-diff
+compares a fetched person's `include=` set against what the mirror holds, and the
+per-parent walk re-reads a live household's memberships. When the owner itself is
+gone — a `404` on hydration, an absence the audit confirmed, a `destroyed`
+webhook — neither can run again, and nothing else looks, because a child's own
+sweep filters on `where[updated_at]` and that cannot return a row which no longer
+exists. So the emails, phone numbers and addresses of a hard-deleted person
+stayed live in the mirror **for ever**, and `GET /emails` kept serving that
+person's address long after `GET /people/{id}` had started answering 404. The
+canonical writer now cascades along the declared ownership edges, and revives
+those children if the owner comes back.
+
+Ownership, not reference: `person.primary_campus` points at a campus, and a
+campus being deleted must never tombstone the people in it. A **merge** is
+excluded too — PCO moves a merged person's children to the survivor rather than
+deleting them.
+
+The **delete audit** is the third and slowest of the delete mechanisms (DESIGN
+§7.2) and the only one that needs no signal from PCO: webhooks are lossy and the
+merger poll only covers the merge path, so a person hard-deleted in the UI is
+invisible to everything else — `where[updated_at]` cannot return an id that no
+longer exists. It runs on `PCOMIRROR_AUDIT_INTERVAL_HOURS` (default 24, `0` off),
+timed from the *persisted* completion stamp rather than process start, because a
+once-a-night check measured against a service that restarts more often than that
+is a check that never happens.
 
 **What fairness by shape does and does not buy.** Every shape gets an equal share
 of the checks, whatever its traffic. Measured against deliberately lopsided
@@ -456,6 +489,15 @@ times what it said.
 Both responses are stored **pseudonymised**, so the log is safe to hand to
 somebody. Download it as JSON or clear it from the page; the store is capped by
 `PCOMIRROR_SHADOW_KEEP` (default 200 reports).
+
+A report keeps the **concrete parameters**, not only the shape. That is what
+makes an ordering difference readable: a real export showed one record eight
+places out of position with every attribute agreeing, and nothing in the file
+said which field the page had been sorted by. Filter *values* in those parameters
+are pseudonymised like the attributes they filter on — `where[last_name]=` is as
+identifying as `attributes.last_name` — while `order`, `include`, `per_page`,
+`offset` and `fields[…]` survive verbatim, because they name schema and they are
+the reason for storing the query at all.
 
 ### Pseudonyms
 
@@ -635,7 +677,7 @@ and exits, rather than surfacing a SQLite traceback:
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
-  `PCOMIRROR_SHADOW_KEEP`, and the container-friendly defaults
+  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`, and the container-friendly defaults
   `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.

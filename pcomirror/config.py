@@ -101,6 +101,13 @@ class Settings:
     subscriptions: list = field(default_factory=list)
     # serve /people/v2 without an API key — LAN-only escape hatch (DESIGN §8.4)
     allow_anonymous: bool = False
+    # How often to run the full-id delete audit, in hours (0 switches it off).
+    # It is the only mechanism that finds a record hard-deleted at PCO without a
+    # webhook and without a merge — `where[updated_at]` cannot see a vanished id,
+    # so nothing else ever looks. DESIGN §7.2 says weekly, nightly for small or
+    # churny orgs; at a couple of thousand people it is ~20 requests, so nightly
+    # is the useful default and the cost is noise.
+    audit_interval_hours: int = 24
     # How many diagnostic events to keep. Every mutation and every upstream
     # failure writes one, so at this scale a thousand is weeks of history and
     # well under a megabyte. 0 switches recording off entirely.
@@ -132,6 +139,8 @@ class Settings:
         s.allow_anonymous = _truthy(e.get("PCOMIRROR_ALLOW_ANONYMOUS"))
         if e.get("PCOMIRROR_RATE_TARGET_RPS"):
             s.rate_target_rps = float(e["PCOMIRROR_RATE_TARGET_RPS"])
+        if e.get("PCOMIRROR_AUDIT_INTERVAL_HOURS"):
+            s.audit_interval_hours = max(0, int(e["PCOMIRROR_AUDIT_INTERVAL_HOURS"]))
         if e.get("PCOMIRROR_DIAGNOSTIC_KEEP"):
             s.diagnostic_keep = max(0, int(e["PCOMIRROR_DIAGNOSTIC_KEEP"]))
         if e.get("PCOMIRROR_SHADOW_PER_MINUTE"):

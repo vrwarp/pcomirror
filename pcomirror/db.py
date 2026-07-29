@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import unicodedata
 
 from . import registry
 
@@ -154,6 +155,10 @@ CREATE TABLE IF NOT EXISTS shadow_report (
   report_id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   shape TEXT NOT NULL, path TEXT NOT NULL,
+  -- The concrete parameters, not just the shape. Without them an ordering
+  -- divergence is unreproducible: a real export showed one record eight places
+  -- out of position and the `order=` it was sorted by was nowhere in the file.
+  query TEXT NOT NULL DEFAULT '{}',
   verdict TEXT NOT NULL,                          -- divergence | staleness
   difference_count INTEGER NOT NULL DEFAULT 0, differences TEXT NOT NULL DEFAULT '[]',
   mirror_status INTEGER, pco_status INTEGER,
@@ -181,6 +186,26 @@ def norm_text(value) -> str | None:
     if value is None:
         return None
     return " ".join(str(value).split()).lower()
+
+
+def sort_key(value) -> str | None:
+    """PCO's name ordering, measured against the live API.
+
+    SQLite's `NOCASE` folds ASCII A–Z and nothing else, so every accented
+    surname sorts after `z` — `Márquez` landed past all the `Mar…` names instead
+    of inside them. Measured on a real 1925-person organization ordered by
+    `last_name`: `NOCASE` put 34 positions differently from PCO; stripping
+    combining marks first reproduced PCO's order for all 1925, exactly.
+
+    `lower()`, not `casefold()`, for the same reason — it is what was measured to
+    agree. Casefolding is more aggressive (`ß`→`ss`) and would be a guess.
+
+    NULL stays NULL, so a missing name keeps sorting where it sorts today.
+    """
+    if value is None:
+        return None
+    flat = unicodedata.normalize("NFKD", str(value))
+    return "".join(c for c in flat if not unicodedata.combining(c)).lower()
 
 
 def norm_digits(value) -> str | None:
@@ -296,6 +321,7 @@ class Database:
             # exact same code that folds the column — a search that disagrees with
             # itself about whitespace is worse than one that does not exist.
             self._conn.create_function("pcm_norm", 1, norm_text, deterministic=True)
+            self._conn.create_function("pcm_sortkey", 1, sort_key, deterministic=True)
             self._conn.create_function("pcm_digits", 1, norm_digits, deterministic=True)
             self._conn.create_function("pcm_name_match", 2, name_matches, deterministic=True)
             self._conn.create_function("pcm_digits_suffix", 2, digits_suffix, deterministic=True)
@@ -314,10 +340,35 @@ class Database:
         """
         with self._lock:
             self._conn.executescript(schema_sql())
-            added = self._reconcile_columns()
+            added = self._reconcile_columns() + self._reconcile_ops_columns()
             self._seed_walk_ledger()
             self._conn.commit()
         return added
+
+    #: Columns added to an ops table after it shipped. `CREATE TABLE IF NOT
+    #: EXISTS` is a no-op once the table is there, so a new column in the DDL
+    #: above reaches a fresh database and no existing one — and the first query
+    #: naming it fails at runtime, in whatever was using it. Registry tables get
+    #: this from `_reconcile_columns`; these have no registry entry to derive it
+    #: from, so they are listed. Definitions must match the DDL exactly.
+    _OPS_COLUMNS = (
+        ("shadow_report", "query", "TEXT NOT NULL DEFAULT '{}'"),
+    )
+
+    def _reconcile_ops_columns(self) -> list[str]:
+        changes = []
+        for table, col, definition in self._OPS_COLUMNS:
+            if not self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (table,)).fetchone():
+                continue
+            have = {row["name"] for row in
+                    self._conn.execute(f"PRAGMA table_xinfo({table})").fetchall()}
+            if col in have:
+                continue
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
+            changes.append(f"+{table}.{col}")
+        return changes
 
     def _seed_walk_ledger(self) -> None:
         """Credit parents whose rows prove they were already walked.
