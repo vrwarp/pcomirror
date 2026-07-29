@@ -16,6 +16,7 @@ from base import build, wsgi_get
 from fakepco import FakePCO, res
 from pcomirror import divergence
 from pcomirror.divergence import rules as cmp_mod
+from pcomirror.ratelimit import RateLimiter, RateLimitBusy
 
 
 def collection(*people, total=None):
@@ -533,6 +534,76 @@ class TestTheCorpusIsRealTraffic(unittest.TestCase):
         checked = self.m.db.query_one(
             "SELECT count(last_checked_at) c FROM shadow_sample")["c"]
         self.assertEqual(checked, 1, "it should have been marked checked regardless")
+
+
+class TestItYieldsToTheForeground(unittest.TestCase):
+    """Nobody is waiting on a divergence check; somebody is waiting on a read.
+
+    The `priority` argument every caller passes was accepted and then ignored by
+    the limiter, so "background work runs at low priority" described nothing.
+    """
+
+    def setUp(self):
+        self.limiter = RateLimiter(target_rps=4.0)
+
+    def test_foreground_spends_the_last_token_and_background_does_not(self):
+        self.limiter.tokens = 1.0
+        self.limiter.acquire("passthrough")                   # allowed
+        self.limiter.tokens = 1.0
+        with self.assertRaises(RateLimitBusy):
+            self.limiter.acquire("divergence", max_wait=0.05)
+
+    def test_background_runs_when_there_is_headroom(self):
+        self.limiter.tokens = self.limiter.capacity
+        self.limiter.acquire("divergence", max_wait=0.05)     # no exception
+
+    def test_every_background_caller_is_covered_not_just_this_one(self):
+        for priority in ("reconcile", "backfill", "webhook_hydrate", "divergence"):
+            self.limiter.tokens = 1.0
+            with self.assertRaises(RateLimitBusy, msg=priority):
+                self.limiter.acquire(priority, max_wait=0.05)
+
+    def test_a_write_is_never_deferrable(self):
+        """A caller is blocked on it, and it is the one request that cannot
+        simply be tried again later."""
+        self.limiter.tokens = 1.0
+        self.limiter.acquire("passthrough")
+
+    def test_an_unbounded_wait_is_still_the_default(self):
+        """The sweeps have always waited; this must not quietly change them."""
+        self.limiter.tokens = self.limiter.capacity
+        self.limiter.acquire("reconcile")                     # returns, no timeout
+
+
+class TestItDoesNotBurstOnStartup(ShadowCase):
+    """A full bucket means switching this on fires a whole minute's allowance at
+    once, into a budget shared with the reads people are waiting on."""
+
+    def setUp(self):
+        super().setUp()
+        for key in ("where[grade]", "where[child]", "where[status]", "order",
+                    "include", "where[gender]", "where[first_name]", "where[last_name]"):
+            wsgi_get(self.m.wsgi, "/people/v2/people", f"{key}=x")
+        divergence.configure(self.m.db, 6)
+
+    def test_the_first_pass_checks_one_thing_not_a_minutes_worth(self):
+        fresh = self.m.divergence
+        fresh._tokens = 0.0
+        fresh._last_refill = fresh._now() - (60.0 / 6)
+        self.assertEqual(fresh.run_once(), 1)
+
+    def test_the_rate_still_averages_out_over_a_minute(self):
+        clock = [0.0]
+        checker = self.m.divergence
+        checker._now = lambda: clock[0]
+        checker._tokens = 0.0
+        checker._last_refill = -(60.0 / 6)
+        checked = checker.run_once()
+        for _ in range(12):
+            clock[0] += 5.0
+            checked += checker.run_once()
+        self.assertLessEqual(checked, 7)
+        self.assertGreaterEqual(checked, 5)
 
 
 if __name__ == "__main__":

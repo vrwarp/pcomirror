@@ -63,6 +63,10 @@ __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
 #: the one whose breaking would be noticed.
 SAMPLES_PER_SHAPE = 25
 
+#: How long one check will wait for room in the shared budget before giving up
+#: and leaving the slot to whoever is actually using it.
+MAX_LIMITER_WAIT = 5.0
+
 #: Where an operator's choice is kept. Absent means "whatever the environment
 #: said", which is what a fresh install and a `docker run -e …` both expect.
 OVERRIDE_KEY = "shadow_per_minute"
@@ -142,11 +146,13 @@ class ShadowChecker:
         # ticks every few seconds. Spending the whole allowance on every pass —
         # which is what a plain per-pass limit did — made the number mean twelve
         # times what it claimed, and the operator who typed it had no way to tell.
-        # Started full, like the shared limiter: an operator who turns this on
-        # wants the first pass to do something, not to wait out a minute before
-        # anything happens.
+        # Started with one token, not a full bucket. Full means an operator who
+        # switches this on gets a whole minute's allowance fired at once, into a
+        # budget shared with the reads people are waiting on. One is enough for
+        # the first pass to do something immediately, and everything after that
+        # arrives at the rate on the label.
         self._tokens = 0.0
-        self._last_refill = self._now() - 60.0
+        self._last_refill = self._now() - (60.0 / max(1, self.per_minute or 1))
 
     # -- enrolling ---------------------------------------------------------
     @property
@@ -258,7 +264,11 @@ class ShadowChecker:
         mirror_status, mirror_body = self._serve(path, params)
         # The mirror serves `/people/v2/people/1`; the client's base URL already
         # ends in `/people/v2`, so it wants the tail on its own.
-        upstream = self.client.get(_upstream_path(path), params or None, priority="reconcile")
+        # `divergence` is deferrable and bounded: nobody is waiting on this, and
+        # holding the scheduler thread while a busy foreground keeps the bucket
+        # would stall the webhook drain and every sweep behind it.
+        upstream = self.client.get(_upstream_path(path), params or None,
+                                   priority="divergence", max_wait=MAX_LIMITER_WAIT)
         pco_body = upstream.json() if upstream.body else {}
 
         differences = compare(mirror_body, pco_body, mirror_status, upstream.status)

@@ -389,6 +389,37 @@ The boundary this draws is deliberate: it verifies the mirror **against the
 traffic it serves**. A record no caller has ever asked for is outside it, and the
 reconcile sweep and drift probe own that ground.
 
+**What fairness by shape does and does not buy.** Every shape gets an equal share
+of the checks, whatever its traffic. Measured against deliberately lopsided
+traffic:
+
+| shape | share of traffic | share of checks |
+|---|---|---|
+| `/people` | 97.7% | 25% |
+| `/people/{id}` | 2.0% | 25% |
+| `/people?include` | 0.2% | 25% |
+| `/people?where[child]` | 0.2% | 25% |
+
+That is the intent, not a side effect. A hot query breaking is noticed in minutes
+by whoever is using it; a filter run once a week breaking is silent for as long as
+nobody runs it. Equal shares deliberately bias the budget towards the quiet
+corners, because those are the ones nothing else will report.
+
+The cost is coverage *within* a busy shape: with `S` shapes at `R` checks a
+minute, a shape holding `N` distinct requests takes `N·S/R` minutes to work
+through them. Twenty shapes at 6/min with 25 requests in one of them is about an
+hour and a half for that shape's full cycle.
+
+**Yielding to the foreground.** Background work — `divergence`, `reconcile`,
+`backfill`, `webhook_hydrate` — only spends a token when the bucket has headroom
+above a reserve, so it uses what the foreground demonstrably is not. When PCO is
+quiet the bucket sits full and checks run freely; when callers are busy the tokens
+stay low and checks stall, which is the point. A divergence check gives up after
+five seconds rather than hold the scheduler thread, and the rate is a token bucket
+started with **one** token rather than a full bucket: switching this on should do
+something immediately, not fire a whole minute's allowance into a budget people
+are waiting on.
+
 **Two verdicts, and the difference is the point:**
 
 | | means | action |
