@@ -1031,6 +1031,34 @@ are **read-through** via `mirror_upsert(source='passthrough')` (never regresses 
 newer webhook write); non-mirrorable results (stats/reports/search) go to a
 short-TTL `passthrough_cache`.
 
+#### 8.3.1 The other Planning Center products
+
+A path outside `/people/v2` — `/check-ins/v2/…`, `/groups/v2/…`, `/services/v2/…` —
+is served the same way, by pass-through. The drop-in promise is a base-URL swap,
+and an app that reads People rarely reads only People; refusing everything else
+would have made the swap a code change for anyone reading a second product.
+
+Three constraints, all of which the People path does not need and this one does:
+
+* **`GET` only.** A write to an unmirrored product is a `404` — it would be the
+  mirror spending its credential on a mutation it keeps no record of.
+* **Addressed from the API root.** `pco_base_url` ends in `/people/v2`, so a
+  foreign path relayed against it would ask PCO for `/people/v2/check-ins/v2/…`.
+* **No version pin.** `api_version` is a dated revision *of People*. A version
+  string is only valid for its own product, so the header is omitted and PCO
+  answers at the organization's default.
+
+And the one that is a correctness constraint rather than a plumbing one:
+**nothing from a foreign product is written to the mirror.** The registry routes
+a payload to a table by its JSON:API `type`, and `type` is not unique across
+products — a Check-Ins `Person` is a different record, in a different id space,
+from a People `Person`. Read-through on such a payload would overwrite a mirrored
+person with a stranger sharing an id, and because the monotonic guard compares
+`updated_at`, a newer foreign record would be *accepted*. So the read-through
+above is conditioned on the path being a People one; foreign responses are
+relayed and forgotten. Their `links` are still rewritten onto the mirror, since a
+caller holding a pcomirror key cannot follow an absolute PCO URL.
+
 ### 8.4 Writes — synchronous write-through (PCO-first, fail-if-it-fails)
 
 **The mirror is never the authority for a write.** A local `POST`/`PATCH`/`DELETE`

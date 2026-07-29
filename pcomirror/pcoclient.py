@@ -18,6 +18,11 @@ from typing import Any, Protocol
 
 from . import diagnostics
 
+#: Default for `PcoClient.request(api_version=…)`: send the configured People pin.
+#: Distinct from `None`, which means *send no version header at all* — a
+#: different instruction, and one a plain default could not express.
+KEEP_API_VERSION = "\0keep"
+
 
 @dataclass
 class Response:
@@ -83,7 +88,8 @@ class PcoClient:
     def request(self, method: str, path: str, params: dict | None = None,
                 json_body: Any = None, priority: str = "reconcile",
                 max_attempts: int = 6, record_outcome: bool = True,
-                max_wait: float | None = None, base: str | None = None) -> Response:
+                max_wait: float | None = None, base: str | None = None,
+                api_version: str | None = KEEP_API_VERSION) -> Response:
         """`record_outcome=False` when the caller logs the final result itself.
 
         `base` overrides the People base URL for the one caller that needs a
@@ -102,9 +108,14 @@ class PcoClient:
         headers = {
             "Authorization": self.s.auth_header(),
             "User-Agent": self.s.user_agent,
-            "X-PCO-API-Version": self.s.api_version,
             "Accept": "application/json",
         }
+        # A PCO version string names a dated revision *of one product*, so the
+        # People pin is meaningless — and rejected — anywhere else. `None` omits
+        # the header and lets PCO answer at the organization's own version.
+        version = self.s.api_version if api_version is KEEP_API_VERSION else api_version
+        if version:
+            headers["X-PCO-API-Version"] = version
         body = None
         if json_body is not None:
             body = json.dumps(json_body).encode()

@@ -31,15 +31,33 @@ def _hosts(settings) -> set[str]:
     return hosts
 
 
+def api_root(settings) -> str:
+    """The PCO API root — `pco_base_url` with the People product path removed.
+
+    Derived rather than configured for the same reason the webhooks base is: an
+    operator who points `PCO_BASE_URL` at a stand-in should not have to remember
+    a second setting to keep the other products on the same host.
+    """
+    base = (getattr(settings, "pco_base_url", "") or "").rstrip("/")
+    if base.endswith(MIRROR_PREFIX):
+        base = base[: -len(MIRROR_PREFIX)]
+    return base or f"https://{CANONICAL_HOST}"
+
+
 def to_mirror_path(url, settings) -> object:
-    """Absolute PCO people/v2 URL -> mirror-relative path. Anything else is
-    returned untouched (other hosts, the web UI, avatars, already-relative)."""
+    """Absolute PCO API URL -> mirror-relative path. Anything else is returned
+    untouched (other hosts, the web UI, avatars, already-relative).
+
+    Every product, not only People. A pass-through to `/check-ins/v2/…` comes
+    back with absolute `links.next` URLs, and the caller holds a pcomirror key
+    rather than a PCO PAT — so a link left absolute is one they cannot follow.
+    The host check is what keeps the web UI (`people.planningcenteronline.com`)
+    and the avatar CDN out of this: they are different hosts, not different paths.
+    """
     if not isinstance(url, str) or "//" not in url:
         return url
     parsed = urllib.parse.urlparse(url)
     if parsed.netloc not in _hosts(settings):
-        return url
-    if not parsed.path.startswith(MIRROR_PREFIX):
         return url
     return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 

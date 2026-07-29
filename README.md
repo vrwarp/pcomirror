@@ -127,6 +127,25 @@ and fail if PCO fails (`DESIGN.md` §8.4) — verified against a live organizati
 including that a rejected write leaves the mirror completely untouched
 ([`docs/mutation-testing.md`](docs/mutation-testing.md)).
 
+**The other Planning Center products come along.** An app that reads People
+rarely reads *only* People — a directory wants `/check-ins/v2/…` for attendance
+and `/groups/v2/…` for membership — and a base-URL swap points all of that here,
+not just the People half. Those paths used to be a `404`; they now resolve
+against PCO through the shared rate limiter, so the swap stays a configuration
+change rather than a code change. Three things to know about them:
+
+* **Read-only.** `GET` only; a write to an unmirrored product is a `404`. The
+  mirror would be lending out its credential with no record of what was done
+  with it.
+* **Nothing is stored.** A payload from another product is relayed, never
+  written. Resource `type` is not unique across products — a Check-Ins `Person`
+  is a different record, in a different id space, from a People `Person` — so
+  warming the mirror from one would overwrite a mirrored person with a stranger
+  who happens to share an id.
+* **They cost rate budget.** Every one is a live PCO request. They need the
+  `passthrough` scope on the API key, exactly like any other pass-through, and
+  they are not cached — only People is mirrored.
+
 ### The query surface
 
 The read grammar is PCO's, served from SQLite. Two parts of it are easy to get

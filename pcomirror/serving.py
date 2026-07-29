@@ -12,6 +12,7 @@ import sys
 import urllib.parse
 
 from . import apikeys, diagnostics, links, registry
+from .pcoclient import KEEP_API_VERSION as _KEEP
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
 from .db import norm_digits, norm_text
@@ -236,6 +237,17 @@ class Application:
 
         prefix = "/people/v2/"
         if not path.startswith(prefix):
+            # Another Planning Center product — `/check-ins/v2/…`, `/groups/v2/…`,
+            # `/services/v2/…`. The mirror holds People and only People, but a
+            # caller doing the base-URL swap the mirror promises points *all* of
+            # its PCO traffic here, not just the People half. 404ing the rest
+            # made the swap a code change for anyone who reads a second product,
+            # so those paths resolve against PCO instead.
+            #
+            # Read-only: a write to an unmirrored product would be a credential
+            # the mirror lends out with no record of what was done with it.
+            if method == "GET":
+                return self._passthrough(method, path, qs, body, scopes)
             raise _HttpError(404, "not found")
         segs = [s for s in path[len(prefix):].split("/") if s]
         if not segs:
@@ -885,13 +897,33 @@ class Application:
         # internal caller that has already been authorised.
         if scopes is not None:
             self._require(scopes, apikeys.SCOPE_PASSTHROUGH)
-        pco_path = path[len("/people/v2"):] if path.startswith("/people/v2") else path
+        people = path.startswith("/people/v2")
+        if people:
+            pco_path, base, version = path[len("/people/v2"):], None, _KEEP
+        else:
+            # `pco_base_url` already ends in `/people/v2`, so relaying a
+            # `/check-ins/v2/…` path against it would ask PCO for
+            # `/people/v2/check-ins/v2/…`. A foreign product is addressed from the
+            # API root instead.
+            #
+            # And without its own version pin: `api_version` is the People one,
+            # and a version string is only valid for the product it belongs to.
+            # Sending People's to Check-Ins is an error rather than a default, so
+            # the header comes off and PCO answers with the organization's own.
+            pco_path, base, version = path, links.api_root(self.s), None
         params = {k: v[0] for k, v in qs.items() if k not in ("passthrough", "fallback")}
         resp = self.client.request(method, pco_path, params=params or None,
-                                   json_body=(json.loads(body) if body else None), priority="passthrough")
+                                   json_body=(json.loads(body) if body else None),
+                                   priority="passthrough", base=base, api_version=version)
         out = resp.json() if resp.body else {}
-        # read-through: warm the mirror for mirrorable results
-        if resp.ok and isinstance(out, dict):
+        # read-through: warm the mirror for mirrorable results.
+        #
+        # People only. The registry routes a payload by its JSON:API `type`, and
+        # `type` is not unique across products: a Check-Ins `Person` is a
+        # different record, in a different id space, from a People `Person`.
+        # Warming from one would overwrite a mirrored person with a stranger who
+        # happens to share an id — so a foreign product is relayed, never stored.
+        if people and resp.ok and isinstance(out, dict):
             self.writer.route_page(
                 out, "passthrough",
                 synthesized=self.writer.synthesized_rels(qs.get("include", [None])[0]))

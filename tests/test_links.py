@@ -28,8 +28,31 @@ class TestToMirrorPath(unittest.TestCase):
 
     def test_leaves_other_hosts_and_relative_paths_alone(self):
         for url in ("https://example.org/people/v2/people/1", "/people/v2/people/1",
-                    "https://api.planningcenteronline.com/services/v2/plans", None, 7):
+                    None, 7):
             self.assertEqual(links.to_mirror_path(url, S), url)
+
+    def test_rewrites_the_other_products_too(self):
+        """The mirror serves `/check-ins/v2/…` and friends by pass-through, so a
+        page link into one is a link the caller can follow — but only relative.
+        They hold a pcomirror key, not the PAT an absolute PCO URL would need."""
+        self.assertEqual(
+            links.to_mirror_path("https://api.planningcenteronline.com/services/v2/plans", S),
+            "/services/v2/plans")
+        self.assertEqual(
+            links.to_mirror_path(
+                "https://api.planningcenteronline.com/check-ins/v2/check_ins?offset=100", S),
+            "/check-ins/v2/check_ins?offset=100")
+
+
+class TestApiRoot(unittest.TestCase):
+    """Where a foreign product is addressed from — `pco_base_url` minus People."""
+
+    def test_derived_from_the_people_base(self):
+        self.assertEqual(links.api_root(S), "https://api.planningcenteronline.com")
+
+    def test_follows_a_configured_base_url(self):
+        s = Settings(pco_base_url="https://pco-proxy.internal/people/v2")
+        self.assertEqual(links.api_root(s), "https://pco-proxy.internal")
 
     def test_honours_a_configured_base_url(self):
         s = Settings(pco_base_url="https://pco-proxy.internal/people/v2")
