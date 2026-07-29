@@ -93,11 +93,23 @@ class Scheduler:
         # written, tested, documented and exposed on the CLI, and then never
         # scheduled, which is why a live mirror was serving `total_count` 448
         # against PCO's 447 with nothing on course to notice.
-        if self._audit_due("person", now):
-            self._guard("audit:person", self._audit, "person")
+        #
+        # Every resource that declares an audit gets one, rather than `person`
+        # alone. A household is deleted by exactly the same click and was just as
+        # invisible: three of them, created and abandoned while somebody added a
+        # family, were still live in a mirror a day later and still listed on the
+        # parent's record. Enumerating a few hundred households costs four
+        # requests a day.
+        for r in registry.full_and_lite():
+            if r.audit_interval_s and self._audit_due(r.name, now):
+                self._guard(f"audit:{r.name}", self._audit, r.name)
 
     def _audit_due(self, name: str, now: str) -> bool:
         """Due off the *persisted* completion time, not this process's clock.
+
+        The cadence is one setting for every audited resource —
+        `PCOMIRROR_AUDIT_INTERVAL_HOURS`, zero to switch them all off. The
+        registry decides *which* resources are audited, not how often.
 
         Every other cadence here is monotonic, which is right for something that
         runs every couple of minutes. It is wrong at a day: a service that
@@ -125,6 +137,13 @@ class Scheduler:
         n = self.m.ingestor.repair_incomplete(name)
         if n:
             print(f"[scheduler] queued {n} incomplete {name} record(s) for re-fetch", flush=True)
+        # Two different kinds of wrong: a record missing a relationship, and a
+        # relationship pointing at a record the mirror cannot serve. Neither
+        # moves `updated_at`, so this is the only pass that sees either.
+        n = self.m.ingestor.repair_dangling(name)
+        if n:
+            print(f"[scheduler] queued {n} re-fetch(es) for {name} edges that do not resolve",
+                  flush=True)
 
     def _guard(self, label, fn, *args) -> bool:
         """Run one unit; a failure (e.g. transient PCO/network) is logged, not fatal."""

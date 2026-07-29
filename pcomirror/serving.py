@@ -1078,6 +1078,22 @@ class Application:
         `include=households.people` makes PCO add a `people` relationship to the
         Person itself, listing the ids it sideloaded. It is derived from the rows
         already resolved here, so echoing it costs nothing.
+
+        The echo is a **concatenation, per first-level row, in order** — not a
+        set. Both halves of that were measured against the live API:
+
+          * PCO emits the key whenever the first level resolved to anything at
+            all, empty second level or not. `include=person.emails` over a
+            household's memberships gives every membership an `emails`
+            relationship, `"data": []` for the members who have no address —
+            and the mirror, which only emitted the key when it had ids to put in
+            it, silently dropped it for exactly the people a new family is made
+            of. A first level that resolves to *nothing* is different: a person
+            with no field data gets no `field_definition` key at all, so an
+            empty first level still emits nothing.
+          * A duplicate is real. A person in two households that share a member
+            gets that member's id twice, once per household, because PCO
+            concatenates each household's array rather than merging them.
         """
         inc_param = qs.get("include", [None])[0]
         if not inc_param:
@@ -1114,13 +1130,21 @@ class Application:
             for y in self._related_rows(rel2, level1):
                 add(tr2, y)
             # Per row, so the echo says what *this* record is related to rather
-            # than what the whole page is.
+            # than what the whole page is; and per first-level row within that,
+            # so the answer keeps PCO's order and PCO's duplicates. The second
+            # level is memoised because a page of people shares households.
+            memo: dict[str, list] = {}
             for row in rows:
                 own1 = self._related_rows(rel, [row])
-                ids = [{"type": tr2.type, "id": y["pco_id"]}
-                       for y in self._related_rows(rel2, own1)]
-                if ids:
-                    echo.setdefault(row["pco_id"], {})[second] = ids
+                if not own1:
+                    continue     # no first level -> PCO synthesizes no key
+                ids = []
+                for one in own1:
+                    hop = memo.get(one["pco_id"])
+                    if hop is None:
+                        hop = memo[one["pco_id"]] = self._related_rows(rel2, [one])
+                    ids.extend({"type": tr2.type, "id": y["pco_id"]} for y in hop)
+                echo.setdefault(row["pco_id"], {})[second] = ids
         return out, echo
 
     def _related_rows(self, rel, rows):
@@ -1132,12 +1156,23 @@ class Application:
         if rel.kind == "json":
             # PCO puts a person's households inline on the Person payload and has
             # no bulk endpoint for the join rows, so the array on `raw` is the edge.
-            targets = sorted({t for row in rows for t in _json_ids(row["raw"], rel.json_path)})
+            #
+            # Kept in the array's own order rather than sorted: that order is
+            # PCO's, and the nested-include echo is built by walking these rows
+            # and concatenating, so getting it wrong here shows up as a
+            # relationship whose ids are in a different sequence than PCO sent.
+            targets, seen = [], set()
+            for row in rows:
+                for t in _json_ids(row["raw"], rel.json_path):
+                    if t not in seen:
+                        seen.add(t)
+                        targets.append(t)
             if not targets:
                 return []
             ph2 = ",".join("?" * len(targets))
-            return self.db.query(
-                f"SELECT * FROM {tr.table} WHERE pco_id IN ({ph2}) AND deleted_at IS NULL", targets)
+            found = {x["pco_id"]: x for x in self.db.query(
+                f"SELECT * FROM {tr.table} WHERE pco_id IN ({ph2}) AND deleted_at IS NULL", targets)}
+            return [found[t] for t in targets if t in found]
         if rel.kind == "many" and rel.via is None:
             return self.db.query(
                 f"SELECT * FROM {tr.table} WHERE {rel.child_fk} IN ({ph}) AND deleted_at IS NULL", ids)
