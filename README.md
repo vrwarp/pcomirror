@@ -111,6 +111,11 @@ receiver URL here carries as many event types as you point at it, and the
 receiver works out which subscription a delivery came from by **the secret that
 signed it**. Mixed secrets on one URL work for the same reason.
 
+`--secret` is optional. Leave it off and that subscription's signature is not
+checked at all — for a sender that cannot sign, at the cost of the URL token
+becoming the receiver's only secret. See
+[Receivers with no secret](#receivers-with-no-secret).
+
 Or skip the command line: **the operator page at `/` manages subscriptions**
 (`/admin/webhooks`) with the same event picker Planning Center shows, and takes
 over from `PCOMIRROR_SUBSCRIPTIONS` once you save anything there — see
@@ -673,6 +678,32 @@ JSON form instead:
 Several entries may share one `url_token`, which is the usual shape: one receiver
 URL registered at PCO, carrying every event type you ticked there.
 
+#### Receivers with no secret
+
+The `authenticity_secret` field may be left empty
+(`sub_123:people.v2.events.person.updated:person-events-01:`, or the checkbox on
+`/admin/webhooks`). That subscription's signature is then **not checked at all**.
+
+It is a real thing to want — a sender that cannot sign, a stand-in while you
+rebuild, a LAN-only box behind something that already authenticates — and the
+cost is exact, so it is worth stating plainly rather than burying:
+
+- The URL token becomes the only secret the receiver has. Anyone who learns the
+  URL can write anything into the mirror, including tombstones.
+- A receiver is only as checked as its *least*-checked subscription. One
+  unverified subscription on a shared URL opens that URL, because a delivery may
+  name any event; signed subscriptions on it still verify and are still
+  attributed correctly, but nothing is turned away any more.
+- Only the signature check goes. An unknown token is still a `404`, the token
+  format is still enforced, and a paused subscription still stops receiving.
+
+There is no separate switch for it, on purpose: the secret is the only thing a
+check could be made of, so "no secret" and "no check" are one fact rather than
+two settings that can disagree. The `serve` log names every unverified receiver
+URL at every start, `/admin/webhooks` marks them, `list-subscriptions` has a
+`CHECKED` column, and the dashboard raises a banner — the same treatment
+`PCOMIRROR_ALLOW_ANONYMOUS` gets, for the same reason.
+
 #### Subscriptions from the page
 
 `PCOMIRROR_SUBSCRIPTIONS` is the *default*, not the last word. `/admin/webhooks`
@@ -686,7 +717,9 @@ it. `serve` says so in its log rather than skipping silently, and a
 The page carries the same event picker Planning Center's console does: tick as
 many events as you like, paste the secret, and it registers one subscription per
 event, all pointing at one receiver URL that it then shows you to paste back into
-PCO. It also states, per event, what the mirror will do with it — write it to a
+PCO. Leaving the secret blank needs the *no secret* box ticked as well — an empty
+field on its own is what a half-finished paste looks like, and the receiver it
+would silently produce accepts anything. It also states, per event, what the mirror will do with it — write it to a
 table, run the merge path, or record it and apply it to nothing (which is what an
 event for a resource with no table here means; those are kept in the inbox marked
 `ignored` rather than dead-lettered, so the dead-letter queue keeps meaning
@@ -784,7 +817,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 485 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 502 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write

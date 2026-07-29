@@ -121,6 +121,127 @@ class TestOneReceiverManyEvents(unittest.TestCase):
         self.assertEqual(len(found[0]["subscriptions"]), 2)
 
 
+class TestASubscriptionWithNoSecret(unittest.TestCase):
+    """A blank `authenticity_secret` turns the check off for that subscription.
+
+    Wanted for a sender that cannot sign, or a stand-in during a rebuild. The
+    cost is exact and worth pinning: the URL token becomes the only secret the
+    receiver has, so these tests are as much about what stays true — signed
+    subscriptions on the same URL still work, an unknown token is still a 404 —
+    as about the check being skipped.
+    """
+
+    def setUp(self):
+        self.m, _ = build()
+        self.token = "open-token-01"
+        webhooks.upsert_subscription(
+            self.m.db, "sub-open", "people.v2.events.person.updated", "", self.token)
+
+    def _post(self, signature, event="people.v2.events.person.updated",
+              payload=None, event_id="ev1", delivery_id="d1"):
+        raw = json.dumps(_delivery(
+            event, payload or {"id": "1"}, delivery_id, event_id)).encode()
+        return self.m.webhooks.receive(self.token, raw, signature)
+
+    def test_no_signature_at_all_is_accepted(self):
+        self.assertEqual(self._post(None)[0], 204)
+
+    def test_a_wrong_signature_is_accepted_too(self):
+        """There is nothing to check it against, so it is not a *failed* check —
+        it is no check. Pretending otherwise would be a security theatre that
+        rejects exactly the senders this was turned on for."""
+        self.assertEqual(self._post("deadbeef")[0], 204)
+
+    def test_the_delivery_is_still_captured_whole(self):
+        """`webhook_delivery.signature` is NOT NULL, and a sender with nothing to
+        sign with sends no header. Storing the absence as an empty string is what
+        keeps the audit row — the insert failing would have answered 503 and had
+        the sender redeliver, forever."""
+        self._post(None)
+        row = self.m.db.query_one("SELECT signature, raw_body FROM webhook_delivery")
+        self.assertEqual(row["signature"], "")
+        self.assertIn(b'"people.v2.events.person.updated"', bytes(row["raw_body"]))
+
+    def test_it_actually_reaches_the_mirror(self):
+        self._post(None, payload={
+            "id": "1", "type": "Person",
+            "attributes": {"first_name": "Ada", "last_name": "L", "status": "active",
+                           "created_at": "2026-01-01T00:00:00Z",
+                           "updated_at": "2026-01-01T00:00:00Z"}})
+        self.m.webhooks.drain()
+        self.assertEqual(self.m.db.query_one(
+            "SELECT first_name FROM person WHERE pco_id='1'")["first_name"], "Ada")
+
+    def test_an_unknown_token_is_still_a_404(self):
+        """Skipping the signature does not skip the token. It is the only secret
+        an unverified receiver has left, so it had better still be one."""
+        raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
+        self.assertEqual(self.m.webhooks.receive("no-such-token-1", raw, None)[0], 404)
+
+    def test_pausing_it_closes_the_receiver(self):
+        webhooks.set_active(self.m.db, "sub-open", False)
+        self.assertEqual(self._post(None)[0], 404)      # no active subscription on the token
+
+    def test_it_is_reported_as_unchecked_without_selecting_the_secret(self):
+        rows = webhooks.listing(self.m.db)
+        self.assertTrue(webhooks.is_unverified(rows[0]))
+        # The flag is computed in SQL precisely so a caller that renders a
+        # subscription is never handed the value it must not print.
+        self.assertNotIn("authenticity_secret", rows[0].keys())
+
+    def test_a_secret_added_later_starts_being_checked(self):
+        webhooks.upsert_subscription(
+            self.m.db, "sub-open", "people.v2.events.person.updated", "whsec_now", self.token)
+        self.assertEqual(self._post(None)[0], 401)
+        raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
+        self.assertEqual(
+            self.m.webhooks.receive(self.token, raw, _sign("whsec_now", raw))[0], 204)
+
+
+class TestMixingCheckedAndUnchecked(unittest.TestCase):
+    """One URL, one subscription signed and one not. The signed one has to keep
+    working and keep being attributed correctly — an unchecked sibling must not
+    swallow its deliveries."""
+
+    def setUp(self):
+        self.m, _ = build()
+        self.token = "mixed-token-01"
+        webhooks.upsert_subscription(
+            self.m.db, "sub-signed", "people.v2.events.person.updated", "whsec_p", self.token)
+        webhooks.upsert_subscription(
+            self.m.db, "sub-open", "people.v2.events.email.created", "", self.token)
+
+    def _post(self, event, signature, event_id="ev1", delivery_id="d1"):
+        raw = json.dumps(_delivery(event, {"id": "1"}, delivery_id, event_id)).encode()
+        return raw, self.m.webhooks.receive(self.token, raw, signature)
+
+    def test_the_signed_subscription_still_verifies_and_is_attributed_to_itself(self):
+        raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
+        self.assertEqual(
+            self.m.webhooks.receive(self.token, raw, _sign("whsec_p", raw))[0], 204)
+        self.assertEqual(self.m.db.query_one(
+            "SELECT subscription_pco_id FROM webhook_delivery")["subscription_pco_id"],
+            "sub-signed")
+
+    def test_an_unsigned_delivery_is_attributed_by_its_event_name(self):
+        self._post("people.v2.events.email.created", None)
+        self.assertEqual(self.m.db.query_one(
+            "SELECT subscription_pco_id FROM webhook_delivery")["subscription_pco_id"],
+            "sub-open")
+
+    def test_one_unchecked_subscription_opens_the_whole_url(self):
+        """Stated as a test because it is the consequence people get wrong: the
+        receiver is only as checked as its least-checked subscription, and a body
+        may claim any event name. The page and the `serve` log both say so."""
+        _, (code, _) = self._post("people.v2.events.person.updated", "not-a-signature")
+        self.assertEqual(code, 204)
+
+    def test_the_receiver_reports_itself_unchecked(self):
+        rec = webhooks.receivers(self.m.db)[0]
+        self.assertTrue(any(webhooks.is_unverified(s) for s in rec["subscriptions"]))
+        self.assertTrue(any(not webhooks.is_unverified(s) for s in rec["subscriptions"]))
+
+
 class TestUnmappedEventsAreRecorded(unittest.TestCase):
     def setUp(self):
         self.m, _ = build()
@@ -279,6 +400,24 @@ class TestEnvVersusAdmin(unittest.TestCase):
         webhooks.hand_back(self.m.db)
         applied = webhooks.apply_env(self.m.db, self.specs)
         self.assertEqual([a["outcome"] for a in applied], ["registered"])
+
+    def test_an_empty_secret_is_a_valid_declaration(self):
+        """`id:event:token:` — the check is off for that subscription. Spelled as
+        an absent secret rather than a flag, because the secret is the only thing
+        a check could be made of."""
+        specs = parse_subscriptions("sub1:people.v2.events.person.updated:open-token-01:")
+        self.assertEqual(specs[0].secret, "")
+        webhooks.apply_env(self.m.db, specs)
+        self.assertTrue(webhooks.is_unverified(webhooks.listing(self.m.db)[0]))
+        specs = parse_subscriptions(
+            '[{"id":"s2","event":"people.v2.events.person.created","token":"open-token-01"}]')
+        self.assertEqual(specs[0].secret, "")
+
+    def test_an_entry_still_needs_an_id_and_an_event(self):
+        for bad in ("sub1::tok-aaaa-01:sec", ":people.v2.events.person.updated:tok:sec",
+                    '[{"event":"people.v2.events.person.updated"}]', '[{"id":"s"}]'):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_subscriptions(bad)
 
     def test_no_specs_is_not_a_takeover_signal(self):
         self.assertEqual(webhooks.apply_env(self.m.db, []), [])
@@ -447,6 +586,13 @@ def _form(**fields) -> bytes:
 
 
 class TestWebhooksPage(unittest.TestCase):
+    #: The two banners that mean "this receiver is not checking anything". Both
+    #: pages also *explain* unverified receivers in their standing copy, so these
+    #: are anchored on wording only the alarm itself uses — otherwise the quiet
+    #: case would pass by matching the explanation.
+    RECEIVER_ALARM = b"deliveries to this receiver are"
+    DASHBOARD_ALARM = b"webhook receiver"
+
     def setUp(self):
         self.m, _ = build(allow_anonymous=False)
         adminauth._clear_failures()
@@ -566,9 +712,44 @@ class TestWebhooksPage(unittest.TestCase):
         _, _, page = self.post("/admin/webhooks/add",
                                _form(csrf=self.csrf(), secret="whsec_a"))
         self.assertIn(b"at least one event", page)
+        # A blank secret is allowed, but an *empty field* is what a half-finished
+        # paste looks like — and it would silently produce a receiver that accepts
+        # anything. So the box has to be ticked too.
         _, _, page = self.post("/admin/webhooks/add", urllib.parse.urlencode([
             ("csrf", self.csrf()), ("event", "people.v2.events.person.updated")]).encode())
         self.assertIn(b"authenticity secret", page)
+        self.assertEqual(webhooks.receivers(self.m.db), [])
+
+    def test_ticking_no_secret_creates_an_unchecked_receiver(self):
+        self.post("/admin/webhooks/add", urllib.parse.urlencode([
+            ("csrf", self.csrf()), ("url_token", "open-token-01"), ("unverified", "1"),
+            ("event", "people.v2.events.person.updated")]).encode())
+        rows = webhooks.listing(self.m.db)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(webhooks.is_unverified(rows[0]))
+        raw = json.dumps(_delivery("people.v2.events.person.updated", {"id": "1"})).encode()
+        self.assertEqual(self.m.webhooks.receive("open-token-01", raw, None)[0], 204)
+
+    def test_an_unchecked_receiver_is_flagged_on_both_pages(self):
+        self.post("/admin/webhooks/add", urllib.parse.urlencode([
+            ("csrf", self.csrf()), ("url_token", "open-token-01"), ("unverified", "1"),
+            ("event", "people.v2.events.person.updated")]).encode())
+        page = self.get("/admin/webhooks")[2]
+        self.assertIn(self.RECEIVER_ALARM, page)
+        self.assertIn(b"open-token-01", page)
+        dashboard = self.get("/")[2]
+        self.assertIn(self.DASHBOARD_ALARM, dashboard)
+        self.assertIn(b"open-token-01", dashboard)
+
+    def test_a_checked_receiver_raises_no_alarm(self):
+        """The alarms have to be quiet in the ordinary case or they stop being
+        alarms — asserted on the exact banners, not on wording that also appears
+        in the page's explanatory copy."""
+        self.post("/admin/webhooks/add", urllib.parse.urlencode([
+            ("csrf", self.csrf()), ("url_token", "person-events-01"), ("secret", "whsec_a"),
+            ("event", "people.v2.events.person.updated")]).encode())
+        self.assertNotIn(self.RECEIVER_ALARM, self.get("/admin/webhooks")[2])
+        self.assertNotIn(self.DASHBOARD_ALARM, self.get("/")[2])
 
     def test_an_event_typed_by_hand_is_accepted(self):
         self.post("/admin/webhooks/add", _form(
