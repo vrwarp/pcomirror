@@ -460,21 +460,43 @@ class TestEachShapeWalksItsOwnData(unittest.TestCase):
         wsgi_get(self.m.wsgi, "/people/v2/people/1")
         self.assertNotIn("/people/v2/people/2", self._walk(8))
 
+    def _offsets(self, passes=4):
+        out = []
+        for _ in range(passes):
+            probe = self.m.db.query_one("SELECT * FROM shadow_probe")
+            _, params, cursor = self.m.divergence.target_for(probe)
+            out.append((params.get("offset", 0), params.get("per_page")))
+            self.m.db.execute("UPDATE shadow_probe SET cursor=? WHERE shape=?",
+                              (cursor, probe["shape"]))
+        return out
+
     def test_a_collection_shape_walks_its_pages(self):
+        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=3")
+        self.assertEqual([o for o, _ in self._offsets()], [0, 3, 6, 0],
+                         "should walk the pages and wrap")
+
+    def test_it_walks_at_the_page_size_the_caller_used(self):
+        """Page size decides where a boundary falls, and a boundary is where the
+        ordering bugs live. Rewriting it would stop testing the real query."""
+        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=3&order=last_name")
+        steps = self._offsets(3)
+        self.assertEqual([p for _, p in steps], ["3", "3", "3"])
+        self.assertEqual([o for o, _ in steps], [0, 3, 6])
+
+    def test_a_caller_who_named_no_page_size_is_replayed_without_one(self):
         wsgi_get(self.m.wsgi, "/people/v2/people")
-        original = divergence.PAGE_SIZE
-        divergence.PAGE_SIZE = 3
-        try:
-            offsets = []
-            for _ in range(4):
-                probe = self.m.db.query_one("SELECT * FROM shadow_probe")
-                _, params, cursor = self.m.divergence.target_for(probe)
-                offsets.append(params.get("offset", 0))
-                self.m.db.execute("UPDATE shadow_probe SET cursor=? WHERE shape=?",
-                                  (cursor, probe["shape"]))
-        finally:
-            divergence.PAGE_SIZE = original
-        self.assertEqual(offsets, [0, 3, 6, 0], "should walk the pages and wrap")
+        _, params, _ = self.m.divergence.target_for(
+            self.m.db.query_one("SELECT * FROM shadow_probe"))
+        self.assertNotIn("per_page", params)
+
+    def test_everything_else_the_caller_asked_for_survives(self):
+        wsgi_get(self.m.wsgi, "/people/v2/people",
+                 "where[child]=true&order=-last_name&include=emails")
+        _, params, _ = self.m.divergence.target_for(
+            self.m.db.query_one("SELECT * FROM shadow_probe"))
+        self.assertEqual(params["where[child]"], "true")
+        self.assertEqual(params["order"], "-last_name")
+        self.assertEqual(params["include"], "emails")
 
     def test_a_collection_that_fits_on_one_page_stays_at_the_start(self):
         wsgi_get(self.m.wsgi, "/people/v2/people")

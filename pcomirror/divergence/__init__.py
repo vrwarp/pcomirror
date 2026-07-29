@@ -49,10 +49,10 @@ __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
            "MAX_PER_MINUTE", "OVERRIDE_KEY", "PAGE_SIZE"]
 
-#: Rows per page when a collection shape walks its data. Big enough that a
-#: whole organization is a couple of dozen requests, small enough that one
-#: comparison is readable when it fails.
-PAGE_SIZE = 100
+#: Page size used only when the observed request did not name one — the same
+#: default the mirror and PCO both apply, so an unadorned collection read is
+#: checked exactly as it was served.
+PAGE_SIZE = 25
 
 #: Where an operator's choice is kept. Absent means "whatever the environment
 #: said", which is what a fresh install and a `docker run -e …` both expect.
@@ -221,7 +221,7 @@ class ShadowChecker:
             f"ORDER BY CAST(pco_id AS INTEGER) LIMIT 1")
         return first["pco_id"] if first else None
 
-    def _next_offset(self, path: str, cursor) -> int:
+    def _next_offset(self, path: str, cursor, page: int) -> int:
         """The next page of a collection, wrapping once the end is passed."""
         segments = [s for s in path.split("?")[0].split("/") if s]
         from ..serving import _SEG
@@ -231,20 +231,31 @@ class ShadowChecker:
         held = self.db.query_one(
             f"SELECT count(*) c FROM {resource.table} WHERE deleted_at IS NULL")["c"]
         try:
-            nxt = int(cursor or -PAGE_SIZE) + PAGE_SIZE
+            nxt = int(cursor or -page) + page
         except (TypeError, ValueError):
             nxt = 0
         return 0 if nxt >= max(1, held) else nxt
 
     def target_for(self, probe) -> tuple:
-        """`(path, params, cursor)` — the shape aimed at the next slice of data."""
+        """`(path, params, cursor)` — the shape aimed at the next slice of data.
+
+        Everything the observed request asked for is kept except *where* in the
+        collection it looked. `per_page` in particular is preserved: page size
+        decides where a page boundary falls, and a page boundary is where the
+        ordering bugs live — `/emails` came back with all twenty-five rows of
+        page one in the wrong places because ids sort numerically at PCO and
+        lexically in SQLite. Rewriting it to some convenient number would check a
+        query nobody makes and quietly stop testing the one they do.
+        """
         path, cursor = probe["path"], probe["cursor"]
         params = dict(json.loads(probe["query"] or "{}"))
+        observed_page = params.pop("per_page", None)
         params.pop("offset", None)
-        params.pop("per_page", None)
 
         resource = self._id_resource(probe["shape"])
         if resource is not None:
+            # Paging means nothing addressing one record, so it is dropped rather
+            # than carried; what rotates here is which record.
             nxt = self._next_id(resource, cursor)
             if nxt is None:
                 return path, params, cursor          # nothing mirrored yet
@@ -252,8 +263,13 @@ class ShadowChecker:
             concrete = [nxt if s == "{id}" else s for s in segments]
             return "/".join(concrete), params, nxt
 
-        offset = self._next_offset(path, cursor)
-        params["per_page"] = PAGE_SIZE
+        try:
+            page = max(1, min(100, int(observed_page))) if observed_page else PAGE_SIZE
+        except (TypeError, ValueError):
+            page = PAGE_SIZE
+        offset = self._next_offset(path, cursor, page)
+        if observed_page is not None:
+            params["per_page"] = observed_page
         if offset:
             params["offset"] = offset
         return path, params, str(offset)
