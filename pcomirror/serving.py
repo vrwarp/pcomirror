@@ -671,6 +671,11 @@ class Application:
             array, neither derived from the other. Refreshing only the household
             left a parent who had just joined a family still looking
             householdless to anything reading from their side.
+          * **The peers a top-level write names.** `POST /households` builds a
+            whole family in one call, and the members ride in the request's
+            `relationships.people`. That path has no third segment, so this
+            method used to return before it looked at anything —
+            see `_refresh_named_peers`.
 
         All of these were live. Read-your-writes (DESIGN §8.4) has to mean the
         records the write *affected*, not only the one it returned.
@@ -684,7 +689,10 @@ class Application:
         staleness bug for an availability one. A re-read that fails leaves the
         rows already held — stale beats absent, and the sweep still converges.
         """
-        if method not in ("POST", "PATCH", "DELETE") or len(segs) < 3:
+        if method not in ("POST", "PATCH", "DELETE"):
+            return
+        if len(segs) < 3:
+            self._refresh_named_peers(r, method, target, sent)
             return
         rel = r.relationships.get(segs[2])
         if rel is None or rel.kind != "many":
@@ -693,16 +701,7 @@ class Application:
         parent_id = segs[1]
 
         def repair(what, run) -> None:
-            try:
-                run()
-            except Exception as e:  # noqa: BLE001
-                etype, edetail = diagnostics.describe_error(e)
-                self.diagnostics.record(
-                    diagnostics.WRITE_MIRROR_FAILED, diagnostics.WARNING,
-                    method=method, target=target, pco_id=parent_id,
-                    detail=f"the write was applied, but {what} for {r.type} {parent_id} "
-                           f"could not be re-read; it may be stale until the next sweep",
-                    error_type=etype, error_detail=edetail)
+            self._repair(what, run, method, target, r.type, parent_id)
 
         if child.owner_rel and child.method != "nested_walk":
             # One request re-reads the owner with every child included, which
@@ -719,6 +718,95 @@ class Application:
         # critical path for this response, so both go to the queue.
         for name, pco_id in [(r.name, parent_id),
                              *(("person", p) for p in self._members_touched(out, sent))]:
+            try:
+                self.ingestor.enqueue_hydration(name, pco_id, reason="write_through")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _repair(self, what, run, method, target, subject_type, pco_id) -> None:
+        """Run one post-write re-read, and note it rather than raise if it fails.
+
+        PCO has already applied the write by the time any of these run, so an
+        exception here may not become the caller's error: that would tell them to
+        retry something that already landed.
+        """
+        try:
+            run()
+        except Exception as e:  # noqa: BLE001
+            etype, edetail = diagnostics.describe_error(e)
+            self.diagnostics.record(
+                diagnostics.WRITE_MIRROR_FAILED, diagnostics.WARNING,
+                method=method, target=target, pco_id=pco_id,
+                detail=f"the write was applied, but {what} for {subject_type} {pco_id} "
+                       f"could not be re-read; it may be stale until the next sweep",
+                error_type=etype, error_detail=edetail)
+
+    #: Peers re-read before the response rather than queued behind it. A family is
+    #: a handful of people, so this is already generous; past it the tail goes to
+    #: the queue rather than making one write pay for an arbitrary fan-out.
+    MAX_SYNC_PEERS = 8
+
+    def _refresh_named_peers(self, r, method, target, sent) -> None:
+        """Re-read the records a top-level write named on the far side of an edge.
+
+        `POST /households` creates a family in one call: the members ride in the
+        request's `relationships.people`, and PCO stores that edge on each of
+        them too — `person.relationships.households` is a second copy of it, not
+        a view derived from the household's array. The response describes only
+        the household, so nothing re-read the people and nothing even queued
+        them; `_refresh_affected` returned before it looked, because a top-level
+        path has no third segment to key the nested cases off.
+
+        That left the caller who had just built the family reading its members
+        back and finding them householdless. It is the exact shape a caller adding
+        a parent has: write the family, then read the child to see whether anybody
+        can be reached about them now — and the answer stayed "no" until a sweep or
+        a webhook came past. Neither is on the request's timescale, and a household
+        joined does not reliably move anybody's `updated_at`, so the watermark sweep
+        may not be what catches it either.
+
+        Only the edges the *request* names are followed. PCO's reply echoes the
+        record's whole relationship set — a `PATCH` of somebody's surname comes
+        back carrying every household they belong to — and chasing those would make
+        every ordinary write pay for edges it did not touch.
+
+        `kind == "json"` is what identifies such an edge: PCO offers no bulk join
+        endpoint for these, so each side's array *is* the edge (see `registry.Rel`).
+        A `one`/`many` relationship is a single local fk or a child's back-reference
+        — one copy, held by the record the write already updated.
+
+        Two gaps, both left to the sweep on purpose. A member a `PATCH` *removes*
+        is named by neither side by the time this runs: the request carries the new
+        array, and the mirror has just been given it. And a `DELETE` names nobody
+        at all.
+        """
+        # Every top-level write reaches this now, so nothing here may assume the
+        # body was shaped the way the API documents it.
+        data = sent.get("data") if isinstance(sent, dict) else None
+        rels = data.get("relationships") if isinstance(data, dict) else None
+        if not isinstance(rels, dict):
+            return
+
+        peers: list[tuple[str, str]] = []
+        for name, rel in r.relationships.items():
+            if rel.kind != "json" or rel.target not in registry.RESOURCES:
+                continue
+            data = (rels.get(name) or {}).get("data")
+            if not data:
+                continue
+            for item in (data if isinstance(data, list) else [data]):
+                pco_id = str((item or {}).get("id") or "") if isinstance(item, dict) else ""
+                if pco_id:
+                    peers.append((rel.target, pco_id))
+
+        # One record can be named more than once across the arrays followed here,
+        # and re-reading it twice spends a PCO request to learn nothing.
+        named = list(dict.fromkeys(peers))
+        for name, pco_id in named[:self.MAX_SYNC_PEERS]:
+            self._repair(f"the {r.type} edge it was named on",
+                         lambda: self.ingestor.hydrate(name, pco_id),
+                         method, target, registry.by_name(name).type, pco_id)
+        for name, pco_id in named[self.MAX_SYNC_PEERS:]:
             try:
                 self.ingestor.enqueue_hydration(name, pco_id, reason="write_through")
             except Exception:  # noqa: BLE001

@@ -448,6 +448,117 @@ class TestAWriteRefreshesWhatItChanged(unittest.TestCase):
                     if method == "GET" and "household_memberships" in path)
         self.assertEqual(before, after)
 
+class TestATopLevelWriteRefreshesThePeersItNames(unittest.TestCase):
+    """`POST /households` builds a family in one call and moves every member.
+
+    The members ride in `relationships.people`, and PCO stores the edge on each
+    of them too — so the response, which describes only the household, is not the
+    whole of what changed. Nothing followed it: the refresh logic keyed off a
+    path's third segment, and a top-level create has none.
+
+    Live symptom, from an app that adds a parent for a child nobody can reach:
+    write the family, read the child straight back to see whether anybody can be
+    reached about them now, and get "no" — because the child was still
+    householdless in the mirror. Two writes later it was still "no", and it stayed
+    that way until a sweep or a webhook came past.
+    """
+
+    def setUp(self):
+        self.fake = FakePCO()
+        # A visitor quick-added at a door: in Planning Center, in no family.
+        self.fake.add_person("100", "Janet", "Lee", "2026-01-01T00:00:00Z")
+        self.m, _ = build(self.fake)
+        for name in ("person", "household"):
+            self.m.ingestor.backfill(name)
+
+    def _post(self, path, payload):
+        return wsgi_call(self.m.wsgi, "POST", path, body=json.dumps(payload).encode())
+
+    def _build_family(self):
+        _, _, parent = self._post("/people/v2/people", {"data": {
+            "type": "Person",
+            "attributes": {"first_name": "Mei", "last_name": "Lee", "child": False}}})
+        parent_id = parent["data"]["id"]
+        status, _, household = self._post("/people/v2/households", {"data": {
+            "type": "Household",
+            "attributes": {"name": "Lee Household", "primary_contact_id": parent_id},
+            "relationships": {
+                "primary_contact": {"data": {"type": "Person", "id": parent_id}},
+                "people": {"data": [{"type": "Person", "id": parent_id},
+                                    {"type": "Person", "id": "100"}]}}}})
+        self.assertEqual(status, 201)
+        return parent_id, household["data"]["id"]
+
+    def _households_of(self, person_id):
+        _, _, doc = wsgi_get(self.m.wsgi, f"/people/v2/people/{person_id}", "include=households")
+        data = ((doc["data"].get("relationships") or {}).get("households") or {}).get("data") or []
+        return [d["id"] for d in data]
+
+    def test_the_child_is_in_the_family_on_the_very_next_read(self):
+        _, household_id = self._build_family()
+        self.assertEqual(self._households_of("100"), [household_id])
+
+    def test_so_is_the_parent_the_same_call_created(self):
+        parent_id, household_id = self._build_family()
+        self.assertEqual(self._households_of(parent_id), [household_id])
+
+    def test_the_child_is_reachable_through_the_family_it_just_joined(self):
+        """The read the app actually makes: adults with contact details, joined to
+        the child on the household ids each person's own payload carries."""
+        parent_id, household_id = self._build_family()
+        self._post(f"/people/v2/people/{parent_id}/phone_numbers", {"data": {
+            "type": "PhoneNumber",
+            "attributes": {"number": "555-0100", "location": "Mobile", "primary": True}}})
+        _, _, page = wsgi_get(self.m.wsgi, "/people/v2/people",
+                              "where[child]=false&include=phone_numbers,households")
+        reachable = {((inc.get("relationships") or {}).get("person") or {}).get("data", {}).get("id")
+                     for inc in page.get("included", []) if inc["type"] == "PhoneNumber"}
+        families = {h["id"] for row in page["data"] if row["id"] in reachable
+                    for h in (((row.get("relationships") or {}).get("households") or {})
+                              .get("data") or [])}
+        self.assertIn(household_id, families)
+        self.assertIn(household_id, self._households_of("100"))
+
+    def test_only_the_edges_the_request_names_are_followed(self):
+        """PCO's reply echoes every relationship the record has, and a `PATCH` of a
+        surname must not go and re-read the whole family because of it."""
+        self._build_family()
+        before = sum(1 for method, path in self.fake.request_log if method == "GET")
+        wsgi_call(self.m.wsgi, "PATCH", "/people/v2/people/100", body=json.dumps(
+            {"data": {"type": "Person", "id": "100",
+                      "attributes": {"last_name": "Byron"}}}).encode())
+        after = sum(1 for method, path in self.fake.request_log if method == "GET")
+        self.assertEqual(before, after)
+
+    def test_a_failed_peer_re_read_does_not_fail_the_write(self):
+        """Stale beats absent, and PCO has already applied it — telling the caller
+        to retry would build the family twice."""
+        original = self.m.ingestor.hydrate
+        self.m.ingestor.hydrate = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("PCO down"))
+        try:
+            _, household_id = self._build_family()
+        finally:
+            self.m.ingestor.hydrate = original
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT 1 FROM household WHERE pco_id=?", (household_id,)))
+        noted = [r for r in diagnostics.recent(self.m.db, limit=50)
+                 if r["kind"] == diagnostics.WRITE_MIRROR_FAILED]
+        self.assertEqual(len(noted), 2)                    # the parent and the child
+        self.assertTrue(all("may be stale" in r["detail"] for r in noted))
+
+    def test_a_person_named_twice_by_one_write_is_re_read_once(self):
+        """The parent is this household's primary contact *and* one of its people.
+
+        `primary_contact` is a local fk — one copy, on the household — so it is
+        not an edge to chase at all; `people` is. Getting either of those wrong
+        shows up here as the parent being fetched twice for one write.
+        """
+        self._build_family()
+        parent_reads = [path for method, path in self.fake.request_log
+                        if method == "GET" and path.startswith("/people/10")]
+        self.assertEqual(len(parent_reads), len(set(parent_reads)))
+
+
 class TestNestedWritesLeaveTheMirrorAgreeing(unittest.TestCase):
     """A write under a parent moves more than the row PCO hands back.
 

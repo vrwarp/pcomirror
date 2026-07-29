@@ -168,6 +168,8 @@ class FakePCO:
         return self._ok({"data": items[:per_page], "meta": {"total_count": len(items)}})
 
     def _write(self, method, segs, body):
+        if method == "POST" and segs == ["households"]:
+            return self._create_household(body)
         if method == "POST" and len(segs) == 3 and segs[2] == "household_memberships":
             return self._create_membership(segs[1], body)
         if method == "POST" and len(segs) == 3:
@@ -230,6 +232,38 @@ class FakePCO:
         if not self.echo_owner:
             returned.pop("relationships", None)
         return Response(201, {}, json.dumps({"data": returned}).encode())
+
+    def _create_household(self, body):
+        """`POST /households`, which builds a whole family in one call.
+
+        The members are named in `relationships.people` on the way in, and the
+        edge lands on both sides exactly as it does for a membership created
+        under an existing household — a fake that stored it only on the
+        household would let a mirror that refreshes only the household look
+        correct, which is the bug this models.
+
+        Nobody's `updated_at` moves. That is the awkward part and it is faithful:
+        joining a household is a change the watermark sweep cannot see, so a
+        mirror that does not go and look on the write does not converge on the
+        next sweep either.
+        """
+        data = (json.loads(body) if body else {}).get("data") or {}
+        rid = str(next(self._ids))
+        item = res("Household", rid, data.get("attributes") or {},
+                   created="2026-06-01T00:00:00Z", updated="2026-06-01T00:00:00Z")
+        members = ((data.get("relationships") or {}).get("people") or {}).get("data") or []
+        item["relationships"] = {k: v for k, v in (data.get("relationships") or {}).items()}
+        item["relationships"]["people"] = {"data": [dict(m) for m in members]}
+        self.add(item)
+        for member in members:
+            person = self.data.get("Person", {}).get(str(member.get("id")))
+            if person is None:
+                continue
+            households = person.setdefault("relationships", {}).setdefault(
+                "households", {"data": []})["data"]
+            if not any(h["id"] == rid for h in households):
+                households.append({"type": "Household", "id": rid})
+        return Response(201, {}, json.dumps({"data": item}).encode())
 
     def _create_membership(self, household_id, body):
         """`POST /households/{id}/household_memberships`, shaped as PCO shapes it.
