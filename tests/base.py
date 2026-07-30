@@ -51,6 +51,16 @@ def _wsgi(app, method, path, query, body, headers):
     captured = {}
 
     def start_response(status, hdrs):
+        # A real WSGI server encodes the status line and every header as latin-1
+        # (PEP 3333) as it writes them, and dies partway through the header block
+        # if it cannot. Taking whatever a `dict` will hold let this harness pass a
+        # response no server could send: one em dash in a CORS refusal's reason
+        # truncated the response before `Access-Control-Allow-Origin`, and every
+        # test that asserted the reason was there agreed it worked.
+        status.encode("latin-1")
+        for k, v in hdrs:
+            k.encode("latin-1")
+            v.encode("latin-1")
         captured["status"] = int(status.split()[0])
         captured["headers"] = dict(hdrs)
 

@@ -24,7 +24,7 @@ install that never asked for it, and the absence of a permissive default is the
 whole safety story here: a mirror of a church's people database must not be
 readable by every page its operator happens to visit.
 
-Four things here are load-bearing and each is easy to get wrong:
+Five things here are load-bearing and each is easy to get wrong:
 
 * **A preflight carries no credential.** Browsers strip `Authorization` from the
   `OPTIONS` probe, so a preflight answered through `_authenticate` would `401` —
@@ -38,6 +38,13 @@ Four things here are load-bearing and each is easy to get wrong:
 * **`Vary: Origin` is not optional** once the answer depends on the origin. Any
   shared cache in front of this service would otherwise hand one origin's
   response — headers and all — to a page from another.
+* **A header value is latin-1, prose or not.** Every sentence this module writes
+  goes out as a header, and a character outside latin-1 does not arrive mangled —
+  it raises inside the WSGI server midway through the header block and truncates
+  the response. One em dash in a refusal's reason therefore took the
+  `Access-Control-Allow-Origin` beside it off a *different* refusal's response,
+  turning "this one header is not allowed" into "no origin is allowed" with the
+  explanation for neither. `_explain` is the only way a reason reaches a header.
 * **The operator console is out of scope, permanently.** `/` and `/admin/**`
   authenticate with a `SameSite=Strict` session cookie; CORS there would invite
   cross-site requests against a human's live session, and the console runs no
@@ -105,6 +112,26 @@ SAFELISTED_REQUEST_HEADERS = frozenset({
     "accept", "accept-language", "content-language", "content-type", "range",
 })
 
+#: Headers an HTTP client library adds on its own account: three to step around
+#: the browser's cache, two to revalidate what it cached itself. `axios`'s cache
+#: interceptor sends `Cache-Control`, `Pragma` and `Expires` on *every* request
+#: under its default `cacheTakeover`, and the conditional pair whenever an entry
+#: goes stale. None is on the browser's safelist, so every one of them is
+#: preflighted; none carries authority a read could act on.
+#:
+#: They are allowed whatever the policy lists, for the reason
+#: `SAFELISTED_REQUEST_HEADERS` exists: refusing one fails the preflight over a
+#: header the application never chose to send, and an operator naming the headers
+#: *their* app uses is not thinking about `Pragma`. A tuple rather than a set
+#: because they are advertised verbatim: string hashing is seeded per process, so a
+#: set would spell `Access-Control-Allow-Headers` differently after every restart.
+CLIENT_CACHE_REQUEST_HEADERS = (
+    "Cache-Control", "Pragma", "Expires", "If-None-Match", "If-Modified-Since")
+
+#: What `allows_header` will not refuse, whatever the policy says.
+_NEVER_REFUSED = SAFELISTED_REQUEST_HEADERS | {
+    h.lower() for h in CLIENT_CACHE_REQUEST_HEADERS}
+
 #: Where an operator's policy is kept once they save one on the page. Absent means
 #: "whatever the environment said", which is what a fresh install and a
 #: `docker run -e …` both expect.
@@ -138,10 +165,33 @@ _PATTERN_RE = re.compile(
 
 _PRINTABLE = re.compile(r"[^\x20-\x7e]")
 
+#: Room for a whole refusal sentence, since `_explain` bounds the assembled
+#: message rather than only the request-supplied words inside it.
+_DIAGNOSTIC_LIMIT = 300
+
 
 def _safe(value: str, limit: int = 120) -> str:
     """Request text made fit for a response header: printable ASCII, bounded."""
     return _PRINTABLE.sub("", value or "")[:limit]
+
+
+def _explain(headers: dict, reason: str) -> None:
+    """Say why the policy refused, in something a header can actually carry.
+
+    A header value goes on the wire as latin-1 (PEP 3333), and a character
+    outside it is not a header that arrives mangled — it is `UnicodeEncodeError`
+    raised *inside the server* as the header block is written, which truncates the
+    response to whatever preceded it. An em dash in this sentence therefore
+    deleted the `Access-Control-Allow-Origin` beside it, and the browser reported
+    the one thing the sentence existed to explain: no permission header at all. A
+    refusal to allow one header became a refusal of every origin, and the reason
+    was unreadable in both.
+
+    So the whole assembled message goes through `_safe`, not just the words taken
+    from the request. Writing the prose in ASCII is the fix; this is what keeps it
+    fixed the next time somebody reaches for an em dash.
+    """
+    headers[DIAGNOSTIC_HEADER] = _safe(reason, _DIAGNOSTIC_LIMIT)
 
 
 def _normalise(origin: str) -> str:
@@ -259,9 +309,29 @@ class Policy:
 
     def allows_header(self, name: str) -> bool:
         lowered = name.strip().lower()
-        if not lowered or lowered in SAFELISTED_REQUEST_HEADERS:
+        if not lowered or lowered in _NEVER_REFUSED:
             return True
         return ANY in self.headers or lowered in {h.lower() for h in self.headers}
+
+    @property
+    def advertised_headers(self) -> tuple[str, ...]:
+        """What `Access-Control-Allow-Headers` says.
+
+        The browser decides from this string and nothing else. Leniency inside
+        `allows_header` that does not reach it is leniency the one party acting on
+        the answer never hears about: the preflight is refused by the browser,
+        before the request, with the server's own diagnostic saying the header was
+        fine. So everything that will not be refused is named here.
+
+        The browser's safelist is left out on purpose — those headers need no
+        permission, which is what makes them the safelist, and listing them would
+        pad the value a browser caches with the rest of the preflight.
+        """
+        if ANY in self.headers:
+            return (ANY,)
+        named = {h.lower() for h in self.headers}
+        return self.headers + tuple(
+            h for h in CLIENT_CACHE_REQUEST_HEADERS if h.lower() not in named)
 
     def refused_headers(self, asked: str) -> list[str]:
         """Which of an `Access-Control-Request-Headers` list the policy will not take."""
@@ -488,25 +558,25 @@ def preflight(policy: Policy, environ) -> tuple[int, dict, dict]:
     headers: dict[str, str] = {"Cache-Control": "no-store"}
     attach(headers, policy, origin)
     if "Access-Control-Allow-Origin" not in headers:
-        headers[DIAGNOSTIC_HEADER] = (
-            f"origin {_safe(origin)!r} is not allowed — {_WHERE['origins']}"
-            if policy.enabled else
-            f"cross-origin access is off — {_WHERE['origins']}")
+        _explain(headers,
+                 f"origin {_safe(origin)!r} is not allowed: {_WHERE['origins']}"
+                 if policy.enabled else
+                 f"cross-origin access is off: {_WHERE['origins']}")
         return 200, headers, {}
     # The allowed sets go out whole, whatever was asked for. When the ask is
     # outside them the mismatch *is* the refusal, and the browser names it exactly.
     headers["Access-Control-Allow-Methods"] = ", ".join(policy.methods)
-    headers["Access-Control-Allow-Headers"] = ", ".join(policy.headers)
+    headers["Access-Control-Allow-Headers"] = ", ".join(policy.advertised_headers)
     headers["Access-Control-Max-Age"] = str(policy.max_age)
     refused = policy.refused_headers(asked_headers)
     if asked_method and not policy.allows_method(asked_method):
-        headers[DIAGNOSTIC_HEADER] = (
-            f"method {_safe(asked_method, 16)} is not allowed — {_WHERE['methods']}")
+        _explain(headers,
+                 f"method {_safe(asked_method, 16)} is not allowed: {_WHERE['methods']}")
     elif refused:
-        headers[DIAGNOSTIC_HEADER] = (
-            f"header{'s' if len(refused) > 1 else ''} "
-            f"{', '.join(_safe(h, 40) for h in refused[:5])} "
-            f"{'are' if len(refused) > 1 else 'is'} not allowed — {_WHERE['headers']}")
+        _explain(headers,
+                 f"header{'s' if len(refused) > 1 else ''} "
+                 f"{', '.join(_safe(h, 40) for h in refused[:5])} "
+                 f"{'are' if len(refused) > 1 else 'is'} not allowed: {_WHERE['headers']}")
     return 200, headers, {}
 
 

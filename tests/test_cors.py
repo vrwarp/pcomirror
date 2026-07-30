@@ -7,12 +7,14 @@ and the two planes the policy must never reach.
 """
 from __future__ import annotations
 
+import http.client
 import re
+import threading
 import unittest
 import urllib.parse
 
 from base import build, wsgi_call, wsgi_get
-from pcomirror import adminauth, cors
+from pcomirror import adminauth, cors, serving
 from pcomirror.app import Mirror
 from pcomirror.config import Settings
 from pcomirror.serving import Application
@@ -183,7 +185,9 @@ class TestPreflight(unittest.TestCase):
     def test_advertises_methods_headers_and_a_cache_lifetime(self):
         _, headers, body = preflight(self.m.wsgi, headers="authorization,content-type")
         self.assertEqual(headers["Access-Control-Allow-Methods"], "GET, POST, PATCH, DELETE")
-        self.assertEqual(headers["Access-Control-Allow-Headers"], "Authorization, Content-Type")
+        self.assertEqual(headers["Access-Control-Allow-Headers"],
+                         "Authorization, Content-Type, "
+                         + ", ".join(cors.CLIENT_CACHE_REQUEST_HEADERS))
         self.assertEqual(headers["Access-Control-Max-Age"], "600")
         self.assertNotIn(cors.DIAGNOSTIC_HEADER, headers)
         self.assertEqual(body, {})
@@ -232,6 +236,104 @@ class TestPreflight(unittest.TestCase):
         _, headers, _ = preflight(m.wsgi, headers="x-custom")
         self.assertEqual(headers["Access-Control-Allow-Headers"], "*")
         self.assertNotIn(cors.DIAGNOSTIC_HEADER, headers)
+
+
+class TestClientCacheHeaders(unittest.TestCase):
+    """The headers an HTTP client library sends without being asked.
+
+    `axios`'s cache interceptor puts `Cache-Control`, `Pragma` and `Expires` on
+    every request by default and the conditional pair on every revalidation. None
+    is safelisted, so a policy naming only `Authorization, Content-Type` — which is
+    what an operator types, and what the form offers — refused the preflight of
+    every request the app made.
+    """
+
+    def setUp(self):
+        self.m, _ = mirror(policy(methods=("GET",),
+                                  headers=("Authorization", "Content-Type")))
+
+    ASKED = "authorization,cache-control,expires,pragma"
+
+    def test_a_default_policy_takes_the_cachetakeover_headers(self):
+        _, headers, _ = preflight(self.m.wsgi, headers=self.ASKED)
+        self.assertEqual(headers["Access-Control-Allow-Origin"], ORIGIN)
+        self.assertNotIn(cors.DIAGNOSTIC_HEADER, headers)
+
+    def test_and_the_conditional_pair_a_revalidation_adds(self):
+        _, headers, _ = preflight(
+            self.m.wsgi, headers="authorization,if-none-match,if-modified-since")
+        self.assertNotIn(cors.DIAGNOSTIC_HEADER, headers)
+
+    def test_they_are_advertised_because_the_browser_reads_nothing_else(self):
+        """Allowing them server-side and not saying so refuses them anyway.
+
+        The browser compares its `Access-Control-Request-Headers` against the
+        `Access-Control-Allow-Headers` value and nothing else: a header missing
+        there fails the preflight before the request is sent, however lenient
+        `allows_header` was.
+        """
+        _, headers, _ = preflight(self.m.wsgi, headers=self.ASKED)
+        advertised = {h.strip().lower()
+                      for h in headers["Access-Control-Allow-Headers"].split(",")}
+        for asked in self.ASKED.split(","):
+            self.assertIn(asked, advertised)
+
+    def test_a_wildcard_policy_still_says_only_wildcard(self):
+        m, _ = mirror(policy(headers=("*",)))
+        _, headers, _ = preflight(m.wsgi, headers=self.ASKED)
+        self.assertEqual(headers["Access-Control-Allow-Headers"], "*")
+
+    def test_they_are_not_duplicated_when_the_policy_names_them_too(self):
+        m, _ = mirror(policy(headers=("Authorization", "cache-control")))
+        _, headers, _ = preflight(m.wsgi, headers=self.ASKED)
+        names = [h.strip().lower()
+                 for h in headers["Access-Control-Allow-Headers"].split(",")]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names[:2], ["authorization", "cache-control"])
+
+    def test_an_application_header_is_still_refused(self):
+        """Leniency for the five, not for anything a caller invents."""
+        _, headers, _ = preflight(self.m.wsgi, headers="authorization,x-custom")
+        self.assertIn("x-custom", headers[cors.DIAGNOSTIC_HEADER])
+
+
+class TestARefusalCanBeSent(unittest.TestCase):
+    """A reason is a header value, and a header value is latin-1.
+
+    The em dash these sentences were written with raised `UnicodeEncodeError`
+    inside the WSGI server as it wrote the header block, so the response stopped
+    before `Access-Control-Allow-Origin` and the browser reported the absence of
+    the permission rather than the refusal of one header. Every refusal path is
+    checked, because they all shared the punctuation.
+    """
+
+    def setUp(self):
+        self.m, _ = mirror(policy(methods=("GET",)))
+
+    def refusals(self):
+        yield "origin", preflight(self.m.wsgi, origin="https://evil.example.net")[1]
+        yield "method", preflight(self.m.wsgi, method="DELETE")[1]
+        yield "header", preflight(self.m.wsgi, headers="authorization,x-custom")[1]
+        yield "off", cors.preflight(cors.Policy(), {
+            "HTTP_ORIGIN": ORIGIN, "HTTP_ACCESS_CONTROL_REQUEST_METHOD": "GET"})[1]
+
+    def test_every_reason_survives_the_encoding_a_server_does(self):
+        for which, headers in self.refusals():
+            with self.subTest(which):
+                reason = headers[cors.DIAGNOSTIC_HEADER]
+                reason.encode("latin-1")            # what wsgiref does, and died on
+                self.assertTrue(reason.isascii(), reason)
+
+    def test_the_reason_is_bounded_however_long_the_prose_gets(self):
+        headers = {}
+        cors._explain(headers, "x" * 5000)
+        self.assertLessEqual(len(headers[cors.DIAGNOSTIC_HEADER]), 300)
+
+    def test_a_reason_cannot_smuggle_the_punctuation_back_in(self):
+        headers = {}
+        cors._explain(headers, "an em dash — and a non-breaking\xa0space")
+        headers[cors.DIAGNOSTIC_HEADER].encode("latin-1")
+        self.assertTrue(headers[cors.DIAGNOSTIC_HEADER].isascii())
 
 
 class TestFailuresAreReadable(unittest.TestCase):
@@ -667,6 +769,98 @@ class TestStoredPolicy(unittest.TestCase):
                     '["not", "an", "object"]'):
             with self.assertRaises(ValueError, msg=raw):
                 cors.decode(raw)
+
+
+class TestOverARealSocket(unittest.TestCase):
+    """The exchange a browser actually has, through the server `serve` runs.
+
+    Everything above calls the WSGI callable in-process, which is why the bug this
+    guards reached a deployment: the harness kept the headers in a `dict`, and a
+    `dict` holds text no socket can carry. Here `wsgiref` writes them, exactly as
+    `cmd_serve` has it write them, so a header the server cannot send fails as a
+    test rather than as somebody's console message.
+    """
+
+    ORIGIN = "https://vrwarp.github.io"
+
+    @classmethod
+    def setUpClass(cls):
+        from wsgiref.simple_server import WSGIRequestHandler, make_server
+
+        cls.m, _ = mirror(cors.build(
+            origins=cls.ORIGIN, methods="GET", headers="Authorization, Content-Type",
+            expose="X-Mirror-Source, Location", max_age=600))
+
+        class Quiet(WSGIRequestHandler):
+            def log_message(self, *a):
+                pass
+
+        cls.srv = make_server("127.0.0.1", 0, cls.m.wsgi, handler_class=Quiet)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.m.close()
+
+    def ask(self, method, path, headers):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(method, path, headers=headers)
+        r = conn.getresponse()
+        r.read()
+        return r.status, {k.lower(): v for k, v in r.getheaders()}
+
+    def preflight(self, asked_headers, path="/people/v2/people"):
+        return self.ask("OPTIONS", path, {
+            "Origin": self.ORIGIN, "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": asked_headers})
+
+    def test_the_request_an_axios_page_actually_makes(self):
+        """The reported failure, end to end: three cache headers and a key."""
+        status, headers = self.preflight("authorization,cache-control,expires,pragma")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["access-control-allow-origin"], self.ORIGIN)
+        advertised = {h.strip().lower()
+                      for h in headers["access-control-allow-headers"].split(",")}
+        for asked in ("authorization", "cache-control", "expires", "pragma"):
+            self.assertIn(asked, advertised)
+        self.assertNotIn(cors.DIAGNOSTIC_HEADER.lower(), headers)
+
+    def test_a_refusal_arrives_whole(self):
+        """The regression. A refused header used to cost the response every
+        header after the reason, `Access-Control-Allow-Origin` included, so the
+        browser reported no permission at all and named nothing."""
+        status, headers = self.preflight("authorization,x-custom")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["access-control-allow-origin"], self.ORIGIN)
+        self.assertIn("x-custom", headers[cors.DIAGNOSTIC_HEADER.lower()])
+        self.assertEqual(headers["content-length"], "2")
+
+    def test_a_refused_origin_arrives_whole_too(self):
+        status, headers = self.ask("OPTIONS", "/people/v2/people", {
+            "Origin": "https://evil.example.net",
+            "Access-Control-Request-Method": "GET"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("access-control-allow-origin", headers)
+        self.assertIn("PCOMIRROR_CORS_ORIGINS", headers[cors.DIAGNOSTIC_HEADER.lower()])
+        self.assertEqual(headers["vary"], "Origin")
+
+    def test_the_read_that_follows_carries_the_permission(self):
+        status, headers = self.ask("GET", "/people/v2/people?per_page=1",
+                                   {"Origin": self.ORIGIN})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["access-control-allow-origin"], self.ORIGIN)
+        self.assertEqual(headers["access-control-expose-headers"],
+                         "X-Mirror-Source, Location")
+
+    def test_a_header_no_socket_could_carry_does_not_cost_the_response(self):
+        """`_sendable`'s guarantee, at the layer that raises without it."""
+        self.assertEqual(
+            serving._sendable({"X-A": "an em dash — here", "X-B": "plain"}),
+            [("X-A", "an em dash ? here"), ("X-B", "plain")])
+        self.assertEqual(serving._sendable({"X-C": "a\r\nX-Evil: 1"}),
+                         [("X-C", "aX-Evil: 1")])
 
 
 class TestPlainApplication(unittest.TestCase):
