@@ -17,6 +17,7 @@ from .config import now_iso, parse_subscriptions
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/keys/create", "/admin/keys/revoke", "/admin/diagnostics",
+         "/admin/cors", "/admin/cors/configure",
          "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear",
          "/admin/divergence/configure",
          "/admin/webhooks", "/admin/webhooks/add", "/admin/webhooks/remove",
@@ -169,6 +170,10 @@ class AdminApp:
             return self._revoke_key(method, body, session)
         if path == "/admin/diagnostics":
             return self._diagnostics_page(qs)
+        if path == "/admin/cors":
+            return self._cors_page(qs, session)
+        if path == "/admin/cors/configure":
+            return self._cors_configure(method, body, session)
         if path == "/admin/divergence":
             return self._divergence_page(qs, session)
         if path == "/admin/divergence/download":
@@ -338,6 +343,7 @@ class AdminApp:
                 f"<a href=/admin/diagnostics>diagnostics</a> · "
                 f"<a href=/admin/divergence>divergence</a> · "
                 f"<a href=/admin/webhooks>webhooks</a> · "
+                f"<a href=/admin/cors>browser access</a> · "
                 f"<a href=/admin/password>password</a></nav>")
 
     def _stats_section(self, st) -> str:
@@ -403,41 +409,25 @@ class AdminApp:
   <p><button type=submit>Create key</button></p>
 </form>"""
 
-    # -- browser access ---------------------------------------------------
+    # -- browser access (CORS) --------------------------------------------
+    def _cors_state(self) -> dict:
+        return cors.effective(self.db, self.s)
+
     def _cors_policy(self):
-        return getattr(self.s, "cors", None) or cors.Policy()
+        return self._cors_state()["policy"]
 
     def _cors_section(self) -> str:
-        """What a browser on another origin may do, read-only.
-
-        Read-only on purpose. The two settings this console overrides — the
-        divergence rate and the subscription list — are ones an operator has to
-        change mid-incident from a machine that cannot restart the container.
-        Which websites may read a church's people database is not that kind of
-        setting, and a page that could widen it is a page worth attacking.
-
-        Here at all because the alternative is diagnosing a blocked `fetch` from
-        the browser's side alone, where every cause looks like the same one line
-        in a console.
-        """
-        policy = self._cors_policy()
+        """The policy in force on the dashboard, with the way in to change it."""
+        state = self._cors_state()
+        policy, source = state["policy"], state["source"]
+        whence = ("set on this page" if source == "admin"
+                  else "from <code>PCOMIRROR_CORS_ORIGINS</code>")
         if not policy.enabled:
-            return """
+            return f"""
 <h2>Browser access</h2>
-<p class=muted>Off — a page served from another origin cannot read
+<p class=muted>Off ({whence}) — a page served from another origin cannot read
   <code>/people/v2</code>, and <code>OPTIONS</code> answers <code>405</code>.
-  Set <code>PCOMIRROR_CORS_ORIGINS</code> to the origins that should be able to.</p>"""
-        rows = [
-            ("origins", "any origin (<code>*</code>)" if policy.any_origin
-             else "<br>".join(E(o) for o in policy.origins)),
-            ("methods", E(", ".join(policy.methods))),
-            ("request headers", E(", ".join(policy.headers)) or "—"),
-            ("readable response headers", E(", ".join(policy.expose)) or "—"),
-            ("preflight cached", f"{policy.max_age}s" if policy.max_age
-             else "not cached (0s)"),
-            ("credentials", "allowed" if policy.allow_credentials else "not allowed"),
-        ]
-        table = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows)
+  <a href=/admin/cors>Allow some origins</a>.</p>"""
         wildcards = [o for o in policy.origins if "*." in o]
         notes = []
         if policy.any_origin:
@@ -450,12 +440,172 @@ class AdminApp:
                          f"not the bare domain.")
         return f"""
 <h2>Browser access</h2>
-<table><tr><th>setting<th>value</tr>{table}</table>
-<p class=muted>{' '.join(notes)} Set from the environment only
-  (<code>PCOMIRROR_CORS_*</code>): who may read the mirror from a browser is a
-  deployment decision, not one to make from a web page. This console is never
-  cross-origin readable whatever is configured here — it authenticates with a
+<table><tr><th>setting<th>value</tr>{self._cors_rows(policy)}</table>
+<p class=muted>{' '.join(notes)} Currently {whence}.
+  <a href=/admin/cors>Change who may read this from a browser</a>. This console is
+  never cross-origin readable whatever is set there — it authenticates with a
   session cookie, and an API key cannot reach it.</p>"""
+
+    def _cors_rows(self, policy) -> str:
+        rows = [
+            ("origins", "any origin (<code>*</code>)" if policy.any_origin
+             else "<br>".join(E(o) for o in policy.origins) or "—"),
+            ("methods", E(", ".join(policy.methods))),
+            ("request headers", E(", ".join(policy.headers)) or "—"),
+            ("readable response headers", E(", ".join(policy.expose)) or "—"),
+            ("preflight cached", f"{policy.max_age}s" if policy.max_age
+             else "not cached (0s)"),
+            ("credentials", "allowed" if policy.allow_credentials else "not allowed"),
+        ]
+        return "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows)
+
+    def _cors_page(self, qs, session, error: str = "", form: dict | None = None):
+        """Who may read the API from a browser — from the page, not from a restart.
+
+        The environment sets the default and this wins once anything is saved
+        here, the same shape as the subscription list and the divergence rate: a
+        policy fixed at 9pm has to survive the container coming back at 3am, and
+        whoever can reach this page is rarely whoever can edit the container's
+        environment.
+
+        It takes effect on the next request. Preflights a browser has already
+        cached do not, until `Access-Control-Max-Age` runs out — which is why that
+        number is on this form rather than buried.
+        """
+        state = self._cors_state()
+        policy, default = state["policy"], state["default"]
+        csrf = E(session["csrf"])
+        banners = ""
+        if qs.get("saved"):
+            banners += ("<p class='msg ok'>Saved — it applies to the next request. "
+                        "A browser may hold an older preflight for up to "
+                        f"{policy.max_age}s.</p>")
+        if qs.get("handed_back"):
+            banners += ("<p class='msg ok'>Handed back to the environment. "
+                        "<code>PCOMIRROR_CORS_*</code> is in force again, from now — "
+                        "no restart needed.</p>")
+        if error:
+            banners += f"<p class='msg err'>{E(error)}</p>"
+        if state["stored_unreadable"]:
+            banners += ("<p class='msg err'>The stored policy could not be read, so the "
+                        "environment's is in force. Save this form to replace it.</p>")
+        if policy.any_origin:
+            banners += ("<p class='msg err'>Any origin is allowed. Every page in every "
+                        "browser that can reach this service may use the API with any key "
+                        "it holds" + (", and no key is needed at all while "
+                        "PCOMIRROR_ALLOW_ANONYMOUS is set" if self.s.allow_anonymous
+                        else "") + ".</p>")
+
+        # The form shows what was submitted when it failed validation, so a typo in
+        # one field does not cost the operator the other five.
+        f = form or {
+            "origins": ", ".join(policy.origins),
+            "headers": ", ".join(policy.headers),
+            "expose": ", ".join(policy.expose),
+            "max_age": str(policy.max_age),
+            "methods": list(policy.methods),
+            "allow_credentials": policy.allow_credentials,
+        }
+        picked = {m.upper() for m in f.get("methods") or ()}
+        checks = "".join(
+            f"<label class=muted><input type=checkbox name=methods value={m}"
+            f"{' checked' if m in picked else ''}> {m}</label>"
+            for m in cors.SUPPORTED_METHODS)
+        revert = ("" if state["source"] != "admin" else """
+  <button type=submit name=reset value=1>Hand back to the environment</button>""")
+        in_force = ("<p class=muted>In force: the policy set here.</p>"
+                    if state["source"] == "admin" else
+                    "<p class=muted>In force: the environment's policy. Saving anything "
+                    "below takes it over until you hand it back.</p>")
+        return 200, _headers(), _page("Browser access", f"""
+<p class=sub>who may read this API from a browser (CORS)</p>{banners}
+<h2>Now</h2>
+<table><tr><th>setting<th>value</tr>{self._cors_rows(policy)}</table>
+{in_force}
+<h2>Change it</h2>
+<form method=post action=/admin/cors/configure>
+  <input type=hidden name=csrf value="{csrf}">
+  <label for=o>Origins</label>
+  <input id=o name=origins value="{E(f.get('origins', ''))}"
+         placeholder="https://directory.yourchurch.org, https://*.yourchurch.org">
+  <p class=muted>Comma-separated, exactly as a browser sends them —
+    <code>scheme://host[:port]</code>, no trailing slash. A leading <code>*.</code>
+    matches subdomains (<code>https://*.church.org</code> allows
+    <code>app.church.org</code>, not <code>church.org</code>). <code>*</code> allows
+    any origin. <code>null</code> covers <code>file://</code> pages and sandboxed
+    iframes, and is barely a boundary. <b>Empty turns cross-origin access off</b>,
+    which is not the same as handing it back to the environment.</p>
+  <label>Methods</label>
+  {checks}
+  <p class=muted>Blank means all four. Writes still need a key holding the
+    <code>write</code> scope, and still proxy to Planning Center with your PAT.</p>
+  <label for=h>Request headers a page may send</label>
+  <input id=h name=headers value="{E(f.get('headers', ''))}"
+         placeholder="Authorization, Content-Type">
+  <p class=muted>Blank means the default <code>Authorization, Content-Type</code> —
+    the API key, and a JSON:API body. <code>*</code> allows any.</p>
+  <label for=x>Response headers a page may read</label>
+  <input id=x name=expose value="{E(f.get('expose', ''))}"
+         placeholder="X-Mirror-Source, Location">
+  <p class=muted>Empty exposes none. <code>X-Mirror-Source</code> tells a mirrored
+    answer from a pass-through one; <code>Location</code> is where a
+    <code>201</code> put the record it created.</p>
+  <label for=m>Preflight cache, in seconds</label>
+  <input id=m name=max_age type=number min=0 value="{E(f.get('max_age', ''))}">
+  <p class=muted>How long a browser may reuse one permission check.
+    <code>0</code> makes every request preflight, and makes a change here visible
+    immediately.</p>
+  <label class=muted><input type=checkbox name=allow_credentials
+    {'checked' if f.get('allow_credentials') else ''}> Allow credentials —
+    cookies and browser-remembered Basic logins on cross-origin requests</label>
+  <p class=muted>Rarely wanted: an API key travels in <code>Authorization</code>,
+    which needs none of this. Cannot be combined with <code>*</code>, because a
+    browser rejects that pairing outright.</p>
+  <p><button type=submit>Save</button>{revert}</p>
+</form>
+<h2>What this never reaches</h2>
+<p class=muted>This console (<code>/</code> and <code>/admin/**</code>) and the
+  webhook receiver are never cross-origin readable, whatever is set above. The
+  console authenticates with a <code>SameSite=Strict</code> session cookie and runs
+  no JavaScript, so nothing legitimate would ask; the receiver authenticates
+  deliveries from Planning Center, which is not a browser.</p>
+<p class=muted>CORS is a rule browsers keep — <code>curl</code> ignores it — so
+  scoped API keys, not this page, are what stands between a caller and the data.
+  A key shipped to browser JavaScript is readable by anyone who opens the page, so
+  give a browser app one scoped to what it reads.</p>
+<p class=muted>The environment default is
+  <b>{E(cors.describe(default))}</b>.</p>""",
+            nav="<nav><a href=/>back</a></nav>")
+
+    def _cors_configure(self, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/cors")
+        form = _form_multi(body)
+        one = {k: (v[0] if v else "") for k, v in form.items()}
+        if not adminauth.check_csrf(session, one.get("csrf")):
+            return self._cors_page({}, session, error="Session expired — try again.")
+        if one.get("reset"):
+            cors.configure(self.db, None)
+            return _redirect("/admin/cors?handed_back=1")
+        submitted = {
+            "origins": one.get("origins", ""), "headers": one.get("headers", ""),
+            "expose": one.get("expose", ""), "max_age": one.get("max_age", ""),
+            "methods": form.get("methods", []),
+            "allow_credentials": bool(one.get("allow_credentials")),
+        }
+        try:
+            # The same validator the environment goes through, so the two cannot
+            # come to mean different things by the same words.
+            policy = cors.build(
+                origins=submitted["origins"], methods=submitted["methods"],
+                headers=submitted["headers"], expose=submitted["expose"],
+                max_age=submitted["max_age"],
+                allow_credentials=submitted["allow_credentials"],
+                names=cors.FORM_NAMES)
+        except ValueError as e:
+            return self._cors_page({}, session, error=str(e), form=submitted)
+        cors.configure(self.db, policy)
+        return _redirect("/admin/cors?saved=1")
 
     # -- diagnostics ------------------------------------------------------
     #: Filters offered on the log page. `write.` first because a mutation is the

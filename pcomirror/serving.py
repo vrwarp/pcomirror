@@ -151,9 +151,10 @@ class Application:
     def __call__(self, environ, start_response):
         method = environ["REQUEST_METHOD"]
         path = environ.get("PATH_INFO", "")
-        policy = getattr(self.s, "cors", None) or cors.Policy()
-        # Whether a browser on another origin may be told anything about this path.
-        cross_origin = policy.enabled and self._cors_eligible(path)
+        # Whether a browser on another origin may be told anything about this
+        # path — an ineligible one yields the empty policy, which is off.
+        policy = self._cors_policy() if self._cors_eligible(path) else cors.Policy()
+        cross_origin = policy.enabled
         if cross_origin and cors.is_preflight(method, environ):
             # Answered before routing, because the one request in the exchange
             # that carries no credential must never reach `_authenticate` — see
@@ -190,6 +191,19 @@ class Application:
         base["Content-Length"] = str(len(raw))
         start_response(f"{status} ", [(k, v) for k, v in base.items()])
         return [raw]
+
+    def _cors_policy(self):
+        """The cross-origin policy in force: the operator's if they have saved one
+        on `/admin/cors`, else the environment's.
+
+        Read per request rather than held from startup, because the point of
+        having it on the page is that it takes effect without a restart — the next
+        request after a save is served under the new policy, and a preflight a
+        browser cached under the old one expires within `Access-Control-Max-Age`.
+        One indexed lookup on `mirror_meta`, alongside the api_key read this path
+        already does.
+        """
+        return cors.effective(self.db, self.s)["policy"]
 
     def _cors_eligible(self, path: str) -> bool:
         """Which paths a browser may reach cross-origin: the API plane and the

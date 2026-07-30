@@ -13,6 +13,7 @@ import urllib.parse
 
 from base import build, wsgi_call, wsgi_get
 from pcomirror import adminauth, cors
+from pcomirror.app import Mirror
 from pcomirror.config import Settings
 from pcomirror.serving import Application
 
@@ -439,40 +440,64 @@ class TestInternalCallers(unittest.TestCase):
         self.assertEqual(len(body["data"]), 1)
 
 
-class TestAdminSection(unittest.TestCase):
-    """The console shows the policy in force. Without it, a blocked `fetch` is
-    diagnosed from the browser's side alone, where every cause reads the same."""
+class AdminCase(unittest.TestCase):
+    """Signed in on the console, with the CORS pages reachable."""
 
     PASSWORD = "a-long-enough-password"
 
     def setUp(self):
         self.m, _ = mirror(allow_anonymous=False)
         adminauth._clear_failures()         # the throttle is process-wide
+        self.cookie = self._sign_in()
 
     def _cookie(self, headers) -> str:
         return headers["Set-Cookie"].split(";")[0].split("=", 1)[1]
 
-    def _as(self, cookie) -> dict:
-        return {"Cookie": f"{adminauth.COOKIE}={cookie}"}
+    def _as(self) -> dict:
+        return {"Cookie": f"{adminauth.COOKIE}={self.cookie}"}
+
+    def _sign_in(self) -> str:
+        """PCO_SECRET gets you in; the forced password change gets you a session."""
+        _, headers, _ = wsgi_call(self.m.wsgi, "POST", "/admin/login", body=b"password=sec")
+        self.cookie = self._cookie(headers)
+        form = urllib.parse.urlencode({"csrf": self.csrf("/admin/password"),
+                                       "password": self.PASSWORD,
+                                       "confirm": self.PASSWORD}).encode()
+        _, headers, _ = wsgi_call(self.m.wsgi, "POST", "/admin/password", body=form,
+                                  headers=self._as())
+        return self._cookie(headers)
+
+    def csrf(self, path="/admin/cors") -> str:
+        _, _, page = wsgi_get(self.m.wsgi, path, headers=self._as())
+        return re.search(rb'name=csrf value="([^"]+)"', page).group(1).decode()
+
+    def page(self, path="/admin/cors") -> bytes:
+        return wsgi_get(self.m.wsgi, path, headers=self._as())[2]
+
+    def save(self, csrf=None, **fields):
+        body = urllib.parse.urlencode(
+            {"csrf": csrf if csrf is not None else self.csrf(), **fields}, doseq=True).encode()
+        return wsgi_call(self.m.wsgi, "POST", "/admin/cors/configure",
+                         body=body, headers=self._as())
+
+    def acao(self, origin=ORIGIN):
+        """What a browser at `origin` is told on a real read."""
+        return wsgi_get(self.m.wsgi, "/people/v2/people",
+                        headers={"Origin": origin})[1].get("Access-Control-Allow-Origin")
+
+
+class TestAdminDashboard(AdminCase):
+    """The console shows the policy in force. Without it, a blocked `fetch` is
+    diagnosed from the browser's side alone, where every cause reads the same."""
 
     def dashboard(self, pol) -> bytes:
-        """Sign in with PCO_SECRET, complete the forced password change, read `/`."""
         self.m.settings.cors = pol
-        _, headers, _ = wsgi_call(self.m.wsgi, "POST", "/admin/login", body=b"password=sec")
-        cookie = self._cookie(headers)
-        _, _, page = wsgi_get(self.m.wsgi, "/admin/password", headers=self._as(cookie))
-        csrf = re.search(rb'name=csrf value="([^"]+)"', page).group(1).decode()
-        form = urllib.parse.urlencode(
-            {"csrf": csrf, "password": self.PASSWORD, "confirm": self.PASSWORD}).encode()
-        _, headers, _ = wsgi_call(self.m.wsgi, "POST", "/admin/password", body=form,
-                                  headers=self._as(cookie))
-        _, _, page = wsgi_get(self.m.wsgi, "/", headers=self._as(self._cookie(headers)))
-        return page
+        return self.page("/")
 
-    def test_off_says_which_variable_turns_it_on(self):
+    def test_off_says_where_to_turn_it_on(self):
         page = self.dashboard(cors.Policy())
         self.assertIn(b"Browser access", page)
-        self.assertIn(b"PCOMIRROR_CORS_ORIGINS", page)
+        self.assertIn(b"/admin/cors", page)
 
     def test_on_shows_the_policy_and_the_wildcard_caveat(self):
         page = self.dashboard(cors.from_env(
@@ -485,6 +510,163 @@ class TestAdminSection(unittest.TestCase):
         self.m.settings.allow_anonymous = True
         page = self.dashboard(cors.Policy(origins=("*",)))
         self.assertIn(b"no credential at all", page)
+
+
+class TestAdminConfigure(AdminCase):
+    """The page wins over the environment, persistently and without a restart —
+    the same shape as the subscription list and the divergence rate."""
+
+    def setUp(self):
+        super().setUp()
+        self.m.settings.cors = cors.Policy(origins=("https://env.example.org",))
+
+    def test_saving_takes_effect_on_the_next_request(self):
+        self.assertEqual(self.acao("https://env.example.org"), "https://env.example.org")
+        self.assertIsNone(self.acao())
+        status, headers, _ = self.save(origins=ORIGIN, max_age="60", methods=["GET"])
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/admin/cors?saved=1")
+        # No restart, no reload of settings: the very next read is served under it.
+        self.assertEqual(self.acao(), ORIGIN)
+        self.assertIsNone(self.acao("https://env.example.org"))
+
+    def test_it_survives_the_process_it_was_saved_in(self):
+        """A policy fixed at 9pm has to still be there when the container comes
+        back at 3am — which is exactly when the environment would have won."""
+        self.save(origins=ORIGIN)
+        rebuilt = Mirror(self.m.settings, transport=None, db=self.m.db)
+        state = cors.effective(rebuilt.db, rebuilt.settings)
+        self.assertEqual(state["source"], "admin")
+        self.assertEqual(state["policy"].origins, (ORIGIN,))
+        self.assertEqual(state["default"].origins, ("https://env.example.org",))
+
+    def test_handing_it_back_restores_the_environment(self):
+        self.save(origins=ORIGIN)
+        status, headers, _ = self.save(reset="1")
+        self.assertEqual(status, 303)
+        self.assertEqual(headers["Location"], "/admin/cors?handed_back=1")
+        self.assertEqual(self.acao("https://env.example.org"), "https://env.example.org")
+        self.assertIsNone(self.acao())
+        self.assertEqual(cors.effective(self.m.db, self.m.settings)["source"], "environment")
+
+    def test_saving_nothing_turns_it_off_rather_than_handing_it_back(self):
+        """Two different intentions, and conflating them would mean an operator
+        who wanted CORS off got the environment's origins back on the next start."""
+        self.save(origins="")
+        state = cors.effective(self.m.db, self.m.settings)
+        self.assertEqual(state["source"], "admin")
+        self.assertFalse(state["policy"].enabled)
+        self.assertIsNone(self.acao("https://env.example.org"))
+        # And no preflight is answered — off is silent, however it was turned off.
+        _, headers, _ = wsgi_call(self.m.wsgi, "OPTIONS", "/people/v2/people", headers={
+            "Origin": "https://env.example.org", "Access-Control-Request-Method": "GET"})
+        self.assertNotIn("Access-Control-Allow-Methods", headers)
+
+    def test_every_field_round_trips(self):
+        self.save(origins=f"{ORIGIN}, https://*.church.org", methods=["GET", "PATCH"],
+                  headers="Authorization", expose="X-Mirror-Source", max_age="0",
+                  allow_credentials="on")
+        p = cors.effective(self.m.db, self.m.settings)["policy"]
+        self.assertEqual(p.origins, (ORIGIN, "https://*.church.org"))
+        self.assertEqual(p.methods, ("GET", "PATCH"))
+        self.assertEqual(p.headers, ("Authorization",))
+        self.assertEqual(p.expose, ("X-Mirror-Source",))
+        self.assertEqual(p.max_age, 0)
+        self.assertTrue(p.allow_credentials)
+        _, headers, _ = preflight(self.m.wsgi, headers="authorization")
+        self.assertEqual(headers["Access-Control-Allow-Methods"], "GET, PATCH")
+        self.assertEqual(headers["Access-Control-Max-Age"], "0")
+        self.assertEqual(headers["Access-Control-Allow-Credentials"], "true")
+
+    def test_a_bad_value_is_refused_in_the_form_s_own_words(self):
+        """One validator, two vocabularies: an operator typing in a box is not
+        told to go and fix an environment variable."""
+        status, _, page = self.save(origins=f"{ORIGIN}/")
+        self.assertEqual(status, 200)                   # re-rendered, not redirected
+        self.assertIn(b"trailing slash", page)
+        self.assertIn(b"Origins", page)
+        self.assertNotIn(b"PCOMIRROR_CORS_ORIGINS entry", page)
+        # And nothing was stored, so the policy in force is untouched.
+        self.assertEqual(cors.effective(self.m.db, self.m.settings)["source"], "environment")
+
+    def test_a_refused_save_keeps_what_was_typed(self):
+        """A typo in one field must not cost the operator the other five."""
+        _, _, page = self.save(origins=f"{ORIGIN}/", headers="X-Custom", max_age="42")
+        self.assertIn(b"X-Custom", page)
+        self.assertIn(b'value="42"', page)
+        self.assertIn(f'value="{ORIGIN}/"'.encode(), page)
+
+    def test_credentials_beside_a_wildcard_is_refused_here_too(self):
+        _, _, page = self.save(origins="*", allow_credentials="on")
+        self.assertIn(b"rejects a wildcard on a credentialed request", page)
+        self.assertEqual(cors.effective(self.m.db, self.m.settings)["source"], "environment")
+
+    def test_an_unserved_method_cannot_be_posted(self):
+        _, _, page = self.save(origins=ORIGIN, methods=["GET", "PUT"])
+        self.assertIn(b"PUT", page)
+        self.assertIn(b"405", page)
+
+    def test_a_save_without_csrf_changes_nothing(self):
+        status, _, page = self.save(csrf="wrong", origins=ORIGIN)
+        self.assertEqual(status, 200)
+        self.assertIn(b"Session expired", page)
+        self.assertIsNone(self.acao())
+
+    def test_the_page_needs_a_session(self):
+        for path in ("/admin/cors", "/admin/cors/configure"):
+            status, headers, _ = wsgi_get(self.m.wsgi, path)
+            self.assertEqual(status, 303)
+            self.assertEqual(headers["Location"], "/")
+
+    def test_the_page_names_the_source_and_the_environment_default(self):
+        self.assertIn(b"In force: the environment", self.page())
+        self.save(origins=ORIGIN)
+        page = self.page()
+        self.assertIn(b"the policy set here", page)
+        self.assertIn(b"https://env.example.org", page)      # still shown as the default
+        self.assertIn(b"Hand back to the environment", page)
+
+    def test_an_unreadable_stored_policy_falls_back_and_says_so(self):
+        """Only reachable by editing the row by hand — `configure` stores what
+        `build` validated — but silently serving a policy nobody can read is the
+        one outcome that must not happen."""
+        self.m.db.set_meta(cors.OVERRIDE_KEY, '{"origins": ["not-an-origin"]}')
+        state = cors.effective(self.m.db, self.m.settings)
+        self.assertTrue(state["stored_unreadable"])
+        self.assertEqual(state["source"], "environment")
+        self.assertEqual(self.acao("https://env.example.org"), "https://env.example.org")
+        self.assertIn(b"stored policy could not be read", self.page())
+
+    def test_a_wildcard_saved_here_is_bannered_on_its_own_page(self):
+        self.save(origins="*")
+        self.assertIn(b"Any origin is allowed", self.page())
+
+    def test_the_console_stays_out_of_reach_of_what_it_configures(self):
+        """Configurable from the page, and still never applying to the page."""
+        self.save(origins="*")
+        for path in ("/", "/admin/cors"):
+            _, headers, _ = wsgi_get(self.m.wsgi, path, headers={"Origin": ORIGIN})
+            self.assertNotIn("Access-Control-Allow-Origin", headers, path)
+
+
+class TestStoredPolicy(unittest.TestCase):
+    def test_encode_decode_round_trip(self):
+        p = cors.build(origins=f"{ORIGIN},https://*.church.org", methods="get",
+                       headers="Authorization", expose="", max_age="30",
+                       allow_credentials=True)
+        self.assertEqual(cors.decode(cors.encode(p)), p)
+        self.assertEqual(p.expose, ())      # an explicitly empty list stays empty
+
+    def test_decode_revalidates(self):
+        """The row is text in a database. An origin that reached it another way
+        must not become one this service echoes."""
+        for raw in ('{"origins": ["https://a\\r\\nX-Evil: 1"]}',
+                    '{"origins": ["https://x/"]}',
+                    '{"origins": ["https://x"], "methods": ["PUT"]}',
+                    '{"origins": ["*"], "allow_credentials": true}',
+                    '["not", "an", "object"]'):
+            with self.assertRaises(ValueError, msg=raw):
+                cors.decode(raw)
 
 
 class TestPlainApplication(unittest.TestCase):

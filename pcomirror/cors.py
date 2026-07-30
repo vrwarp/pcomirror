@@ -4,14 +4,25 @@ A browser is the one caller that cannot take the mirror up on its base-URL swap
 unaided. `fetch('http://pcomirror.lan:8080/people/v2/people')` from a page served
 anywhere else is refused *before it is sent*, whatever credential it holds, until
 this service says which pages may read its answers. That set of origins is a fact
-about somebody's deployment, so it is configuration: `PCOMIRROR_CORS_ORIGINS`.
+about somebody's deployment, so it is configuration: `PCOMIRROR_CORS_ORIGINS`
+sets the default and **`/admin/cors` overrides it, persistently**.
 
-**Off unless that names something, and off means silent** — no `Access-Control-*`
-header on any response and `OPTIONS` left as the `405` it already was. A browser
-reads that as "not for me", which is the truth on an install that never asked for
-it, and the absence of a permissive default is the whole safety story here: a
-mirror of a church's people database must not be readable by every page its
-operator happens to visit.
+The page winning is the same shape as the subscription list and the divergence
+rate, for the same reason: whoever can reach the console when a browser app
+stops working is rarely whoever can edit the container's environment and restart
+it, and re-applying the environment on the next start would silently undo the fix
+at the hour nobody is watching. `build` is the single validator both go through,
+so the two cannot come to mean different things by the same words. An override
+takes effect on the next request; a preflight a browser already cached outlives
+it until `Access-Control-Max-Age` runs out, which is why that number is on the
+form.
+
+**Off unless one of the two names an origin, and off means silent** — no
+`Access-Control-*` header on any response and `OPTIONS` left as the `405` it
+already was. A browser reads that as "not for me", which is the truth on an
+install that never asked for it, and the absence of a permissive default is the
+whole safety story here: a mirror of a church's people database must not be
+readable by every page its operator happens to visit.
 
 Four things here are load-bearing and each is easy to get wrong:
 
@@ -40,12 +51,13 @@ rather than a mismatch.
 """
 from __future__ import annotations
 
+import json
 import re
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 #: Any origin. Spelled the way the header spells it, and — per the CORS spec —
-#: incompatible with credentials, which `from_env` refuses rather than emits.
+#: incompatible with credentials, which `build` refuses rather than emits.
 ANY = "*"
 
 #: What a browser sends for a page with no origin of its own: a `file://` page, a
@@ -78,11 +90,41 @@ DEFAULT_MAX_AGE = 600
 #: is for the operator holding curl, who would otherwise see a bare 200.
 DIAGNOSTIC_HEADER = "X-Mirror-Cors"
 
+#: A refusal names both places the policy can be set, rather than guessing which
+#: one is in force: the page overrides the environment, and a message that named
+#: the wrong one would send an operator to edit a variable nothing is reading.
+_WHERE = {
+    "origins": "set the allowed origins at /admin/cors or in PCOMIRROR_CORS_ORIGINS",
+    "methods": "set the allowed methods at /admin/cors or in PCOMIRROR_CORS_METHODS",
+    "headers": "set the allowed request headers at /admin/cors or in PCOMIRROR_CORS_HEADERS",
+}
+
 #: Request headers a browser may send without asking, so refusing one would fail
 #: a preflight over a header the caller never chose to add.
 SAFELISTED_REQUEST_HEADERS = frozenset({
     "accept", "accept-language", "content-language", "content-type", "range",
 })
+
+#: Where an operator's policy is kept once they save one on the page. Absent means
+#: "whatever the environment said", which is what a fresh install and a
+#: `docker run -e …` both expect.
+OVERRIDE_KEY = "cors_policy"
+
+#: One validator, two vocabularies. It is the same rule whether the value came
+#: from the environment or from a form, but "bad PCOMIRROR_CORS_ORIGINS entry" is
+#: the wrong sentence to show somebody typing in a box, and "Origins" is the wrong
+#: one to show somebody reading a container log.
+ENV_NAMES = {
+    "origins": "PCOMIRROR_CORS_ORIGINS", "methods": "PCOMIRROR_CORS_METHODS",
+    "headers": "PCOMIRROR_CORS_HEADERS", "expose": "PCOMIRROR_CORS_EXPOSE_HEADERS",
+    "max_age": "PCOMIRROR_CORS_MAX_AGE",
+    "allow_credentials": "PCOMIRROR_CORS_ALLOW_CREDENTIALS",
+}
+FORM_NAMES = {
+    "origins": "Origins", "methods": "Methods", "headers": "Request headers",
+    "expose": "Readable response headers", "max_age": "Preflight cache",
+    "allow_credentials": "Credentials",
+}
 
 #: A syntactically valid origin: scheme, host, optional port, nothing else. The
 #: gate that keeps request-supplied text out of a response header — an `Origin`
@@ -112,13 +154,13 @@ def _normalise(origin: str) -> str:
     return (origin or "").strip().lower()
 
 
-def _pattern(raw: str) -> str:
+def _pattern(raw: str, name: str = "PCOMIRROR_CORS_ORIGINS") -> str:
     """Validate and normalise one configured origin. Raises ValueError, loudly.
 
     A typo here is silent in the worst way — the browser reports a CORS failure
     and the server reports nothing at all — so `https://app.example.org/`, with
-    the trailing slash a copy-paste from the address bar leaves behind, fails
-    startup instead of never matching.
+    the trailing slash a copy-paste from the address bar leaves behind, is
+    refused at the point it is set instead of never matching.
     """
     value = (raw or "").strip()
     if value == ANY or value.lower() == NULL:
@@ -139,7 +181,7 @@ def _pattern(raw: str) -> str:
     elif "*" in value:
         hint = ("a wildcard may only replace the first label: https://*.example.org "
                 "(which matches its subdomains, but not example.org itself)")
-    raise ValueError(f"bad PCOMIRROR_CORS_ORIGINS entry {value!r}: {hint}")
+    raise ValueError(f"bad {name} entry {value!r}: {hint}")
 
 
 def _matches(pattern: str, origin: str) -> bool:
@@ -227,72 +269,156 @@ class Policy:
         return [n for n in names if not self.allows_header(n)]
 
 
-def from_env(env) -> Policy:
-    """Build the policy from the environment. Raises ValueError on anything malformed.
+def build(origins=None, methods=None, headers=None, expose=None, max_age=None,
+          allow_credentials=False, names=None) -> Policy:
+    """Validate one set of values into a policy. Raises ValueError on anything malformed.
 
-    Loud rather than lenient, for the same reason `parse_subscriptions` is: a CORS
-    policy that quietly did not mean what it said fails only in a browser
-    somebody else is holding.
+    **The one validator.** The environment and the operator page both come through
+    here, so the two cannot drift into meaning different things by the same words —
+    the same reason `divergence/rules.py` was lifted out of the golden test. Only
+    the vocabulary differs, by `names`: a container log wants
+    `PCOMIRROR_CORS_ORIGINS`, a form wants "Origins".
+
+    Loud rather than lenient, for the same reason `parse_subscriptions` is: a
+    policy that quietly did not mean what it said fails only in a browser somebody
+    else is holding.
+
+    Every list argument takes either the comma-separated string the environment
+    uses or an already-split sequence, and `None` means "not given, use the
+    default" — distinct from an empty value, which `expose` honours as "none".
     """
-    origins_raw = _items(env.get("PCOMIRROR_CORS_ORIGINS"))
+    names = names or ENV_NAMES
+    origins_raw = _listish(origins)
     if not origins_raw:
         return Policy()
-    origins = tuple(dict.fromkeys(_pattern(o) for o in origins_raw))
-    if ANY in origins and len(origins) > 1:
+    allowed = tuple(dict.fromkeys(_pattern(o, names["origins"]) for o in origins_raw))
+    if ANY in allowed and len(allowed) > 1:
         raise ValueError(
-            "PCOMIRROR_CORS_ORIGINS lists '*' beside a specific origin, which is a "
-            "contradiction: '*' already allows every origin. Keep one or the other.")
+            f"{names['origins']} lists '*' beside a specific origin, which is a "
+            f"contradiction: '*' already allows every origin. Keep one or the other.")
 
-    methods = tuple(dict.fromkeys(m.upper() for m in _items(
-        env.get("PCOMIRROR_CORS_METHODS")))) or DEFAULT_METHODS
-    unsupported = [m for m in methods if m not in SUPPORTED_METHODS]
+    verbs = tuple(dict.fromkeys(m.upper() for m in _listish(methods))) or DEFAULT_METHODS
+    unsupported = [m for m in verbs if m not in SUPPORTED_METHODS]
     if unsupported:
         raise ValueError(
-            f"PCOMIRROR_CORS_METHODS names {', '.join(unsupported)}, which this service "
+            f"{names['methods']} names {', '.join(unsupported)}, which this service "
             f"does not serve — advertising it would promise a method that answers 405. "
             f"Choose from {', '.join(SUPPORTED_METHODS)} (OPTIONS is always answered).")
 
-    headers = tuple(dict.fromkeys(_items(env.get("PCOMIRROR_CORS_HEADERS")))) or DEFAULT_HEADERS
     # Blank means "the default" for methods and request headers, where an empty
-    # list would refuse every real request — but it means "nothing" here, because
-    # exposing no response header is a coherent thing to want.
-    expose_raw = env.get("PCOMIRROR_CORS_EXPOSE_HEADERS")
-    expose = (tuple(dict.fromkeys(_items(expose_raw))) if expose_raw is not None
-              else DEFAULT_EXPOSE)
+    # list would refuse every real request — but it means "nothing" for `expose`,
+    # because exposing no response header is a coherent thing to want.
+    sends = tuple(dict.fromkeys(_listish(headers))) or DEFAULT_HEADERS
+    reads = tuple(dict.fromkeys(_listish(expose))) if expose is not None else DEFAULT_EXPOSE
 
-    max_age = DEFAULT_MAX_AGE
-    if (env.get("PCOMIRROR_CORS_MAX_AGE") or "").strip():
+    seconds = DEFAULT_MAX_AGE
+    if max_age is not None and str(max_age).strip():
         try:
-            max_age = int(env["PCOMIRROR_CORS_MAX_AGE"])
+            seconds = int(str(max_age).strip())
         except ValueError:
-            raise ValueError("PCOMIRROR_CORS_MAX_AGE takes a number of seconds, got "
-                             f"{env['PCOMIRROR_CORS_MAX_AGE']!r}") from None
-        if max_age < 0:
-            raise ValueError("PCOMIRROR_CORS_MAX_AGE cannot be negative (0 = do not "
-                             "cache preflights)")
+            raise ValueError(f"{names['max_age']} takes a number of seconds, got "
+                             f"{max_age!r}") from None
+        if seconds < 0:
+            raise ValueError(f"{names['max_age']} cannot be negative (0 = do not "
+                             f"cache preflights)")
 
-    credentials = _truthy(env.get("PCOMIRROR_CORS_ALLOW_CREDENTIALS"))
+    credentials = (allow_credentials if isinstance(allow_credentials, bool)
+                   else _truthy(allow_credentials))
     if credentials:
         # Not a policy of ours — browsers themselves refuse the combination, so a
         # service that emitted it would fail every request while looking configured.
-        for name, values in (("PCOMIRROR_CORS_ORIGINS", origins),
-                             ("PCOMIRROR_CORS_HEADERS", headers),
-                             ("PCOMIRROR_CORS_EXPOSE_HEADERS", expose)):
+        for field, values in (("origins", allowed), ("headers", sends), ("expose", reads)):
             if ANY in values:
                 raise ValueError(
-                    f"PCOMIRROR_CORS_ALLOW_CREDENTIALS cannot be combined with '*' in "
-                    f"{name}: a browser rejects a wildcard on a credentialed request. "
-                    f"Name the origins and headers you mean.")
-    return Policy(origins=origins, methods=methods, headers=headers, expose=expose,
-                  max_age=max_age, allow_credentials=credentials)
+                    f"{names['allow_credentials']} cannot be combined with '*' in "
+                    f"{names[field]}: a browser rejects a wildcard on a credentialed "
+                    f"request. Name the origins and headers you mean.")
+    return Policy(origins=allowed, methods=verbs, headers=sends, expose=reads,
+                  max_age=seconds, allow_credentials=credentials)
+
+
+def from_env(env) -> Policy:
+    """The environment's policy — the default the operator page may override."""
+    return build(origins=env.get("PCOMIRROR_CORS_ORIGINS"),
+                 methods=env.get("PCOMIRROR_CORS_METHODS"),
+                 headers=env.get("PCOMIRROR_CORS_HEADERS"),
+                 expose=env.get("PCOMIRROR_CORS_EXPOSE_HEADERS"),
+                 max_age=env.get("PCOMIRROR_CORS_MAX_AGE"),
+                 allow_credentials=env.get("PCOMIRROR_CORS_ALLOW_CREDENTIALS"),
+                 names=ENV_NAMES)
+
+
+def _listish(value) -> list[str]:
+    """A comma-separated string, or an already-split sequence, as a clean list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return _items(value)
+    return [str(v).strip() for v in value if str(v).strip()]
 
 
 def _items(value: str | None) -> list[str]:
     return [p.strip() for p in (value or "").split(",") if p.strip()]
 
 
-def _truthy(v: str | None) -> bool:
-    return bool(v) and v.strip().lower() in ("1", "true", "yes", "on")
+def _truthy(v) -> bool:
+    return bool(v) and str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
+# -- the stored policy: the page wins, the environment is the default ---------
+def effective(db, settings) -> dict:
+    """The policy in force, and where it came from.
+
+    The environment sets the default and an operator may override it from
+    `/admin/cors`; the override wins and persists, the same shape as the
+    divergence rate and the subscription list. A restart re-applies the
+    environment to *nothing* while an override is stored, so a policy fixed at 9pm
+    survives the container coming back at 3am.
+    """
+    default = getattr(settings, "cors", None) or Policy()
+    held = db.get_meta(OVERRIDE_KEY)
+    if held is None:
+        return {"policy": default, "source": "environment", "default": default,
+                "stored_unreadable": False}
+    try:
+        stored = decode(held)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        # Only reachable by editing the row by hand — `configure` stores what
+        # `build` validated. Fall back to the environment, which is the narrower
+        # of the two by default, and say so rather than serving a policy nobody
+        # can read.
+        return {"policy": default, "source": "environment", "default": default,
+                "stored_unreadable": True}
+    return {"policy": stored, "source": "admin", "default": default,
+            "stored_unreadable": False}
+
+
+def configure(db, policy: Policy | None) -> None:
+    """Store an operator's policy, or clear it back to the environment's."""
+    if policy is None:
+        db.execute("DELETE FROM mirror_meta WHERE key=?", (OVERRIDE_KEY,))
+    else:
+        db.set_meta(OVERRIDE_KEY, encode(policy))
+
+
+def encode(policy: Policy) -> str:
+    return json.dumps(asdict(policy), sort_keys=True)
+
+
+def decode(raw: str) -> Policy:
+    """Re-validate a stored policy through `build`.
+
+    Not `Policy(**json)`: the row is text in a database, and an origin that
+    reached it another way must not become one this service echoes.
+    """
+    held = json.loads(raw)
+    if not isinstance(held, dict):
+        raise ValueError("a stored CORS policy must be an object")
+    return build(origins=held.get("origins"), methods=held.get("methods"),
+                 headers=held.get("headers"), expose=held.get("expose", []),
+                 max_age=held.get("max_age"),
+                 allow_credentials=bool(held.get("allow_credentials")),
+                 names=FORM_NAMES)
 
 
 def add_vary(headers: dict, token: str = "Origin") -> None:
@@ -363,8 +489,9 @@ def preflight(policy: Policy, environ) -> tuple[int, dict, dict]:
     attach(headers, policy, origin)
     if "Access-Control-Allow-Origin" not in headers:
         headers[DIAGNOSTIC_HEADER] = (
-            f"origin {_safe(origin)!r} is not in PCOMIRROR_CORS_ORIGINS"
-            if policy.enabled else "cross-origin access is off (PCOMIRROR_CORS_ORIGINS is unset)")
+            f"origin {_safe(origin)!r} is not allowed — {_WHERE['origins']}"
+            if policy.enabled else
+            f"cross-origin access is off — {_WHERE['origins']}")
         return 200, headers, {}
     # The allowed sets go out whole, whatever was asked for. When the ask is
     # outside them the mismatch *is* the refusal, and the browser names it exactly.
@@ -374,12 +501,12 @@ def preflight(policy: Policy, environ) -> tuple[int, dict, dict]:
     refused = policy.refused_headers(asked_headers)
     if asked_method and not policy.allows_method(asked_method):
         headers[DIAGNOSTIC_HEADER] = (
-            f"method {_safe(asked_method, 16)} is not in PCOMIRROR_CORS_METHODS")
+            f"method {_safe(asked_method, 16)} is not allowed — {_WHERE['methods']}")
     elif refused:
         headers[DIAGNOSTIC_HEADER] = (
             f"header{'s' if len(refused) > 1 else ''} "
             f"{', '.join(_safe(h, 40) for h in refused[:5])} "
-            f"{'are' if len(refused) > 1 else 'is'} not in PCOMIRROR_CORS_HEADERS")
+            f"{'are' if len(refused) > 1 else 'is'} not allowed — {_WHERE['headers']}")
     return 200, headers, {}
 
 
