@@ -11,7 +11,8 @@ import html
 import json
 import urllib.parse
 
-from . import adminauth, adminstats, apikeys, diagnostics, divergence, pcoevents, webhooks
+from . import (adminauth, adminstats, apikeys, cors, diagnostics, divergence,
+               pcoevents, webhooks)
 from .config import now_iso, parse_subscriptions
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
@@ -308,6 +309,14 @@ class AdminApp:
         if self.s.allow_anonymous:
             banners += ("<p class='msg err'>PCOMIRROR_ALLOW_ANONYMOUS is set: "
                         "<code>/people/v2</code> is served without an API key.</p>")
+        policy = self._cors_policy()
+        if policy.any_origin and self.s.allow_anonymous:
+            # Either alone is a documented choice; together they mean any page in
+            # any browser that can route here reads the whole organization.
+            banners += ("<p class='msg err'>PCOMIRROR_CORS_ORIGINS is <code>*</code> and "
+                        "PCOMIRROR_ALLOW_ANONYMOUS is set: any web page loaded in any "
+                        "browser that can reach this service may read every mirrored "
+                        "person, with no credential at all.</p>")
         # Only the receivers that authenticate a delivery with *nothing*. One
         # with no secret but an unguessable token is a bearer credential, and
         # raising it here would teach an operator to scroll past this banner.
@@ -323,7 +332,7 @@ class AdminApp:
             "<p class=sub>operator console</p>", banners,
             self._stats_section(st), self._diagnostics_section(),
             self._divergence_section(), self._keys_section(csrf),
-            self._webhooks_section(st),
+            self._cors_section(), self._webhooks_section(st),
         ]), nav=f"<nav><form method=post action=/admin/logout style='display:inline'>"
                 f"<button class=link type=submit>sign out</button></form> · "
                 f"<a href=/admin/diagnostics>diagnostics</a> · "
@@ -393,6 +402,60 @@ class AdminApp:
     passthrough — spend the server's PCO credential on cache misses</label>
   <p><button type=submit>Create key</button></p>
 </form>"""
+
+    # -- browser access ---------------------------------------------------
+    def _cors_policy(self):
+        return getattr(self.s, "cors", None) or cors.Policy()
+
+    def _cors_section(self) -> str:
+        """What a browser on another origin may do, read-only.
+
+        Read-only on purpose. The two settings this console overrides — the
+        divergence rate and the subscription list — are ones an operator has to
+        change mid-incident from a machine that cannot restart the container.
+        Which websites may read a church's people database is not that kind of
+        setting, and a page that could widen it is a page worth attacking.
+
+        Here at all because the alternative is diagnosing a blocked `fetch` from
+        the browser's side alone, where every cause looks like the same one line
+        in a console.
+        """
+        policy = self._cors_policy()
+        if not policy.enabled:
+            return """
+<h2>Browser access</h2>
+<p class=muted>Off — a page served from another origin cannot read
+  <code>/people/v2</code>, and <code>OPTIONS</code> answers <code>405</code>.
+  Set <code>PCOMIRROR_CORS_ORIGINS</code> to the origins that should be able to.</p>"""
+        rows = [
+            ("origins", "any origin (<code>*</code>)" if policy.any_origin
+             else "<br>".join(E(o) for o in policy.origins)),
+            ("methods", E(", ".join(policy.methods))),
+            ("request headers", E(", ".join(policy.headers)) or "—"),
+            ("readable response headers", E(", ".join(policy.expose)) or "—"),
+            ("preflight cached", f"{policy.max_age}s" if policy.max_age
+             else "not cached (0s)"),
+            ("credentials", "allowed" if policy.allow_credentials else "not allowed"),
+        ]
+        table = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in rows)
+        wildcards = [o for o in policy.origins if "*." in o]
+        notes = []
+        if policy.any_origin:
+            notes.append("<span class=warn>Any page may use this API from a browser, with "
+                         "any key it holds.</span>")
+        if wildcards:
+            example = wildcards[0].replace("*.", "app.", 1)
+            notes.append(f"A wildcard entry matches subdomains only — "
+                         f"<code>{E(wildcards[0])}</code> allows <code>{E(example)}</code>, "
+                         f"not the bare domain.")
+        return f"""
+<h2>Browser access</h2>
+<table><tr><th>setting<th>value</tr>{table}</table>
+<p class=muted>{' '.join(notes)} Set from the environment only
+  (<code>PCOMIRROR_CORS_*</code>): who may read the mirror from a browser is a
+  deployment decision, not one to make from a web page. This console is never
+  cross-origin readable whatever is configured here — it authenticates with a
+  session cookie, and an API key cannot reach it.</p>"""
 
     # -- diagnostics ------------------------------------------------------
     #: Filters offered on the log page. `write.` first because a mutation is the

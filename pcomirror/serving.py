@@ -11,7 +11,7 @@ import json
 import sys
 import urllib.parse
 
-from . import apikeys, diagnostics, links, registry
+from . import apikeys, cors, diagnostics, links, registry
 from .pcoclient import KEEP_API_VERSION as _KEEP
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
@@ -40,6 +40,14 @@ _UNRELAYABLE = frozenset({
     "content-length", "transfer-encoding", "content-encoding", "connection",
     "keep-alive", "te", "trailer", "upgrade", "proxy-authenticate", "proxy-authorization",
 })
+
+# Who may read this service from a browser is this service's statement about its
+# own callers, never an upstream's about its. Relaying an `Access-Control-*`
+# header would at best duplicate the one added here — two
+# `Access-Control-Allow-Origin` headers is a hard failure in every browser, and
+# case alone decides whether ours replaces it or joins it — and at worst hand a
+# page a permission the operator never granted.
+_UNRELAYABLE_PREFIX = "access-control-"
 
 _BOOLS = {"true": 1, "t": 1, "1": 1, "yes": 1, "on": 1,
           "false": 0, "f": 0, "0": 0, "no": 0, "off": 0}
@@ -143,6 +151,14 @@ class Application:
     def __call__(self, environ, start_response):
         method = environ["REQUEST_METHOD"]
         path = environ.get("PATH_INFO", "")
+        policy = getattr(self.s, "cors", None) or cors.Policy()
+        # Whether a browser on another origin may be told anything about this path.
+        cross_origin = policy.enabled and self._cors_eligible(path)
+        if cross_origin and cors.is_preflight(method, environ):
+            # Answered before routing, because the one request in the exchange
+            # that carries no credential must never reach `_authenticate` — see
+            # the module docstring in `cors`.
+            return self._respond(*cors.preflight(policy, environ), start_response)
         qs = urllib.parse.parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
         body = self._read_body(environ)
         try:
@@ -157,6 +173,14 @@ class Application:
             status, payload = e.status, {"errors": [error]}
         except Exception as e:  # noqa: BLE001
             status, headers, payload = 500, {}, {"errors": [{"code": "500", "detail": str(e)}]}
+        if cross_origin:
+            # On the failures as much as the successes: a 401 a page cannot read
+            # is reported to its developer as a CORS error, and the sentence
+            # saying which key was wrong never arrives.
+            cors.attach(headers, policy, environ.get("HTTP_ORIGIN"))
+        return self._respond(status, headers, payload, start_response)
+
+    def _respond(self, status, headers, payload, start_response):
         raw = payload if isinstance(payload, (bytes, bytearray)) else json.dumps(payload).encode()
         base = {"Content-Type": JSONAPI}
         base.update(headers)
@@ -166,6 +190,20 @@ class Application:
         base["Content-Length"] = str(len(raw))
         start_response(f"{status} ", [(k, v) for k, v in base.items()])
         return [raw]
+
+    def _cors_eligible(self, path: str) -> bool:
+        """Which paths a browser may reach cross-origin: the API plane and the
+        health probes — never the operator console, never the webhook receiver.
+
+        The console authenticates with a `SameSite=Strict` session cookie and runs
+        no JavaScript, so cross-origin access to it has no legitimate caller and
+        one obvious illegitimate one. The receiver authenticates a delivery from
+        Planning Center, which is not a browser. Both exclusions are deliberate
+        and neither is configurable (DESIGN §8.5).
+        """
+        if path.startswith(self.s.webhook_path_prefix + "/"):
+            return False
+        return not admin_handles(path)
 
     def serve_json(self, path: str, params: dict | None = None):
         """Serve one read internally and hand back `(status, body)`.
@@ -556,7 +594,7 @@ class Application:
         """
         out = {}
         for k, v in (headers or {}).items():
-            if k.lower() in _UNRELAYABLE:
+            if k.lower() in _UNRELAYABLE or k.lower().startswith(_UNRELAYABLE_PREFIX):
                 continue
             out[k] = links.to_mirror_path(v, self.s) if k.lower() == "location" else v
         return out

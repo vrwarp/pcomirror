@@ -8,7 +8,7 @@ import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
-from . import apikeys, pcoevents, registry, webhooks
+from . import apikeys, cors, pcoevents, registry, webhooks
 from .app import Mirror
 from .config import Settings
 from .webhooks import upsert_subscription
@@ -239,6 +239,33 @@ def _warn_unverified_receivers(m: Mirror) -> None:
               "secret Planning Center shows, or move it to a receiver with a minted token.")
 
 
+def _report_cors(m: Mirror) -> None:
+    """State the cross-origin policy in force, and interrupt over the open one.
+
+    Silent when it is off, which is the default and the uninteresting case. When
+    it is on, the log is the only place an operator can confirm what the
+    environment was actually parsed into — a policy that does not match the
+    browser's idea of it is otherwise diagnosed entirely from the browser's side.
+    """
+    policy = getattr(m.settings, "cors", None) or cors.Policy()
+    if not policy.enabled:
+        return
+    print(f"[serve] CORS: {cors.describe(policy)}")
+    if not policy.any_origin:
+        return
+    if m.settings.allow_anonymous:
+        # The two open settings meet here: no credential is needed and no origin
+        # is refused, so any page in any browser that can route to this service
+        # can read the whole organization.
+        print("[serve] PCOMIRROR_CORS_ORIGINS is '*' AND PCOMIRROR_ALLOW_ANONYMOUS is set: "
+              "any web page loaded in any browser that can reach this service may read "
+              "every mirrored person, with no credential at all. Name the origins you mean.")
+    else:
+        print("[serve] PCOMIRROR_CORS_ORIGINS is '*' — any web page may use this API from a "
+              "browser, with any key it holds. Name the origins you mean unless that is "
+              "deliberate.")
+
+
 def cmd_serve(args):
     m = _mirror()
     _apply_env_subscriptions(m)
@@ -248,6 +275,7 @@ def cmd_serve(args):
     elif not apikeys.any_enabled(m.db):
         print("[serve] no API keys configured — /people/v2 will return 401. "
               "Create one with `pcomirror create-api-key --name <app>`.")
+    _report_cors(m)
     _warn_unverified_receivers(m)
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)

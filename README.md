@@ -72,6 +72,7 @@ pcomirror/
   ingest.py     # backfill, incremental sweep, per-parent walk, merger poll, delete audit, drift, hydration
   webhooks.py   # HMAC verify, per-event inbox, dispatch, thin->hydrate, merge handling
   serving.py    # WSGI JSON:API drop-in: read/include/where/search/order/paginate, write-through, pass-through
+  cors.py       # which browser origins may read the API plane (off unless configured)
   scheduler.py  # one background loop: drain inbox + hydration, run due sweeps, poll mergers, drift
   app.py, cli.py
 ```
@@ -353,6 +354,86 @@ must not be exposed publicly.
 Not yet enforced: the `rate_limit_per_min` / `passthrough_quota_per_min` columns
 on `api_key` are part of the §8.4 design but nothing reads them today.
 
+### Browser access (CORS)
+
+A browser is the one caller that cannot take the base-URL swap up on its own.
+`fetch('http://pcomirror.lan:8080/people/v2/people')` from a page served anywhere
+else is refused *before it is sent*, whatever credential it holds, until this
+service says which pages may read its answers. So name them:
+
+```sh
+PCOMIRROR_CORS_ORIGINS=https://directory.yourchurch.org,https://*.yourchurch.org
+```
+
+**Off unless that is set, and off is silent** — no `Access-Control-*` header
+anywhere and `OPTIONS` stays the `405` it already was, which is exactly what a
+browser needs to see to conclude the service is not for it. There is no
+permissive default, because no default could be both useful and safe for a mirror
+of a church's people database.
+
+| Variable | Default | What it says |
+| --- | --- | --- |
+| `PCOMIRROR_CORS_ORIGINS` | *(unset — off)* | The origins allowed. `*` for any; `https://*.church.org` for subdomains; `null` for `file://` pages and sandboxed iframes. |
+| `PCOMIRROR_CORS_METHODS` | `GET,POST,PATCH,DELETE` | Which of them a page may use. `GET` alone for a read-only browser app. |
+| `PCOMIRROR_CORS_HEADERS` | `Authorization,Content-Type` | Request headers a page may send — the API key, and a JSON:API body. |
+| `PCOMIRROR_CORS_EXPOSE_HEADERS` | `X-Mirror-Source,Location` | Response headers a page may *read*: mirror-or-pass-through, and where a `201` put the new record. |
+| `PCOMIRROR_CORS_MAX_AGE` | `600` | How long a browser may cache the preflight answer. |
+| `PCOMIRROR_CORS_ALLOW_CREDENTIALS` | `0` | Let cross-origin requests carry cookies / browser-remembered Basic credentials. Rarely wanted: a key in an `Authorization` header needs none of it. |
+
+Origins are matched as browsers send them — `scheme://host[:port]`, nothing else —
+so `https://app.church.org/` with the slash the address bar leaves behind **fails
+startup** rather than never matching. A wildcard replaces the first label only:
+`https://*.church.org` allows `app.church.org` and `a.b.church.org`, and does not
+allow `church.org` (a different origin you did not name) or `evil-church.org`
+(a different site). `*` beside a named origin is refused as a contradiction, and
+`*` anywhere is refused alongside credentials, because a browser rejects that
+combination outright — a service that emitted it would fail every request while
+looking configured.
+
+Four decisions in here are worth stating, because each is a failure a browser
+reports as the same single line:
+
+- **A preflight is answered without a credential.** Browsers strip
+  `Authorization` from the `OPTIONS` probe, so a preflight run through the API-key
+  check would `401` — and the browser would then report the *real* request as a
+  CORS failure with that 401 nowhere in sight. The probe reaches no data: it
+  answers only with the methods and headers the policy allows.
+- **Errors carry the headers too.** A `401`, `403` or `400` a page cannot read is
+  reported to its developer as "CORS error", and the sentence saying *key lacks
+  the 'write' scope* never arrives. Every response gets them, not just the ones
+  that worked.
+- **`Vary: Origin` is set whenever the answer depends on the origin** — including
+  on responses to origins that were refused, or a shared cache in front of this
+  service hands one origin's response, headers and all, to a page from another.
+- **The operator console and the webhook receiver are never cross-origin
+  readable**, whatever is configured. The console authenticates with a
+  `SameSite=Strict` session cookie and runs no JavaScript, so nothing legitimate
+  would ask; the receiver authenticates deliveries from Planning Center, which is
+  not a browser. Neither exclusion is a setting.
+
+A refused preflight still answers `200` — a browser only reads a `2xx` preflight,
+and its own message ("Method `DELETE` is not allowed by
+`Access-Control-Allow-Methods`") is the most useful sentence anyone gets out of
+the exchange. For whoever is holding `curl` instead, the reason is spelled out in
+an `X-Mirror-Cors` header naming the variable to change:
+
+```sh
+curl -si -X OPTIONS http://localhost:8080/people/v2/people \
+     -H 'Origin: https://elsewhere.example' -H 'Access-Control-Request-Method: GET'
+# X-Mirror-Cors: origin 'https://elsewhere.example' is not in PCOMIRROR_CORS_ORIGINS
+```
+
+`/admin` shows the policy in force under **Browser access**, and `serve` prints it
+at startup. Both are read-only: unlike the divergence rate and the subscription
+list, which an operator has to change mid-incident, who may read the mirror from
+a browser is a deployment decision and not one to make from a web page.
+
+**The thing CORS cannot do for you:** an API key in browser JavaScript is
+readable by anyone who opens the page, and CORS is a rule for *browsers*, not a
+firewall — `curl` ignores it entirely. So mint a browser app a key scoped to what
+it reads (`--scopes 'read:people,read:emails'`), and keep `write` and
+`passthrough` for callers that can hold a secret.
+
 ### Admin page
 
 The root path (`http://localhost:8080/`) serves an operator console: create and
@@ -385,6 +466,9 @@ What the console shows:
   `PCOMIRROR_SUBSCRIPTIONS` syntax. Saving there takes the list over from the
   environment — see
   [Subscriptions from the page](#subscriptions-from-the-page).
+- **Browser access** — the CORS policy in force: which origins, methods and
+  headers, and how long a preflight is cached. Read-only; see
+  [Browser access (CORS)](#browser-access-cors).
 - **Diagnostics** — a summary, and `/admin/diagnostics` for the full log. See below.
 
 ### Diagnostics
@@ -823,7 +907,8 @@ and exits, rather than surfacing a SQLite traceback:
 - **Config is env-first** (see [`.env.example`](.env.example)): `PCO_APP_ID`,
   `PCO_SECRET`, `PCO_API_VERSION`, `PCO_USER_AGENT`, `PCOMIRROR_PUBLIC_URL`,
   `PCOMIRROR_BACKFILL_ON_START`, `PCOMIRROR_SUBSCRIPTIONS`, `PUID` / `PGID`,
-  `PCOMIRROR_ALLOW_ANONYMOUS`, `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
+  `PCOMIRROR_ALLOW_ANONYMOUS`, `PCOMIRROR_CORS_ORIGINS` (+ the other
+  `PCOMIRROR_CORS_*` knobs), `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
   `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`,
   `PCO_WEBHOOKS_BASE_URL`, and the container-friendly defaults
@@ -857,7 +942,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 512 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # 598 end-to-end tests + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write
@@ -882,6 +967,14 @@ rows survive. `tests/test_search.py` covers the query surface a real PCO client 
 every `where[search_*]` filter, typed/boolean filters, nested collections with
 includes, and a full walk of `links.next` asserting each row is visited exactly
 once.
+
+`tests/test_cors.py` pins the cross-origin rules for the same reason: a browser
+reports every one of them as the same single line in a console, so an
+unauthenticated preflight, headers on the error responses, `Vary: Origin`, and
+the two planes the policy must never reach are otherwise indistinguishable when
+one breaks. It also asserts that an `Origin` carrying a newline is never echoed —
+allowed origins are matched against validated patterns precisely so that
+request-supplied text cannot reach a response header.
 
 [`tests/golden/`](tests/golden/README.md) holds **80** request/response pairs captured
 from the **live** Planning Center API and sanitized; `tests/test_golden.py`

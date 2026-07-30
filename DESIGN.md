@@ -1189,6 +1189,39 @@ at all.
 quota) authenticates apps to pcomirror; the upstream **PCO PAT** lives only
 server-side and is never exposed to or selectable by callers.
 
+### 8.5 Cross-origin access (CORS)
+
+**The base-URL swap has one caller it cannot serve unaided: a browser.** A page
+served from anywhere else has its `fetch` of `/people/v2/…` refused *before it is
+sent*, whatever credential it holds, until this service states which origins may
+read its answers. That statement is the deployment's, not the design's, so it is
+**configuration** (`PCOMIRROR_CORS_ORIGINS`) and it is **off by default** — a
+mirror of a church's people database has no default set of websites that may read
+it, and a permissive one is not a default so much as a decision made on somebody
+else's behalf.
+
+Off is **silent**: no `Access-Control-*` header on any response, and `OPTIONS`
+left as the `405` it already was. That is what a browser needs in order to
+conclude the service is not for it.
+
+| Decision | Why it is this way |
+| --- | --- |
+| **Preflight is answered before authentication** | Browsers strip `Authorization` from the `OPTIONS` probe. A preflight through `_authenticate` would `401`, and the browser would then report the *actual* request as an opaque CORS failure with that 401 nowhere in sight. The probe reaches no data: it answers with the allowed methods and headers, nothing else. |
+| **Every response carries the headers, failures included** | A `401`/`403`/`400` without `Access-Control-Allow-Origin` cannot be read by the page that caused it, so the developer sees "CORS error" where the server said *key lacks the `write` scope*. |
+| **A refusal is a `200` with the permission missing** | A browser only reads a `2xx` preflight; its own message ("Method `DELETE` is not allowed by `Access-Control-Allow-Methods`") is the most precise sentence in the exchange, and any non-2xx replaces it with "does not have HTTP ok status", which names nothing. `X-Mirror-Cors` carries the reason in words for whoever is holding `curl`, naming the variable to change. |
+| **`Vary: Origin` whenever the answer is origin-dependent** | Including on responses to refused origins. Without it a shared cache in front of the service hands one origin's response — headers and all — to a page from another. `*` alone does not vary; with credentials it does, because the echo becomes concrete. |
+| **The operator console and the webhook receiver are excluded, permanently** | `/` and `/admin/**` authenticate with a `SameSite=Strict` session cookie and run no JavaScript, so cross-origin access has no legitimate caller and one obvious illegitimate one; the receiver authenticates a delivery from Planning Center, which is not a browser. Not settings — §8.5 does not reach either plane. |
+| **A malformed origin can never be echoed** | The `Origin` is attacker-chosen text that ends in a response header. Only a value that parses as `scheme://host[:port]` may be *allowed*, and every reason string is stripped to printable ASCII — otherwise `Origin: https://a\r\nSet-Cookie: …` is response splitting rather than a mismatch. |
+| **Malformed configuration fails startup** | Same rule as `PCOMIRROR_SUBSCRIPTIONS` (§6.1): `https://app.church.org/`, with the slash the address bar leaves behind, would otherwise match nothing and be diagnosed only from inside a browser somebody else is holding. `*` beside a named origin is a contradiction; `*` with credentials is a combination browsers reject, so it is refused here rather than emitted. |
+| **Env-only, not an admin-page override** | The two settings the console overrides — the divergence rate (§10) and the subscription list (§6.1) — are ones an operator must change mid-incident from a machine that cannot restart the container. Which websites may read the organization is not that, and a page that could widen it is a page worth attacking. The console *displays* the policy, because the alternative is diagnosing a blocked `fetch` from the browser's side alone. |
+
+**What CORS is not.** It is a rule enforced by browsers, not a boundary: `curl`
+ignores it, so the API-key plane (§8.4) remains the only thing standing between a
+caller and the data. And a key shipped to browser JavaScript is readable by
+anyone who opens the page — which makes a narrowly scoped key
+(`read:people,read:emails`) the right credential for a browser app, and `write` /
+`passthrough` the wrong ones.
+
 ---
 
 ## 9. Auth, versioning & operations
