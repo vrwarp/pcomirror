@@ -543,7 +543,11 @@ class AdminApp:
   <input id=h name=headers value="{E(f.get('headers', ''))}"
          placeholder="Authorization, Content-Type">
   <p class=muted>Blank means the default <code>Authorization, Content-Type</code> —
-    the API key, and a JSON:API body. <code>*</code> allows any.</p>
+    the API key, and a JSON:API body. <code>*</code> allows any. The caching
+    headers an HTTP library adds by itself
+    (<code>{E(', '.join(cors.CLIENT_CACHE_REQUEST_HEADERS))}</code>) are allowed
+    whatever is listed here, because a preflight refused over one of those fails a
+    request the app never chose to decorate.</p>
   <label for=x>Response headers a page may read</label>
   <input id=x name=expose value="{E(f.get('expose', ''))}"
          placeholder="X-Mirror-Source, Location">

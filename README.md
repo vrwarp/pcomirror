@@ -385,7 +385,7 @@ safe for a mirror of a church's people database.
 | `PCOMIRROR_CORS_ORIGINS` | *(unset — off)* | The origins allowed. `*` for any; `https://*.church.org` for subdomains; `null` for `file://` pages and sandboxed iframes. |
 
 | `PCOMIRROR_CORS_METHODS` | `GET,POST,PATCH,DELETE` | Which of them a page may use. `GET` alone for a read-only browser app. |
-| `PCOMIRROR_CORS_HEADERS` | `Authorization,Content-Type` | Request headers a page may send — the API key, and a JSON:API body. |
+| `PCOMIRROR_CORS_HEADERS` | `Authorization,Content-Type` | Request headers a page may send — the API key, and a JSON:API body. Whatever is set, the caching headers an HTTP library adds for itself are allowed too; see below. |
 | `PCOMIRROR_CORS_EXPOSE_HEADERS` | `X-Mirror-Source,Location` | Response headers a page may *read*: mirror-or-pass-through, and where a `201` put the new record. |
 | `PCOMIRROR_CORS_MAX_AGE` | `600` | How long a browser may cache the preflight answer. |
 | `PCOMIRROR_CORS_ALLOW_CREDENTIALS` | `0` | Let cross-origin requests carry cookies / browser-remembered Basic credentials. Rarely wanted: a key in an `Authorization` header needs none of it. |
@@ -393,6 +393,16 @@ safe for a mirror of a church's people database.
 Every one of those is also a field on `/admin/cors`, validated by the same code:
 one validator, two vocabularies, so the page and the environment cannot come to
 mean different things by the same words.
+
+`PCOMIRROR_CORS_HEADERS` is about the headers *your app* chooses. Five more are
+allowed whatever it says — `Cache-Control`, `Pragma`, `Expires`, `If-None-Match`
+and `If-Modified-Since` — because an HTTP client library adds them on its own
+account and none of them carries authority a read could act on. `axios`'s cache
+interceptor, to name the one that prompted this, puts the first three on *every*
+request under its default `cacheTakeover` and the conditional pair on every
+revalidation; none is on the browser's safelist, so all five are preflighted, and
+a policy listing only `Authorization,Content-Type` refused every request such a
+page made. That is a header nobody typed failing a request nobody could see.
 
 Origins are matched as browsers send them — `scheme://host[:port]`, nothing else —
 so `https://app.church.org/` with the slash the address bar leaves behind **fails

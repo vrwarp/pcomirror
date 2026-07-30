@@ -8,6 +8,7 @@ plain WSGI app so it runs on the stdlib server and is trivially unit-testable.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import urllib.parse
 
@@ -132,6 +133,39 @@ def _coerce(r, col: str, val: str):
     return val
 
 
+_HEADER_BREAKING = re.compile(r"[\r\n\x00]")
+
+
+def _sendable(headers: dict) -> list[tuple[str, str]]:
+    """Every header as something the server can actually put on the wire.
+
+    A header crosses PEP 3333 as latin-1, and a character outside it does not
+    arrive mangled: it raises `UnicodeEncodeError` inside the WSGI server *while
+    the header block is being written*. Whatever was written stands, the rest is
+    lost, and the caller diagnoses a response nobody composed — which is how one
+    em dash in a CORS refusal's reason cost that response its
+    `Access-Control-Allow-Origin` and made a header refusal look like an origin
+    refusal.
+
+    Two things reach here carrying text this service did not write: a relayed PCO
+    header, and a diagnostic quoting the request. Both are sanitised where they are
+    built. This is what holds when the third one arrives — a response with a
+    `?` in a header is a response; a half-written header block is not.
+    """
+    out = []
+    for name, value in headers.items():
+        key = _HEADER_BREAKING.sub("", str(name))
+        try:
+            key.encode("latin-1")
+        except UnicodeEncodeError:
+            # Nothing can be done with a name that cannot be sent, and a value
+            # under no name is not a header.
+            continue
+        text = _HEADER_BREAKING.sub("", str(value))
+        out.append((key, text.encode("latin-1", "replace").decode("latin-1")))
+    return out
+
+
 class Application:
     # How many un-walked parents one read may fill inline. A single nested read
     # needs one; only a page-wide `include` of a walked collection can want more,
@@ -189,7 +223,7 @@ class Application:
         # the bytes this response is actually about to send, which is the one
         # number a caller cannot recover for itself if we get it wrong.
         base["Content-Length"] = str(len(raw))
-        start_response(f"{status} ", [(k, v) for k, v in base.items()])
+        start_response(f"{status} ", _sendable(base))
         return [raw]
 
     def _cors_policy(self):
