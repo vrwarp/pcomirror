@@ -7,6 +7,8 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from . import cors
+
 
 def now_iso() -> str:
     """ISO-8601 UTC, second precision with a literal Z — matches PCO's format so
@@ -113,6 +115,10 @@ class Settings:
     subscriptions: list = field(default_factory=list)
     # serve /people/v2 without an API key — LAN-only escape hatch (DESIGN §8.4)
     allow_anonymous: bool = False
+    # Which browser origins may read the API plane (DESIGN §8.5). Empty = off, and
+    # off is silent: no CORS headers anywhere, `OPTIONS` stays a 405. A default
+    # cannot be both useful and safe here, so there isn't one.
+    cors: cors.Policy = field(default_factory=cors.Policy)
     # How often to run the full-id delete audit, in hours (0 switches it off).
     # It is the only mechanism that finds a record hard-deleted at PCO without a
     # webhook and without a merge — `where[updated_at]` cannot see a vanished id,
@@ -150,6 +156,7 @@ class Settings:
         s.backfill_on_start = _truthy(e.get("PCOMIRROR_BACKFILL_ON_START"))
         s.subscriptions = parse_subscriptions(e.get("PCOMIRROR_SUBSCRIPTIONS"))
         s.allow_anonymous = _truthy(e.get("PCOMIRROR_ALLOW_ANONYMOUS"))
+        s.cors = cors.from_env(e)
         if e.get("PCOMIRROR_RATE_TARGET_RPS"):
             s.rate_target_rps = float(e["PCOMIRROR_RATE_TARGET_RPS"])
         if e.get("PCOMIRROR_AUDIT_INTERVAL_HOURS"):

@@ -8,7 +8,7 @@ import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
-from . import apikeys, pcoevents, registry, webhooks
+from . import apikeys, cors, pcoevents, registry, webhooks
 from .app import Mirror
 from .config import Settings
 from .webhooks import upsert_subscription
@@ -239,6 +239,46 @@ def _warn_unverified_receivers(m: Mirror) -> None:
               "secret Planning Center shows, or move it to a receiver with a minted token.")
 
 
+def _report_cors(m: Mirror) -> None:
+    """State the cross-origin policy in force, where it came from, and interrupt
+    over the open one.
+
+    Silent only when it is off *and* nothing was configured, which is the default
+    and the uninteresting case. Otherwise the log is the only place an operator can
+    confirm what was actually parsed, and which of the two sources won — a policy
+    that does not match the browser's idea of it is otherwise diagnosed entirely
+    from the browser's side. Said at every start rather than once when it changed,
+    for the same reason as the anonymous and secretless-receiver warnings.
+    """
+    state = cors.effective(m.db, m.settings)
+    policy = state["policy"]
+    if state["source"] == "admin":
+        # The environment is not applied while this is stored, so saying what it
+        # holds would describe a policy nobody is being served.
+        print(f"[serve] CORS: {cors.describe(policy)} — set on /admin/cors, which "
+              f"takes precedence over PCOMIRROR_CORS_* (the page hands it back).")
+    elif policy.enabled:
+        print(f"[serve] CORS: {cors.describe(policy)} — from PCOMIRROR_CORS_*.")
+    if state["stored_unreadable"]:
+        print("[serve] the CORS policy stored by /admin/cors could not be read, so "
+              "PCOMIRROR_CORS_* is in force. Re-save it from the page.")
+    if not policy.any_origin:
+        return
+    where = ("/admin/cors" if state["source"] == "admin" else "PCOMIRROR_CORS_ORIGINS")
+    if m.settings.allow_anonymous:
+        # The two open settings meet here: no credential is needed and no origin
+        # is refused, so any page in any browser that can route to this service
+        # can read the whole organization.
+        print(f"[serve] every origin is allowed ({where}) AND PCOMIRROR_ALLOW_ANONYMOUS is "
+              "set: any web page loaded in any browser that can reach this service may "
+              "read every mirrored person, with no credential at all. Name the origins "
+              "you mean.")
+    else:
+        print(f"[serve] every origin is allowed ({where}) — any web page may use this API "
+              "from a browser, with any key it holds. Name the origins you mean unless "
+              "that is deliberate.")
+
+
 def cmd_serve(args):
     m = _mirror()
     _apply_env_subscriptions(m)
@@ -248,6 +288,7 @@ def cmd_serve(args):
     elif not apikeys.any_enabled(m.db):
         print("[serve] no API keys configured — /people/v2 will return 401. "
               "Create one with `pcomirror create-api-key --name <app>`.")
+    _report_cors(m)
     _warn_unverified_receivers(m)
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)
