@@ -333,6 +333,31 @@ CREATE TABLE webhook_dead_letter (
   last_error TEXT, attempts INTEGER, died_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+-- every call to the receiver, exactly as it arrived — including the ones nothing
+-- was captured from, which is where the diagnostic value is. `webhook_delivery`
+-- above holds the bytes of the deliveries that were *accepted*; a bad signature,
+-- an unknown token or a body that would not parse left no trace at all, and the
+-- header that decided it was never kept. Verbatim: every header, the exact body,
+-- nothing redacted — see pcomirror/webhooklog.py for why, and what it costs.
+-- A ring buffer of `keep` rows (PCOMIRROR_WEBHOOK_RECORD_KEEP); `body` holds the
+-- first MAX_BODY bytes and `body_bytes` the true length, because the receiver
+-- answers before it knows who is calling.
+CREATE TABLE webhook_call (
+  call_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  method TEXT NOT NULL, path TEXT NOT NULL, query TEXT NOT NULL DEFAULT '',
+  url_token TEXT, remote_addr TEXT,
+  headers TEXT NOT NULL DEFAULT '{}',      -- every header, verbatim, as a JSON object
+  body BLOB NOT NULL DEFAULT x'',          -- exact bytes, to MAX_BODY
+  body_bytes INTEGER NOT NULL DEFAULT 0,   -- the true length, truncated or not
+  truncated INTEGER NOT NULL DEFAULT 0,
+  status INTEGER,                          -- NULL = the receiver raised rather than answered
+  note TEXT, duration_ms INTEGER,
+  delivery_id TEXT, event_name TEXT,       -- read out of the body, best effort, as an index
+  event_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX webhook_call_status_idx ON webhook_call (status, call_id);
+
 CREATE TABLE reconcile_run (
   run_id INTEGER PRIMARY KEY AUTOINCREMENT,
   resource_type TEXT, kind TEXT, started_at TEXT, completed_at TEXT, status TEXT,

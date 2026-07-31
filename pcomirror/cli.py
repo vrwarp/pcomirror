@@ -8,7 +8,7 @@ import threading
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
-from . import apikeys, cors, pcoevents, registry, webhooks
+from . import apikeys, cors, pcoevents, registry, webhooklog, webhooks
 from .app import Mirror
 from .config import Settings
 from .webhooks import upsert_subscription
@@ -239,6 +239,27 @@ def _warn_unverified_receivers(m: Mirror) -> None:
               "secret Planning Center shows, or move it to a receiver with a minted token.")
 
 
+def _report_webhook_recording(m: Mirror) -> None:
+    """Say, at every start, that deliveries are being kept verbatim.
+
+    On by default and unredacted, so it is not something to find out about from
+    the schema. Same treatment as the CORS policy and the secretless receivers,
+    and for the same reason: the person reading the log on a Tuesday is not the
+    person who configured it. Silent when it is off, which is the uninteresting
+    case.
+    """
+    state = webhooklog.effective(m.db, m.settings)
+    if not state["keep"]:
+        return
+    where = ("set on /admin/webhooks/calls" if state["source"] == "admin"
+             else "PCOMIRROR_WEBHOOK_RECORD_KEEP")
+    print(f"[serve] recording the last {state['keep']} calls to the webhook receiver "
+          f"verbatim — every header and the exact body, nothing redacted, refused "
+          f"deliveries included ({where}). They hold whatever the events carried, so "
+          f"treat them like the database. Read or download at /admin/webhooks/calls; "
+          f"0 switches recording off.")
+
+
 def _report_cors(m: Mirror) -> None:
     """State the cross-origin policy in force, where it came from, and interrupt
     over the open one.
@@ -290,6 +311,7 @@ def cmd_serve(args):
               "Create one with `pcomirror create-api-key --name <app>`.")
     _report_cors(m)
     _warn_unverified_receivers(m)
+    _report_webhook_recording(m)
     if m.settings.backfill_on_start or args.backfill:
         _backfill_if_needed(m)
     sched = None
