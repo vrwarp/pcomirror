@@ -495,6 +495,29 @@ CREATE TABLE webhook_dead_letter (
   last_error text, attempts int, died_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- 8f-bis. Verbatim recording of every call to the receiver — the refused ones
+--   included, which is the point: 8c holds the bytes of deliveries that were
+--   *accepted*, so a bad signature, an unknown token or an unparseable body left
+--   nothing behind, and the header the decision was made from was never kept.
+--   Nothing is redacted (see pcomirror/webhooklog.py). Ring buffer of `keep`
+--   rows; `body` is capped at MAX_BODY with the true length beside it, because
+--   the receiver answers before it knows who is calling.
+CREATE TABLE webhook_call (
+  call_id bigserial PRIMARY KEY,
+  org_id bigint NOT NULL DEFAULT 0,
+  at timestamptz NOT NULL DEFAULT now(),
+  method text NOT NULL, path text NOT NULL, query text NOT NULL DEFAULT '',
+  url_token text, remote_addr inet,
+  headers jsonb NOT NULL DEFAULT '{}',  -- every header, verbatim
+  body bytea NOT NULL DEFAULT '',       -- exact bytes, to MAX_BODY
+  body_bytes int NOT NULL DEFAULT 0, truncated boolean NOT NULL DEFAULT false,
+  status int,                           -- NULL = the receiver raised rather than answered
+  note text, duration_ms int,
+  delivery_id text, event_name text,    -- read out of the body, best effort, as an index
+  event_count int NOT NULL DEFAULT 0
+);
+CREATE INDEX webhook_call_status_idx ON webhook_call (org_id, status, call_id);
+
 -- 8g. Append-only run log + drift log (observability; not used for resume).
 CREATE TABLE reconcile_run (
   run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

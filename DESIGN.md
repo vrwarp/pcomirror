@@ -642,6 +642,49 @@ unparseable, or failing after ~8 attempts/2 h) → `webhook_dead_letter` + alert
 dead-letter is a latency/alert event, **not data loss** — reconciliation
 independently re-derives the resource.
 
+### 6.5 Recording what arrives (`webhook_call`)
+
+§6.2 stores the exact bytes of every delivery the receiver **accepts**, which is
+what re-verification and replay are made of. The gap that leaves is everything
+before that point: a delivery refused at the signature check, a token nobody
+owns, a body that would not parse — and the headers the decision was made from,
+which were read, compared and dropped. "Planning Center says it delivered and the
+mirror says nothing arrived" had no evidence on this side of the wire.
+
+So `webhook_call` records the **request**, not the delivery: method, path, query,
+`REMOTE_ADDR`, every header, the exact body, the status and note answered, and
+how long it took. Written from the serving layer, after `receive` answers and
+also when it *raises* — a delivery that crashed something is the one nobody can
+otherwise reconstruct — and wrapped so a recording can never fail a delivery
+(`diagnostics.Recorder`'s rule, for the same reason: PCO's answer to a 5xx is to
+send it again).
+
+**Verbatim, and unlike the `diagnostic_event` log that means unredacted.** That
+log keeps filter names and drops filter values because it is meant to be safe to
+paste into an issue. A recording is the opposite instrument: whether the bytes
+the mirror hashed are the bytes Planning Center signed is not a question that can
+be asked of a summary, and a signature over a re-serialized body is a signature
+over a different body. The rows therefore hold whole payloads — names,
+addresses, phone numbers — and the download hands them over as they are, with the
+warning carried inside the file rather than only on the page that offered it.
+
+Two bounds, neither a redaction:
+
+- **Per call.** `body` keeps the leading `MAX_BODY` (256 KiB) bytes exactly, with
+  `body_bytes` recording the true length and `truncated` saying so. The receiver
+  answers before it knows who is calling, so an endpoint that writes whatever it
+  is handed straight to disk is a way to fill the disk.
+- **In total.** A ring buffer of `PCOMIRROR_WEBHOOK_RECORD_KEEP` rows (default
+  500; `0` is off), overridable from `/admin/webhooks/calls` without a restart —
+  the delivery an operator wants recorded is the next one, and restarting to turn
+  recording on loses it. The consequence worth knowing before it matters: a flood
+  of junk to an unknown token evicts real history. That is the price of recording
+  the rejects, which is where the diagnostic value is.
+
+The console reads them, filters accepted from rejected, and downloads either the
+whole log as JSON, one call, or one call's **exact bytes** — the last of those
+being what re-hashing a refused delivery actually needs.
+
 ---
 
 ## 7. Background reconciliation & drift repair

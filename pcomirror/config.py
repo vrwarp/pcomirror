@@ -137,6 +137,12 @@ class Settings:
     # How many divergence reports to keep. Each holds two whole responses, so
     # this is the setting that decides the log's size on disk.
     shadow_keep: int = 200
+    # How many webhook calls to record verbatim — every header and the exact
+    # body, of the deliveries that were rejected as much as the ones that were
+    # kept. On by default, because the delivery worth diagnosing is one that has
+    # already happened and a recorder that is off is off on the day it is needed.
+    # 0 switches recording off. Read them at /admin/webhooks/calls.
+    webhook_record_keep: int = 500
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
@@ -167,6 +173,8 @@ class Settings:
             s.shadow_per_minute = max(0, int(e["PCOMIRROR_SHADOW_PER_MINUTE"]))
         if e.get("PCOMIRROR_SHADOW_KEEP"):
             s.shadow_keep = max(1, int(e["PCOMIRROR_SHADOW_KEEP"]))
+        if e.get("PCOMIRROR_WEBHOOK_RECORD_KEEP"):
+            s.webhook_record_keep = max(0, int(e["PCOMIRROR_WEBHOOK_RECORD_KEEP"]))
         return s
 
     def auth_header(self) -> str:

@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 import urllib.parse
 
-from . import apikeys, cors, diagnostics, links, registry
+from . import apikeys, cors, diagnostics, links, registry, webhooklog
 from .pcoclient import KEEP_API_VERSION as _KEEP
 from .admin import AdminApp, handles as admin_handles
 from .config import now_iso
@@ -133,6 +134,12 @@ def _coerce(r, col: str, val: str):
     return val
 
 
+def _ms_since(started: float) -> int:
+    """Milliseconds on the monotonic clock — a duration, never a wall time, so a
+    clock adjustment mid-request cannot report a delivery that took -3 seconds."""
+    return int((time.monotonic() - started) * 1000)
+
+
 _HEADER_BREAKING = re.compile(r"[\r\n\x00]")
 
 
@@ -179,7 +186,11 @@ class Application:
         #: Set by `Mirror`. Absent in the plain-Application tests, which is why
         #: every use of it is guarded rather than assumed.
         self.divergence = None
-        self.admin = AdminApp(db, settings, self.diagnostics, client)
+        #: Built here rather than passed in: it needs nothing but the database
+        #: and the settings, and whether it records anything is a number it reads
+        #: per call, so there is no state to hand it and nothing to keep in step.
+        self.webhook_calls = webhooklog.CallRecorder(db, settings)
+        self.admin = AdminApp(db, settings, self.diagnostics, client, self.webhook_calls)
 
     # -- WSGI --------------------------------------------------------------
     def __call__(self, environ, start_response):
@@ -308,7 +319,21 @@ class Application:
         if path.startswith(self.s.webhook_path_prefix + "/"):
             token = path[len(self.s.webhook_path_prefix) + 1:]
             sig = environ.get("HTTP_X_PCO_WEBHOOKS_AUTHENTICITY")
-            code, note = self.webhooks.receive(token, body, sig)
+            # Recorded here rather than inside the receiver, because what is worth
+            # keeping is the *request* — every header, the exact bytes, and the
+            # answer given — and the receiver is handed only the three parts of it
+            # that decide the answer. Recorded on the way out so the answer is in
+            # the row, and recorded when the receiver raises too: a delivery that
+            # crashed something is the one nobody can otherwise reconstruct.
+            started = time.monotonic()
+            try:
+                code, note = self.webhooks.receive(token, body, sig)
+            except Exception as e:  # noqa: BLE001 — recorded, then re-raised unchanged
+                self.webhook_calls.record(environ, path, token, body, None,
+                                          f"{type(e).__name__}: {e}", _ms_since(started))
+                raise
+            self.webhook_calls.record(environ, path, token, body, code, note,
+                                      _ms_since(started))
             return code, {}, {"status": note}
         # The operator page carries its own session auth, not an API key.
         if admin_handles(path):

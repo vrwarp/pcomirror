@@ -71,6 +71,7 @@ pcomirror/
   pcoclient.py  # PCO HTTP client (injectable transport), auth, version pin, 429 handling
   ingest.py     # backfill, incremental sweep, per-parent walk, merger poll, delete audit, drift, hydration
   webhooks.py   # HMAC verify, per-event inbox, dispatch, thin->hydrate, merge handling
+  webhooklog.py # every call to the receiver, recorded verbatim and downloadable
   serving.py    # WSGI JSON:API drop-in: read/include/where/search/order/paginate, write-through, pass-through
   cors.py       # which browser origins may read the API plane (off unless configured)
   scheduler.py  # one background loop: drain inbox + hydration, run due sweeps, poll mergers, drift
@@ -525,6 +526,9 @@ What the console shows:
   `PCOMIRROR_SUBSCRIPTIONS` syntax. Saving there takes the list over from the
   environment — see
   [Subscriptions from the page](#subscriptions-from-the-page).
+  `/admin/webhooks/calls` holds every call the receiver has been sent, verbatim
+  and downloadable, refused ones included — see
+  [Webhook recordings](#webhook-recordings).
 - **Browser access** — the CORS policy in force: which origins, methods and
   headers, how long a preflight is cached, and whether it came from the
   environment or this console. `/admin/cors` is where it is changed, and takes
@@ -567,6 +571,51 @@ diagnostic fact; what was typed into it is not.
 Recording never fails a request — if it cannot write, the page says the log is
 incomplete rather than quietly showing a short one. The table is capped at
 `PCOMIRROR_DIAGNOSTIC_KEEP` rows (default 1000; `0` switches recording off).
+
+### Webhook recordings
+
+`/admin/webhooks/calls` keeps every call to the receiver **exactly as it
+arrived**, and lets you download it. This is the log to reach for when Planning
+Center's console says a delivery went out and the mirror has no sign of one.
+
+The mirror already stored the bytes of every delivery it *accepted* — that is
+what re-verifying a signature needs. What was missing is everything before that
+point, which is where the failures are:
+
+- a **401**: which signature, over which bytes, against which token;
+- a **404**: PCO delivering to a subscription somebody removed, or a scanner
+  working through guesses — the request is what tells them apart;
+- a **503**: the body that would not parse, which PCO will keep redelivering;
+- the **headers**, `X-PCO-Webhooks-Authenticity` above all. The receiver read it,
+  compared it, and threw it away.
+
+Each recording holds the method, path, query, caller address, every header, the
+exact request bytes, the status and note answered, and how long it took —
+including the call that made the receiver *raise*, which is otherwise the one
+delivery nobody can reconstruct. Recording can never fail a delivery; if it fails
+to write, the page says the log is incomplete.
+
+Download the whole log as JSON, just the rejected calls, one call, or **one
+call's exact bytes** — the last being what re-hashing a refused delivery
+actually needs.
+
+**Nothing is redacted, deliberately.** This is the opposite policy to
+[Diagnostics](#diagnostics) above, which drops query values so it is safe to
+paste into an issue. A recording that has been cleaned up cannot answer the
+question it was kept for: a signature is over the bytes that were sent, and a
+signature over a re-serialized body is a signature over a different body. So
+these rows — and the download — hold whole webhook payloads: names, addresses,
+phone numbers, whatever the event carried. **Handle the file like the database,
+because it is a copy of part of it.**
+
+Two bounds, neither of them a redaction. A body over 256 KiB is stored to that
+length and marked clipped, with its true size recorded, because the receiver
+answers before it knows who is calling. And the table is a ring buffer of
+`PCOMIRROR_WEBHOOK_RECORD_KEEP` calls (default 500; `0` switches recording off),
+changeable from the page without a restart — the delivery you want recorded is
+the next one. A flood of junk to an unknown token evicts real history: that is
+the cost of recording the rejects, and the reason the number is raisable while
+you are chasing something.
 
 ### Divergence checking
 
@@ -971,13 +1020,15 @@ and exits, rather than surfacing a SQLite traceback:
   `PCOMIRROR_ALLOW_ANONYMOUS`, `PCOMIRROR_CORS_ORIGINS` (+ the other
   `PCOMIRROR_CORS_*` knobs), `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
-  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_AUDIT_INTERVAL_HOURS`,
+  `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_WEBHOOK_RECORD_KEEP`,
+  `PCOMIRROR_AUDIT_INTERVAL_HOURS`,
   `PCO_WEBHOOKS_BASE_URL`, and the container-friendly defaults
-  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`. Three of these are
+  `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`. Four of these are
   defaults the admin page can override and persist —
-  `PCOMIRROR_SHADOW_PER_MINUTE`, `PCOMIRROR_SUBSCRIPTIONS` and the
-  `PCOMIRROR_CORS_*` set — because each is something an operator needs to change
-  mid-incident, from a machine that cannot restart the container.
+  `PCOMIRROR_SHADOW_PER_MINUTE`, `PCOMIRROR_WEBHOOK_RECORD_KEEP`,
+  `PCOMIRROR_SUBSCRIPTIONS` and the `PCOMIRROR_CORS_*` set — because each is
+  something an operator needs to change mid-incident, from a machine that cannot
+  restart the container.
 - **API keys live in the DB**, so create one against the same volume:
   `docker exec pcomirror python -m pcomirror create-api-key --name <app>`.
   They are deliberately not settable from the environment — that would mean

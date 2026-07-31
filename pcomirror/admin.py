@@ -12,7 +12,7 @@ import json
 import urllib.parse
 
 from . import (adminauth, adminstats, apikeys, cors, diagnostics, divergence,
-               pcoevents, webhooks)
+               pcoevents, webhooklog, webhooks)
 from .config import now_iso, parse_subscriptions
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
@@ -22,7 +22,9 @@ PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/divergence/configure",
          "/admin/webhooks", "/admin/webhooks/add", "/admin/webhooks/remove",
          "/admin/webhooks/toggle", "/admin/webhooks/import", "/admin/webhooks/source",
-         "/admin/webhooks/catalogue")
+         "/admin/webhooks/catalogue",
+         "/admin/webhooks/calls", "/admin/webhooks/calls/download",
+         "/admin/webhooks/calls/clear", "/admin/webhooks/calls/configure")
 
 
 def handles(path: str) -> bool:
@@ -133,7 +135,7 @@ def _redirect(to: str, extra: dict | None = None):
 
 
 class AdminApp:
-    def __init__(self, db, settings, recorder=None, client=None):
+    def __init__(self, db, settings, recorder=None, client=None, calls=None):
         self.db, self.s = db, settings
         # Only for `last_failure` — the events themselves are read from the table,
         # so the page works the same whether or not recording is currently on.
@@ -141,6 +143,10 @@ class AdminApp:
         # Only for the one button that asks Planning Center which events it can
         # send. Optional, so the page still renders without a configured client.
         self.client = client
+        # Likewise `last_failure`. Built here when nothing passed one in, so the
+        # page can be constructed on its own in a test and still answer "is
+        # recording on" the same way the serving path does.
+        self.calls = calls or webhooklog.CallRecorder(db, settings)
 
     # -- entry ------------------------------------------------------------
     def handle(self, method, path, qs, body, environ):
@@ -184,6 +190,16 @@ class AdminApp:
             return self._divergence_configure(method, body, session)
         if path == "/admin/webhooks":
             return self._webhooks_page(qs, session)
+        # Before the catch-all below, which is a POST-only action router: the
+        # recordings are a page and a download, and both are read with a GET.
+        if path == "/admin/webhooks/calls":
+            return self._calls_page(qs, session)
+        if path == "/admin/webhooks/calls/download":
+            return self._calls_download(qs)
+        if path == "/admin/webhooks/calls/clear":
+            return self._calls_clear(method, body, session)
+        if path == "/admin/webhooks/calls/configure":
+            return self._calls_configure(method, body, session)
         if path.startswith("/admin/webhooks/"):
             return self._webhooks_action(path, method, body, session)
         return self._dashboard(session, qs)
@@ -897,11 +913,17 @@ class AdminApp:
         table = (f"<table><tr><th>event<th>receiver<th>state<th>last event</tr>{rows}</table>"
                  if rows else "<p class=muted>No subscriptions registered — "
                               "<a href=/admin/webhooks>add one</a>.</p>")
+        calls = webhooklog.summary(self.db)
+        recording = (
+            f" · <a href=/admin/webhooks/calls>{calls['total']:,} call(s) recorded</a>"
+            f"{', ' + str(calls['rejected']) + ' rejected' if calls['rejected'] else ''}"
+            if webhooklog.effective(self.db, self.s)["keep"] else
+            " · <a href=/admin/webhooks/calls>not recording calls</a>")
         return f"""
 <h2>Webhooks</h2>{table}
 <p class=muted>{w['deliveries']:,} deliveries · events by status: {statuses} ·
   {w['dead_letters']:,} dead-lettered · last received {_esc(w['last_received'], 'never')} ·
-  <a href=/admin/webhooks>manage subscriptions</a></p>"""
+  <a href=/admin/webhooks>manage subscriptions</a>{recording}</p>"""
 
     # -- webhooks ---------------------------------------------------------
     def _receiver_url(self, token: str) -> str:
@@ -1047,6 +1069,7 @@ class AdminApp:
             "<p class=sub>which events Planning Center sends, and where</p>", banners,
             self._webhooks_source_section(csrf),
             self._webhooks_receivers_section(csrf),
+            self._calls_section(),
             self._webhooks_add_section(csrf),
             self._webhooks_import_section(csrf),
             self._webhooks_catalogue_section(csrf),
@@ -1221,6 +1244,219 @@ class AdminApp:
     placeholder="sub_123:people.v2.events.person.updated:person-events-01:whsec_aaa"></textarea>
   <p><button type=submit>Import</button></p>
 </form>"""
+
+    # -- recordings -------------------------------------------------------
+    #: How much of a body is rendered inline. Enough to recognise a delivery,
+    #: short enough that a page of them is a page; the download is the copy that
+    #: is complete, and the row says so when it has been cut.
+    _PREVIEW = 2000
+
+    _CALL_HEAD = ("<tr><th>when<th>from<th>request<th>answer<th>body"
+                  "<th>event<th></tr>")
+
+    def _calls_rows(self, rows) -> str:
+        out = []
+        for r in rows:
+            status = r["status"]
+            answer = (f"{status} {_esc(r['note'], '')}" if status is not None
+                      else f"<span class=warn>no answer</span> {_esc(r['note'], '')}")
+            klass = "muted" if status is not None and status < 400 else "warn"
+            size = f"{r['body_bytes']:,} B" + (" · clipped" if r["truncated"] else "")
+            request = f"{_esc(r['method'], '')} {_esc(r['path'], '')}"
+            if r["query"]:
+                request += f"?{E(r['query'])}"
+            event = _esc(r["event_name"], "")
+            if (r["event_count"] or 0) > 1:
+                event += f" <span class=muted>+{r['event_count'] - 1}</span>"
+            timing = f" · {r['duration_ms']} ms" if r["duration_ms"] is not None else ""
+            headers = json.loads(r["headers"] or "{}")
+            # Rendered with `errors='replace'` and escaped — a recording is bytes
+            # somebody else chose, so what is shown is a readable rendering of it
+            # and the download is the copy that is exact. Said under the table.
+            text = webhooklog.body_of(r).decode("utf-8", "replace")
+            more = ("\n\n… clipped for display — download the call for all "
+                    f"{r['body_bytes']:,} bytes" if len(text) > self._PREVIEW else "")
+            dump = "\n".join(f"{k}: {v}" for k, v in headers.items())
+            out.append(f"""
+<tr><td>{_esc(r['at'])}</td><td>{_esc(r['remote_addr'])}</td>
+    <td style='white-space:normal'>{request}</td>
+    <td class={klass}>{answer}{timing}</td><td>{E(size)}</td><td>{event}</td>
+    <td><a href='/admin/webhooks/calls/download?id={r['call_id']}'>json</a> ·
+        <a href='/admin/webhooks/calls/download?id={r['call_id']}&amp;raw=1'>body</a></td></tr>
+<tr><td colspan=7 style='white-space:normal'><details><summary class=muted>headers and
+  body</summary><pre style='white-space:pre-wrap;word-break:break-all;background:var(--card);
+  border:1px solid var(--line);border-radius:4px;padding:.6rem;margin:.4rem 0'>{E(dump)}
+
+{E(text[:self._PREVIEW])}{E(more)}</pre></details></td></tr>""")
+        return "".join(out)
+
+    def _calls_page(self, qs, session, error: str = ""):
+        outcome = (qs.get("outcome", [""])[0] or "").strip()
+        if outcome not in ("", "rejected", "accepted"):
+            outcome = ""
+        # Four bytes per previewed character, so a multi-byte body still fills the
+        # preview: what is read is bounded, what is shown is bounded, and what was
+        # stored is reported in full beside it.
+        rows = webhooklog.recent(self.db, limit=100, outcome=outcome,
+                                 body_limit=self._PREVIEW * 4)
+        s = webhooklog.summary(self.db)
+        csrf = E(session["csrf"])
+        tabs = " · ".join(
+            f"<a href='/admin/webhooks/calls{('?outcome=' + v) if v else ''}'>"
+            f"{('<b>' + E(label) + '</b>') if v == outcome else E(label)}</a>"
+            for v, label in (("", "everything"), ("rejected", "rejected"),
+                             ("accepted", "accepted")))
+        banners = ""
+        if qs.get("saved"):
+            banners += "<p class='msg ok'>Saved.</p>"
+        if qs.get("cleared"):
+            banners += "<p class='msg ok'>Cleared.</p>"
+        if error:
+            banners += f"<p class='msg err'>{E(error)}</p>"
+        failure = getattr(self.calls, "last_failure", None)
+        if failure:
+            banners += (f"<p class='msg err'>Recording has failed at least once "
+                        f"({E(failure)}), so this log is incomplete. Deliveries were "
+                        f"unaffected — a recording never fails one.</p>")
+        table = (f"<table>{self._CALL_HEAD}{self._calls_rows(rows)}</table>" if rows else
+                 "<p class=muted>Nothing recorded yet — no request has reached "
+                 "<code>" + E(self.s.webhook_path_prefix) + "/…</code> since recording "
+                 "was switched on.</p>")
+        keep = webhooklog.effective(self.db, self.s)
+        return 200, _headers(), _page("Webhook recordings", f"""
+<p class=sub>every call to the receiver, exactly as it arrived</p>{banners}
+{self._calls_controls(csrf, keep)}
+<h2>Log</h2>
+<p class=muted>show: {tabs}</p>
+{table}
+<p class=muted>Showing {len(rows):,} of {s['total']:,} kept ({s['accepted']:,} accepted,
+  {s['rejected']:,} rejected){', from ' + _esc(s['oldest']) + ' to ' + _esc(s['newest'])
+   if s['total'] else ''} · {s['bytes']:,} bytes of bodies. Bodies are rendered here
+  with unreadable bytes replaced, and truncated after {self._PREVIEW:,} characters;
+  the download is byte-exact.</p>
+<form method=get action=/admin/webhooks/calls/download style='display:inline'>
+  {'<input type=hidden name=outcome value="' + E(outcome) + '">' if outcome else ''}
+  <button type=submit>Download {'these' if outcome else 'the log'}</button></form>
+<form method=post action=/admin/webhooks/calls/clear style='display:inline'>
+  <input type=hidden name=csrf value="{csrf}">
+  <button type=submit>Clear it</button></form>
+<p class=muted>The download holds every header and the exact body of every call —
+  names, addresses, phone numbers, whatever the events carried — with nothing
+  removed. That is what makes it worth having, and what makes it worth handling
+  like the database itself.</p>""",
+            nav="<nav><a href=/admin/webhooks>webhooks</a> · <a href=/>back</a></nav>")
+
+    def _calls_controls(self, csrf: str, keep: dict) -> str:
+        """On, off, and how much history — from the page, not from a restart.
+
+        Recording is the one diagnostic here that cannot be turned on after the
+        fact: the delivery an operator wants is the one that already happened, so
+        the setting that matters is the one that was already true. It is on by
+        default for that reason, and this is where it is turned off.
+        """
+        state = (f"<b>on</b>, keeping the last {keep['keep']:,} calls"
+                 if keep["keep"] else "<b>off</b> — nothing is being recorded")
+        source = ("set here" if keep["source"] == "admin"
+                  else "from <code>PCOMIRROR_WEBHOOK_RECORD_KEEP</code>")
+        revert = ("" if keep["source"] != "admin" else f"""
+  <button type=submit name=reset value=1>Back to the environment default
+    ({keep['default']:,})</button>""")
+        return f"""
+<h2>Recording</h2>
+<p class=muted>Currently {state} — {source}. Every call to
+  <code>{E(self.s.webhook_path_prefix)}/…</code> is kept verbatim: the method, the
+  path, every header including <code>X-PCO-Webhooks-Authenticity</code>, and the
+  exact request bytes — the deliveries that were rejected as much as the ones that
+  were kept, because a 401, a 404 or a body that would not parse is the one that
+  leaves no other trace. Bodies over {webhooklog.MAX_BODY:,} bytes are stored to
+  that length and marked clipped; the receiver answers before it knows who is
+  calling, so what it stores has to be bounded. <code>0</code> turns recording
+  off.</p>
+<form method=post action=/admin/webhooks/calls/configure>
+  <input type=hidden name=csrf value="{csrf}">
+  <label for=keep>Calls to keep</label>
+  <input id=keep name=keep type=number min=0 max={webhooklog.MAX_KEEP}
+         value="{keep['keep']}" required>
+  <p><button type=submit>Save</button>{revert}</p>
+</form>"""
+
+    def _calls_download(self, qs):
+        """The whole log, one call, or one call's bytes.
+
+        The last of those is the one that gets used: a delivery that failed its
+        signature check is diagnosed by re-hashing the bytes it was checked
+        against, and nothing derived from them will do.
+        """
+        ident = (qs.get("id", [""])[0] or "").strip()
+        if ident:
+            row = webhooklog.get(self.db, ident)
+            if row is None:
+                return _redirect("/admin/webhooks/calls")
+            if qs.get("raw"):
+                return 200, _headers({
+                    "Content-Type": "application/octet-stream",
+                    "Content-Disposition": "attachment; filename="
+                                           f'"pcomirror-webhook-call-{row["call_id"]}.bin"',
+                }), webhooklog.body_of(row)
+            payload = json.dumps({"exported_at": now_iso(), "note": webhooklog.EXPORT_NOTE,
+                                  "calls": [webhooklog.as_document(row)]}, indent=2).encode()
+            return 200, _headers({
+                "Content-Type": "application/json; charset=utf-8",
+                "Content-Disposition": "attachment; filename="
+                                       f'"pcomirror-webhook-call-{row["call_id"]}.json"',
+            }), payload
+        outcome = (qs.get("outcome", [""])[0] or "").strip()
+        if outcome not in ("rejected", "accepted"):
+            outcome = ""
+        name = f"pcomirror-webhook-calls{'-' + outcome if outcome else ''}.json"
+        return 200, _headers({
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": f'attachment; filename="{name}"',
+        }), webhooklog.export(self.db, outcome)
+
+    def _calls_clear(self, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/webhooks/calls")
+        if not adminauth.check_csrf(session, _form(body).get("csrf")):
+            return self._calls_page({}, session, error="Session expired — try again.")
+        webhooklog.clear(self.db)
+        return _redirect("/admin/webhooks/calls?cleared=1")
+
+    def _calls_configure(self, method, body, session):
+        if method != "POST":
+            return _redirect("/admin/webhooks/calls")
+        form = _form(body)
+        if not adminauth.check_csrf(session, form.get("csrf")):
+            return self._calls_page({}, session, error="Session expired — try again.")
+        if form.get("reset"):
+            webhooklog.configure(self.db, None)
+            return _redirect("/admin/webhooks/calls?saved=1")
+        try:
+            chosen = int((form.get("keep") or "").strip())
+        except ValueError:
+            return self._calls_page({}, session,
+                                    error="Calls to keep has to be a whole number.")
+        if chosen < 0 or chosen > webhooklog.MAX_KEEP:
+            return self._calls_page(
+                {}, session,
+                error=f"Choose between 0 and {webhooklog.MAX_KEEP} calls to keep.")
+        webhooklog.configure(self.db, chosen)
+        return _redirect("/admin/webhooks/calls?saved=1")
+
+    def _calls_section(self) -> str:
+        """The line on the webhooks page: enough to know whether to click through."""
+        keep = webhooklog.effective(self.db, self.s)
+        s = webhooklog.summary(self.db)
+        if not keep["keep"]:
+            return ("<h2>Recordings</h2><p class=muted>Off — calls to the receiver are "
+                    "not being recorded, so a delivery that is refused leaves no trace "
+                    "of what it was. <a href=/admin/webhooks/calls>Turn it on</a>.</p>")
+        return f"""
+<h2>Recordings</h2>
+<p class=muted>{s['total']:,} call(s) kept verbatim — {s['accepted']:,} accepted,
+  <span class={'warn' if s['rejected'] else 'muted'}>{s['rejected']:,} rejected</span>
+  · last {_esc(s['newest'], 'never')} · keeping {keep['keep']:,} ·
+  <a href=/admin/webhooks/calls>read or download them</a></p>"""
 
     def _webhooks_catalogue_section(self, csrf: str) -> str:
         cat = pcoevents.catalogue(self.db)
