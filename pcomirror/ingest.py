@@ -511,6 +511,11 @@ class Ingestor:
                     self.writer.confirm_live(r.table, pid, obj, "reconcile")
         restored = self._restore_missing(r, sorted(live - known)[:self.AUDIT_RESTORE_LIMIT])
         self._set(name, last_audit_completed_at=now_iso())
+        # This run answers whatever drift asked for. Cleared on completion, not
+        # on start: an audit that dies partway has not answered anything, and
+        # the request standing is what makes the scheduler come back — under
+        # the same cooldown that stops it coming back every tick.
+        self._clear_audit_request(name)
         return tombstoned, restored
 
     def _restore_missing(self, r, missing) -> int:
@@ -544,6 +549,17 @@ class Ingestor:
         return restored
 
     # -- drift probe -------------------------------------------------------
+
+    def _audit_request_key(self, name: str) -> str:
+        return f"audit_requested:{name}"
+
+    def audit_requested(self, name: str) -> str | None:
+        """When drift last asked for an out-of-cadence audit, or None."""
+        return self.db.get_meta(self._audit_request_key(name))
+
+    def _clear_audit_request(self, name: str) -> None:
+        self.db.execute("DELETE FROM mirror_meta WHERE key=?", (self._audit_request_key(name),))
+
     def drift_probe(self, name: str) -> dict:
         """Compare PCO's `total_count` with how many live rows the mirror holds.
 
@@ -553,6 +569,17 @@ class Ingestor:
         every 15 minutes to write a permanent `404` into the diagnostics log, next
         to the real failures somebody is trying to read. Counting the mirror side
         is still worth doing: it is what `/admin` shows, and it costs nothing.
+
+        A count that disagrees **asks for the audit** (DESIGN §7.4): more live
+        rows than PCO ⇒ ghosts a missed delete left behind, fewer ⇒ rows nothing
+        collected — and the id-set audit is the one mechanism that settles both.
+        The probe only ever *requests*; when the audit runs is the scheduler's
+        decision, under a cooldown, so a count PCO and the mirror genuinely
+        disagree about — a population-semantics difference, not drift — costs a
+        bounded re-audit rather than one per probe. A ghost used to wait for the
+        nightly cadence: a person hard-deleted upstream with no webhook received
+        was served live — and offered back by a duplicate-check search — for up
+        to a day, while the probe wrote the discrepancy down every 15 minutes.
         """
         r = registry.by_name(name)
         mirror = self.db.query_one(
@@ -566,6 +593,8 @@ class Ingestor:
         if countable:
             cols["total_count_last"] = total
         self._set(name, **cols)
+        if r.audit_interval_s and total is not None and mirror != total:
+            self.db.set_meta(self._audit_request_key(name), now_iso())
         return {"resource": name, "total_count": total, "mirror_live": mirror,
                 "delta": (mirror - total) if total is not None else None}
 

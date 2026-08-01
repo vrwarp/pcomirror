@@ -754,8 +754,18 @@ returning 0 rows). Offset stays 0 forever → never the 75/20s penalty.
 **Child deletes ride on include-diff (zero marginal cost):** whenever a person is
 hydrated `include=…`, the `included[]` is the current child set; tombstone any
 local child of that person not present. This catches single-child hard-deletes no
-`updated_at` sweep can see, piggybacking on requests we already make — which is
-why child types need no full audit of their own.
+`updated_at` sweep can see, piggybacking on requests we already make.
+
+**But include-diff rides on hydration, and hydration rides on traffic.** A person
+nobody writes to and no webhook touches is never hydrated again, so their deleted
+email stayed live in the mirror indefinitely — and an email is not only served, it
+is *matched*: a live divergence export showed `where[search_name_or_email]`
+answering with people PCO no longer matched, and missing ones it did, because the
+email table had drifted in both directions. So the child contact tables (`email`,
+`phone_number`, `address`, `social_profile`, `field_datum`) declare
+`audit_interval_s` too: the same id-set enumeration, a handful of requests a day,
+as the backstop for the quiet records traffic never repairs. Include-diff remains
+the fast path; the audit is the floor under it.
 
 **But `included[]` is only half of PCO's answer, and the halves can disagree.**
 Measured minutes after a parent was added to a live organization:
@@ -792,8 +802,19 @@ One request (`per_page=1`) reads `meta.total_count`; compare to the mirror's liv
 count and record both into `mirror_sync_state.{total_count_last, mirror_count_last}`
 — **the columns the ops `mirror_drift_ratio` alarm actually reads** (the drafts
 had the alarm reading a column no job wrote). `mirror_live > total_count` ⇒ ghosts
-(missed delete/merge) → schedule an audit; `mirror_live < total_count` ⇒ missing
-rows → force a sweep.
+(missed delete/merge); `mirror_live < total_count` ⇒ missing rows. Either way the
+id-set audit is the mechanism that settles it — it tombstones ghosts *and*
+restores missing rows the sweep's watermark has already passed — so a nonzero
+delta on an audited resource **requests an audit** (`mirror_meta`
+`audit_requested:<resource>`, cleared when one completes). The scheduler honours
+the request once the previous audit is at least an hour old
+(`Scheduler.DRIFT_AUDIT_MIN_INTERVAL_S`): a ghost no longer waits out the
+nightly cadence being served — and offered back by every duplicate-check
+search — while a delta the audit cannot close (a population-semantics
+difference, not drift) costs one audit an hour, not one per probe. This stays
+strictly the probe *asking*: only the scheduler runs audits, and
+`PCOMIRROR_AUDIT_INTERVAL_HOURS=0` still switches the whole mechanism off,
+requests included.
 
 **`total_count` population parity (resolved).** The alarm compares two counts, so
 they must count the *same* population. PCO's docs don't state whether an
@@ -1490,14 +1511,14 @@ of them is captured and marked `ignored` rather than dead-lettered (§6.1).
 | resource | endpoint | method | uat filter | incr | audit | pri | include |
 |---|---|---|---|---|---|---|---|
 | person | `/people` | incremental + audit + merger | yes | 60 s | weekly | P1 | emails,phone_numbers,addresses,field_data,households |
-| email | `/emails` | incremental | yes | 120 s | cascade + include-diff | P1 | — |
-| phone_number | `/phone_numbers` | incremental | yes | 120 s | — | P1 | — |
-| address | `/addresses` | incremental (descending-walk) | **no** | 300 s | — | P2 | — |
-| field_datum | `/field_data` | incremental | yes | 300 s | — | P2 | field_definition |
+| email | `/emails` | incremental + audit | yes | 120 s | daily (+ cascade + include-diff) | P1 | — |
+| phone_number | `/phone_numbers` | incremental + audit | yes | 120 s | daily (+ cascade + include-diff) | P1 | — |
+| address | `/addresses` | incremental (descending-walk) + audit | **no** | 300 s | daily (+ cascade + include-diff) | P2 | — |
+| field_datum | `/field_data` | incremental + audit | yes | 300 s | daily (+ cascade + include-diff) | P2 | field_definition |
 | household | `/households` | incremental | yes | 600 s | monthly | P2 | — |
 | household_membership | (via household, per parent) | nested walk, list-and-replace per parent | n/a (untimed) | 86400 s + filled on read for an unwalked parent | — | P3 | — |
 | note | `/notes` | incremental | yes | 600 s | monthly | P2 | note_category |
-| social_profile | `/social_profiles` | incremental | yes | 600 s | — | P3 | — |
+| social_profile | `/social_profiles` | incremental + audit | yes | 600 s | daily (+ cascade + include-diff) | P3 | — |
 | list | `/lists` | incremental | yes | 900 s | — | P3 | — |
 | list_result | (via list, per parent) | nested walk, list-and-replace per parent — `GET /list_results` does not exist | **no** | 86400 s + filled on read for an unwalked parent, and on `list.refreshed` | — | P3 | — |
 | form | `/forms` | incremental (descending-walk) — no `where[updated_at]` on `/forms` | **no** | 3600 s | — | P3 | — |

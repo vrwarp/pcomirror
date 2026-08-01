@@ -192,9 +192,16 @@ _reg(Resource(
 ))
 
 # --- person-owned children (fk person_pco_id via relationships.person) ---
+# The person's child rows are audited like the person (see the note on
+# `household`): an email or phone number is hard-deleted by a click in the UI,
+# `where[updated_at]` cannot return a row that no longer exists, and a deleted
+# address that stays live here keeps matching `where[search_name_or_email]` —
+# a real mirror answered a search with people PCO no longer matched, and missed
+# ones it did, because this table had drifted. Enumerating ids is a handful of
+# requests a day.
 _reg(Resource(
     name="email", type="Email", table="email", endpoint="/emails",
-    tier="full", owner_rel="person", incr_interval_s=120, priority=1,
+    tier="full", owner_rel="person", incr_interval_s=120, audit_interval_s=86400, priority=1,
     projections=(
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
         ("address", "TEXT", "json", "$.attributes.address"),
@@ -208,7 +215,7 @@ _reg(Resource(
 ))
 _reg(Resource(
     name="phone_number", type="PhoneNumber", table="phone_number", endpoint="/phone_numbers",
-    tier="full", owner_rel="person", incr_interval_s=120, priority=1,
+    tier="full", owner_rel="person", incr_interval_s=120, audit_interval_s=86400, priority=1,
     projections=(
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
         ("number", "TEXT", "json", "$.attributes.number"),
@@ -223,7 +230,7 @@ _reg(Resource(
 _reg(Resource(
     name="social_profile", type="SocialProfile", table="social_profile",
     endpoint="/social_profiles",
-    tier="full", owner_rel="person", incr_interval_s=600, priority=3,
+    tier="full", owner_rel="person", incr_interval_s=600, audit_interval_s=86400, priority=3,
     projections=(
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
         ("site", "TEXT", "json", "$.attributes.site"),
@@ -236,7 +243,7 @@ _reg(Resource(
 _reg(Resource(
     name="address", type="Address", table="address", endpoint="/addresses",
     tier="full", owner_rel="person", supports_uat_filter=False,  # /addresses has no where[updated_at]
-    incr_interval_s=300, priority=2,
+    incr_interval_s=300, audit_interval_s=86400, priority=2,
     projections=(
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),
         ("street_line_1", "TEXT", "json", "$.attributes.street_line_1"),
@@ -256,7 +263,7 @@ _reg(Resource(
 # --- custom fields ---
 _reg(Resource(
     name="field_datum", type="FieldDatum", table="field_datum", endpoint="/field_data",
-    tier="full", owner_rel="person", incr_interval_s=300, priority=2,
+    tier="full", owner_rel="person", incr_interval_s=300, audit_interval_s=86400, priority=2,
     includes=("field_definition",),
     projections=(
         ("customizable_type", "TEXT", "json", "$.relationships.customizable.data.type"),

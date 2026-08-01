@@ -13,7 +13,6 @@ import json
 import unittest
 
 from base import build, wsgi_get
-from fakepco import FakePCO, res
 from pcomirror import divergence
 from pcomirror.divergence import rules as cmp_mod
 from pcomirror.ratelimit import RateLimiter, RateLimitBusy
@@ -393,6 +392,70 @@ class TestWhatGetsStored(ShadowCase):
         self.assertIn("pseudonymised", payload)
         self.assertEqual(divergence.clear(self.m.db), 1)
         self.assertEqual(divergence.recent(self.m.db), [])
+
+
+class TestTheCheckerIsOnlyADiagnostic(ShadowCase):
+    """A divergence is reported, never repaired. The moment the checker wrote
+    to the mirror it would be perturbing the thing it measures: the second
+    check of a shape would agree because the first one patched it, and a
+    rule-level bug — a search arm matching wrongly — would hide behind
+    record-level fixes for ever. Repair belongs to reconciliation (the sweeps,
+    the id-set audits, the drift probe's audit request — test_ingest), which
+    runs whether or not this log is switched on."""
+
+    def _ghost(self):
+        """The live case: a person hard-deleted upstream, still live here."""
+        self.fake.add_person("2", "Test", "Parent", "2026-01-02T00:00:00Z")
+        self.m.ingestor.incremental_sweep("person")
+        self.fake.destroy("Person", "2")
+        wsgi_get(self.m.wsgi, "/people/v2/people", "where[search_name]=test")
+
+    def test_a_ghost_is_reported_and_the_store_left_exactly_as_it_was(self):
+        self._ghost()
+        before = dict(self.m.db.query_one(
+            "SELECT raw, deleted_at, last_synced_at FROM person WHERE pco_id='2'"))
+        self.m.divergence.run_once()
+
+        reports = divergence.recent(self.m.db)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["verdict"], "divergence")
+        after = dict(self.m.db.query_one(
+            "SELECT raw, deleted_at, last_synced_at FROM person WHERE pco_id='2'"))
+        self.assertEqual(after, before, "the checker must not touch the store")
+
+    def test_no_verdict_queues_work_or_touches_the_queue(self):
+        self._ghost()
+        self.m.divergence.run_once()
+        self.assertEqual(
+            self.m.db.query_one("SELECT count(*) c FROM hydration_task")["c"], 0)
+
+    def test_a_check_spends_exactly_one_upstream_request(self):
+        """The one GET that replays the diverging query — never per-record
+        verification fetches, never a walk."""
+        self._ghost()
+        self.fake.request_log.clear()
+        self.m.divergence.run_once()
+        self.assertEqual([m for m, _ in self.fake.request_log], ["GET"])
+
+
+class TestChildTablesAreAudited(ShadowCase):
+    """An email is hard-deleted by the same click as a person, is equally
+    invisible to `where[updated_at]`, and a deleted address that stays live
+    keeps matching `where[search_name_or_email]` — a real mirror answered a
+    search with people PCO no longer matched because of exactly this."""
+
+    def test_every_person_child_declares_the_delete_audit(self):
+        from pcomirror import registry as reg
+        for name in ("email", "phone_number", "address", "social_profile", "field_datum"):
+            self.assertTrue(reg.by_name(name).audit_interval_s,
+                            f"{name} has no delete audit; its hard deletes are invisible")
+
+    def test_a_hard_deleted_email_is_tombstoned_by_the_audit(self):
+        self.fake.destroy("Email", "e1")
+        tombstoned, _restored = self.m.ingestor.delete_audit("email")
+        self.assertEqual(tombstoned, 1)
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT deleted_at FROM email WHERE pco_id='e1'")["deleted_at"])
 
 
 class TestTheRateMeansPerMinute(ShadowCase):
