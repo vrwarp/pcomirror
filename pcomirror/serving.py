@@ -815,7 +815,10 @@ class Application:
         if method not in ("POST", "PATCH", "DELETE"):
             return
         if len(segs) < 3:
-            self._refresh_named_peers(r, method, target, sent)
+            data = (out or {}).get("data")
+            subject_id = (str(data.get("id")) if isinstance(data, dict) and data.get("id")
+                          else segs[1] if len(segs) >= 2 else None)
+            self._refresh_named_peers(r, method, target, sent, subject_id)
             return
         rel = r.relationships.get(segs[2])
         if rel is None or rel.kind != "many":
@@ -869,7 +872,13 @@ class Application:
     #: the queue rather than making one write pay for an arbitrary fan-out.
     MAX_SYNC_PEERS = 8
 
-    def _refresh_named_peers(self, r, method, target, sent) -> None:
+    #: How long PCO's replicas get before a peer whose re-read came back
+    #: without the edge the write just made is read again. Measured lag is
+    #: seconds; a minute is comfortably past it without turning every family
+    #: build into a polling loop.
+    WRITE_VERIFY_DELAY_S = 60
+
+    def _refresh_named_peers(self, r, method, target, sent, subject_id=None) -> None:
         """Re-read the records a top-level write named on the far side of an edge.
 
         `POST /households` creates a family in one call: the members ride in the
@@ -929,9 +938,46 @@ class Application:
             self._repair(f"the {r.type} edge it was named on",
                          lambda: self.ingestor.hydrate(name, pco_id),
                          method, target, registry.by_name(name).type, pco_id)
+            self._verify_peer_edge(r, name, pco_id, subject_id)
         for name, pco_id in named[self.MAX_SYNC_PEERS:]:
             try:
                 self.ingestor.enqueue_hydration(name, pco_id, reason="write_through")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _verify_peer_edge(self, subject, peer_name, peer_id, subject_id) -> None:
+        """Re-read later any peer whose fresh copy does not carry the new edge.
+
+        The synchronous re-read above is read-your-writes only when PCO answers
+        with what it just wrote, and it was measured not doing that: minutes
+        after a family was built, the person came back still household-less —
+        at an `updated_at` the join does not move, which is a copy no sweep,
+        webhook or thinness check ever revisits, and an app reading the child
+        went on saying nobody can reach the family. So the stored copy is
+        checked rather than trusted, and one that does not name the record
+        just written gets a second read once PCO's replicas have had a moment
+        (`WRITE_VERIFY_DELAY_S`). A copy that already carries the edge queues
+        nothing — the consistent case stays free.
+
+        Only the synchronously-read peers are checked; a family bigger than
+        `MAX_SYNC_PEERS` has its tail queued unread, and `repair_split_edges`
+        is the pass that owns every case this narrower check misses.
+        """
+        if not subject_id:
+            return
+        peer = registry.by_name(peer_name)
+        path = next((rel.json_path for rel in peer.relationships.values()
+                     if rel.kind == "json" and rel.target == subject.name), None)
+        if path is None:
+            return
+        held = self.db.query_one(
+            f"SELECT 1 FROM {peer.table} WHERE pco_id=? AND EXISTS ("
+            f"SELECT 1 FROM json_each(raw, ?) j WHERE j.value ->> '$.id' = ?)",
+            (peer_id, path, subject_id))
+        if held is None:
+            try:
+                self.ingestor.enqueue_hydration(peer_name, peer_id, reason="write_verify",
+                                                delay_s=self.WRITE_VERIFY_DELAY_S)
             except Exception:  # noqa: BLE001
                 pass
 

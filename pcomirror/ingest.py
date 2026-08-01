@@ -757,6 +757,59 @@ class Ingestor:
             queued += self._queue_dangling_targets(json.loads(row["raw"]), edges)
         return queued
 
+    def repair_split_edges(self, limit: int = 200, min_age_seconds: int = 3600) -> int:
+        """Queue a re-read where the two copies of the household edge disagree.
+
+        PCO stores a family twice — the household's `people` array and each
+        member's own `households` array — and the mirror learns the two sides
+        from different requests at different moments, so they can disagree; the
+        serving layer then answers from whichever side the caller happens to
+        read.
+
+        The live case: build a family, and the synchronous post-write re-read
+        races PCO's own replication — the person comes back still
+        household-less, at an `updated_at` the join did not move. From there
+        nothing converges: no sweep re-collects a record whose timestamp never
+        changes, the household webhook repairs only the household, and
+        `repair_incomplete` sees the `households` key present-and-empty and is
+        satisfied. An app reading the child kept answering "nobody can reach
+        this family" for hours, while PCO showed the parent the whole time.
+
+        Either half may be the stale one, so the record that *lacks* the edge
+        is the one re-read, in both directions. Same bounds as the other
+        repair passes: `min_age_seconds` makes a disagreement PCO itself
+        serves cost one re-read per record per interval, not a spin.
+        """
+        cutoff = f"-{int(min_age_seconds)} seconds"
+        queued = 0
+        for row in self.db.query(
+                """SELECT DISTINCT p.pco_id FROM household h,
+                        json_each(h.raw, '$.relationships.people.data') m
+                        JOIN person p ON p.pco_id = m.value ->> '$.id'
+                     WHERE h.deleted_at IS NULL AND p.deleted_at IS NULL
+                       AND p.last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now',?)
+                       AND NOT EXISTS (SELECT 1 FROM
+                             json_each(p.raw, '$.relationships.households.data') e
+                             WHERE e.value ->> '$.id' = h.pco_id)
+                     ORDER BY CAST(p.pco_id AS INTEGER), p.pco_id LIMIT ?""",
+                (cutoff, limit)):
+            self.enqueue_hydration("person", row["pco_id"], reason="split_edge")
+            queued += 1
+        for row in self.db.query(
+                """SELECT DISTINCT h.pco_id FROM person p,
+                        json_each(p.raw, '$.relationships.households.data') e
+                        JOIN household h ON h.pco_id = e.value ->> '$.id'
+                     WHERE p.deleted_at IS NULL AND h.deleted_at IS NULL
+                       AND h.last_synced_at <= strftime('%Y-%m-%dT%H:%M:%SZ','now',?)
+                       AND NOT EXISTS (SELECT 1 FROM
+                             json_each(h.raw, '$.relationships.people.data') m
+                             WHERE m.value ->> '$.id' = p.pco_id)
+                     ORDER BY CAST(h.pco_id AS INTEGER), h.pco_id LIMIT ?""",
+                (cutoff, limit)):
+            self.enqueue_hydration("household", row["pco_id"], reason="split_edge")
+            queued += 1
+        return queued
+
     def _queue_dangling_targets(self, resource: dict, edges) -> int:
         """Fetch the far end of each unresolvable edge, where it is fetchable."""
         queued = 0
@@ -781,16 +834,32 @@ class Ingestor:
 
     # -- hydration ---------------------------------------------------------
     def enqueue_hydration(self, name: str, pco_id: str, reason: str = "thin_webhook",
-                          includes: list[str] | None = None) -> None:
+                          includes: list[str] | None = None, delay_s: int = 0) -> None:
+        """Queue one record for a re-read.
+
+        `delay_s` holds the task back — for a re-read whose whole point is to
+        arrive *after* PCO's replicas have caught up with a write, where
+        fetching again immediately would collect the same stale copy the
+        caller is trying to escape. On a key collision the earlier time wins:
+        a delayed verify must never postpone a task something else needs now.
+        """
         r = registry.by_name(name)
         inc = includes or list(r.includes)
         self.db.execute(
-            "INSERT INTO hydration_task(resource_type,pco_id,includes,reason) VALUES(?,?,?,?) "
-            "ON CONFLICT(resource_type,pco_id) DO UPDATE SET reason=excluded.reason",
-            (name, pco_id, json.dumps(inc), reason))
+            "INSERT INTO hydration_task(resource_type,pco_id,includes,reason,not_before) "
+            "VALUES(?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now',?)) "
+            "ON CONFLICT(resource_type,pco_id) DO UPDATE SET reason=excluded.reason, "
+            "not_before=min(not_before, excluded.not_before)",
+            (name, pco_id, json.dumps(inc), reason, f"+{int(delay_s)} seconds"))
 
     def drain_hydration(self, limit: int = 100) -> int:
-        rows = self.db.query("SELECT * FROM hydration_task ORDER BY not_before LIMIT ?", (limit,))
+        # `not_before` is honoured, not merely sorted by: a delayed verify that
+        # ran at the next tick anyway would collect exactly the stale copy it
+        # was scheduled to outwait.
+        rows = self.db.query(
+            "SELECT * FROM hydration_task "
+            "WHERE not_before <= strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+            "ORDER BY not_before LIMIT ?", (limit,))
         done = 0
         for row in rows:
             self.hydrate(row["resource_type"], row["pco_id"], json.loads(row["includes"] or "[]"))

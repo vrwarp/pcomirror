@@ -1205,6 +1205,13 @@ def write_through(req, ctx):                        # caller's api-key must hold
   those would make an ordinary `PATCH` pay for edges it never touched. Two gaps
   are left to the sweep on purpose — a member a `PATCH` *removes* is named by
   neither the request nor the mirror by then, and a `DELETE` names nobody.
+  **And the re-read is checked, not trusted**: it races PCO's own replication,
+  and was measured losing — the person came back still household-less at an
+  `updated_at` the join never moves, a copy nothing revisits. A stored peer that
+  does not name the record just written is re-read again after
+  `WRITE_VERIFY_DELAY_S`, and `repair_split_edges` (every drift pass) owns
+  every disagreement between the edge's two stored halves that the write path's
+  narrower check misses — including the tail a big family queues unread.
 - **Read-your-writes**, *best-effort*. A `POST` inserts the new `pco_id`
   immediately, so the very next local read (even before the webhook lands) sees
   the change. If that local insert itself fails, the request still succeeds —

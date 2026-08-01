@@ -35,6 +35,12 @@ class FakePCO:
         self.request_log: list[tuple[str, str]] = []
         self.echo_self_link = True   # see _create_membership
         self.echo_owner = True       # see _create_child
+        # A read replica that has not caught up with a write PCO itself just
+        # confirmed — measured on the live API minutes after a family was
+        # built, and the same lag class as `echo_owner`. Keyed `(type, id)` to
+        # `(stale_copy, reads_remaining)`: `_single` serves the staged copy
+        # that many times, then the truth again.
+        self.stale_single_reads: dict[tuple[str, str], tuple[dict, int]] = {}
 
     # -- population --------------------------------------------------------
     def add(self, resource: dict):
@@ -163,6 +169,15 @@ class FakePCO:
 
     def _single(self, seg, rid, qs):
         rtype = self._type_of(seg)
+        staged = self.stale_single_reads.get((rtype, rid))
+        if staged is not None:
+            copy, remaining = staged
+            if remaining <= 1:
+                self.stale_single_reads.pop((rtype, rid))
+            else:
+                self.stale_single_reads[(rtype, rid)] = (copy, remaining - 1)
+            included = self._includes([copy], qs.get("include", [None])[0])
+            return self._ok({"data": copy, "included": included})
         item = self.data.get(rtype, {}).get(rid)
         if item is None:
             return Response(404, {}, b'{"errors":[{"code":"404","detail":"not found"}]}')

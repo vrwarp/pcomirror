@@ -85,6 +85,11 @@ class Scheduler:
                     # A record can only be degraded, never repaired, if nothing
                     # looks — its `updated_at` will not move again.
                     self._guard(f"repair:{r.name}", self._repair, r.name)
+            # The household edge is stored twice — the household's `people` and
+            # each member's `households` — and the halves can disagree with
+            # neither record's `updated_at` ever moving again. Not per-resource:
+            # the check is the *pair*.
+            self._guard("repair:split-edges", self._split_edges)
             self._last_drift = t
         # The third delete mechanism (DESIGN §7.2), and the only one that needs no
         # signal from PCO: webhooks are lossy and merges only cover the merge path,
@@ -158,6 +163,12 @@ class Scheduler:
         if restored:
             print(f"[scheduler] audit restored {restored} {name} record(s) PCO holds "
                   f"that the mirror lacked", flush=True)
+
+    def _split_edges(self) -> None:
+        n = self.m.ingestor.repair_split_edges()
+        if n:
+            print(f"[scheduler] queued {n} re-read(s) for household edges whose two "
+                  f"copies disagree", flush=True)
 
     def _repair(self, name: str) -> None:
         n = self.m.ingestor.repair_incomplete(name)
