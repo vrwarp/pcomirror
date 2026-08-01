@@ -225,7 +225,7 @@ class TestSchedulerAdoptsANewResource(unittest.TestCase):
         from pcomirror.scheduler import Scheduler
         self.assertIsNone(
             self.m.ingestor.state("household_membership")["backfill_completed_at"])
-        Scheduler(self.m).run_once()
+        Scheduler(self.m).drain_cold()
         self.assertIsNotNone(
             self.m.ingestor.state("household_membership")["backfill_completed_at"])
         self.assertEqual(self.m.db.query_one(
@@ -236,9 +236,10 @@ class TestSchedulerAdoptsANewResource(unittest.TestCase):
         resource on its own cadence — which for a full walk is daily."""
         from pcomirror.scheduler import Scheduler
         sched = Scheduler(self.m)
-        sched.run_once()
+        sched.drain_cold()
         first = self.m.ingestor.state("household_membership")["backfill_completed_at"]
         sched.run_once()
+        sched.drain_cold()
         self.assertEqual(self.m.ingestor.state("household_membership")["backfill_completed_at"],
                          first)
 

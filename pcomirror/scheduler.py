@@ -1,8 +1,25 @@
-"""Background scheduler (DESIGN §7.2 cadence).
+"""Background scheduler (DESIGN §7.2 cadence, §7.3 interleaving).
 
-A single loop that, each tick: drains the webhook inbox, drains hydration tasks,
-runs due incremental sweeps per resource, and periodically polls mergers and the
-drift probe. Runs as a daemon thread inside the one service process.
+Two lanes, two daemon threads, one shared limiter and one shared database:
+
+  * The **hot lane** ticks through the work whose latency somebody feels —
+    the webhook inbox, the hydration queue, divergence checks, the incremental
+    sweeps, the merger poll, the drift probes and repair scans. Each of these
+    is small by construction.
+
+  * The **cold lane** runs the work that is honest days-scale bulk — initial
+    and late backfills, the full-id delete audits, the per-parent walks — as
+    **bounded resumable units**, one unit per tick. The units persist their
+    cursors (`mirror_sync_state`, `mirror_meta`, `audit_scratch`), so a unit
+    that dies loses nothing and a restart resumes mid-round.
+
+The split exists because this was measured, not feared: on a real 1,900-person
+organization the first-day audit and a burst of hang-and-retry cycles ran
+inline and held the single loop for eight minutes — hydration tasks with
+`not_before` in the past, webhook events, and every divergence check queued
+behind work none of them needed — while serving carried on and hid it. A hung
+upstream read in a cold unit now costs the cold lane its tick, and nothing
+else anything.
 """
 from __future__ import annotations
 
@@ -14,22 +31,37 @@ from .config import now_iso
 
 
 class Scheduler:
+    #: Upstream pages/requests one cold unit may spend before yielding.
+    COLD_UNIT_BUDGET = 8
+    #: How long a cold unit that *failed* waits before being retried, so a dead
+    #: upstream costs one request per backoff window, not one per tick.
+    COLD_RETRY_S = 300.0
+    #: Hydration tasks drained per hot tick. The queue survives; a burst simply
+    #: takes a few ticks instead of monopolising one.
+    HOT_HYDRATIONS_PER_TICK = 25
+
     def __init__(self, mirror, tick_seconds: float = 5.0):
         self.m = mirror
         self.tick = tick_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._cold_thread: threading.Thread | None = None
         self._last_merger = 0.0
         self._last_drift = 0.0
+        self._cold_retry_at: dict[str, float] = {}
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name="pcomirror-scheduler", daemon=True)
         self._thread.start()
+        self._cold_thread = threading.Thread(
+            target=self._run_cold, name="pcomirror-scheduler-cold", daemon=True)
+        self._cold_thread.start()
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=10)
+        for t in (self._thread, self._cold_thread):
+            if t:
+                t.join(timeout=10)
 
     def _run(self):
         while not self._stop.is_set():
@@ -39,11 +71,20 @@ class Scheduler:
                 print(f"[scheduler] error: {e}")
             self._stop.wait(self.tick)
 
+    def _run_cold(self):
+        while not self._stop.is_set():
+            try:
+                self.run_cold_once()
+            except Exception as e:  # noqa: BLE001
+                print(f"[scheduler] cold error: {e}")
+            self._stop.wait(self.tick)
+
+    # -- the hot lane ------------------------------------------------------
     def run_once(self):
         ing, wh = self.m.ingestor, self.m.webhooks
         # local work always runs (no PCO calls)
         self._guard("webhook-drain", wh.drain)
-        self._guard("hydration-drain", ing.drain_hydration)
+        self._guard("hydration-drain", ing.drain_hydration, self.HOT_HYDRATIONS_PER_TICK)
 
         # anything that calls PCO only runs once there's a backfill to build on
         any_backfilled = any(
@@ -60,16 +101,11 @@ class Scheduler:
 
         now = now_iso()
         for r in registry.full_and_lite():
+            if r.method == "nested_walk":
+                continue    # a walk is per-parent bulk; the cold lane paces it
             st = ing.state(r.name)
             if st["backfill_completed_at"] is None:
-                # A resource added to the registry after this mirror was first
-                # backfilled has none of its own, and every sweep below is gated
-                # on having one — so without this it would stay empty forever
-                # while the sweeps around it ran, and reads would answer from an
-                # empty table. Backfill it now, in the background, once.
-                if self._guard(f"late-backfill:{r.name}", ing.backfill, r.name):
-                    print(f"[scheduler] backfilled newly declared resource {r.name}", flush=True)
-                continue
+                continue    # the cold lane is backfilling it
             if st["next_run_at"] and st["next_run_at"] <= now:
                 if self._guard(f"sweep:{r.name}", ing.incremental_sweep, r.name):
                     ing._set(r.name, next_run_at=self._plus(r.incr_interval_s), last_sweep_started_at=now)
@@ -91,23 +127,93 @@ class Scheduler:
             # the check is the *pair*.
             self._guard("repair:split-edges", self._split_edges)
             self._last_drift = t
-        # The third delete mechanism (DESIGN §7.2), and the only one that needs no
-        # signal from PCO: webhooks are lossy and merges only cover the merge path,
-        # so a person hard-deleted in the UI is invisible to everything else here —
-        # `where[updated_at]` cannot return an id that no longer exists. It was
-        # written, tested, documented and exposed on the CLI, and then never
-        # scheduled, which is why a live mirror was serving `total_count` 448
-        # against PCO's 447 with nothing on course to notice.
-        #
-        # Every resource that declares an audit gets one, rather than `person`
-        # alone. A household is deleted by exactly the same click and was just as
-        # invisible: three of them, created and abandoned while somebody added a
-        # family, were still live in a mirror a day later and still listed on the
-        # parent's record. Enumerating a few hundred households costs four
-        # requests a day.
+
+    # -- the cold lane -----------------------------------------------------
+    def run_cold_once(self) -> bool:
+        """One bounded unit of bulk work, or nothing. Returns whether it worked.
+
+        Order is priority: a resource nobody has backfilled serves empty pages,
+        so backfills come first; then the delete audits — the third delete
+        mechanism (DESIGN §7.2), the only one that needs no signal from PCO,
+        and the one that was written, tested, documented, exposed on the CLI
+        and then never scheduled; then the per-parent walk rounds. One unit per
+        tick, so a day-scale piece of work and a five-second tick coexist.
+        """
+        ing = self.m.ingestor
+        now = now_iso()
         for r in registry.full_and_lite():
-            if r.audit_interval_s and self._audit_due(r.name, now):
-                self._guard(f"audit:{r.name}", self._audit, r.name)
+            if ing.state(r.name)["backfill_completed_at"] is None:
+                if not self._cold_ready(f"backfill:{r.name}"):
+                    continue
+                ok = self._guard(f"late-backfill:{r.name}",
+                                 ing.backfill, r.name, self.COLD_UNIT_BUDGET)
+                self._cold_outcome(f"backfill:{r.name}", ok)
+                if ok and ing.state(r.name)["backfill_completed_at"]:
+                    print(f"[scheduler] backfilled newly declared resource {r.name}", flush=True)
+                return True
+        for r in registry.full_and_lite():
+            if not r.audit_interval_s:
+                continue
+            # A round in progress is continued whatever the cadence says —
+            # abandoning it would strand its scratch sets; a new round starts
+            # only when the audit is due.
+            if ing.audit_round(r.name) is None and not self._audit_due(r.name, now):
+                continue
+            if not self._cold_ready(f"audit:{r.name}"):
+                continue
+            ok = self._guard(f"audit:{r.name}", self._audit_step, r.name)
+            self._cold_outcome(f"audit:{r.name}", ok)
+            return True
+        for r in registry.full_and_lite():
+            if r.method != "nested_walk":
+                continue
+            st = ing.state(r.name)
+            if st["backfill_completed_at"] is None:
+                continue
+            due = st["next_run_at"] and st["next_run_at"] <= now
+            if ing.walk_round(r.name) is None and not due:
+                continue
+            if not self._cold_ready(f"walk:{r.name}"):
+                continue
+            ok = self._guard(f"walk:{r.name}", self._walk_step, r.name)
+            self._cold_outcome(f"walk:{r.name}", ok)
+            return True
+        return False
+
+    def drain_cold(self, max_units: int = 10_000) -> int:
+        """Run cold units until none is due. For tests and for the CLI, where
+        "do the bulk work now" is the entire point and pacing is not."""
+        n = 0
+        while n < max_units and self.run_cold_once():
+            n += 1
+        return n
+
+    def _cold_ready(self, key: str) -> bool:
+        return time.monotonic() >= self._cold_retry_at.get(key, 0.0)
+
+    def _cold_outcome(self, key: str, ok: bool) -> None:
+        if ok:
+            self._cold_retry_at.pop(key, None)
+        else:
+            # One failed unit per backoff window. Without this, a dead upstream
+            # turned the cold lane into a request per tick, for ever, logged.
+            self._cold_retry_at[key] = time.monotonic() + self.COLD_RETRY_S
+
+    def _audit_step(self, name: str) -> None:
+        outcome = self.m.ingestor.delete_audit_step(name, budget=self.COLD_UNIT_BUDGET)
+        if outcome["done"]:
+            if outcome["tombstoned"]:
+                print(f"[scheduler] audit tombstoned {outcome['tombstoned']} deleted "
+                      f"{name} record(s)", flush=True)
+            if outcome["restored"]:
+                print(f"[scheduler] audit restored {outcome['restored']} {name} record(s) "
+                      f"PCO holds that the mirror lacked", flush=True)
+
+    def _walk_step(self, name: str) -> None:
+        r = registry.by_name(name)
+        outcome = self.m.ingestor.walk_round_step(name, budget=self.COLD_UNIT_BUDGET)
+        if outcome["done"]:
+            self.m.ingestor._set(name, next_run_at=self._plus(r.incr_interval_s))
 
     #: How soon a drift-requested audit may follow the previous audit. The probe
     #: runs every 15 minutes and re-requests for as long as the counts disagree,
@@ -155,14 +261,6 @@ class Scheduler:
         if not last or last <= self._minus(hours * 3600, now):
             return True
         return bool(request) and last <= self._minus(self.DRIFT_AUDIT_MIN_INTERVAL_S, now)
-
-    def _audit(self, name: str) -> None:
-        tombstoned, restored = self.m.ingestor.delete_audit(name)
-        if tombstoned:
-            print(f"[scheduler] audit tombstoned {tombstoned} deleted {name} record(s)", flush=True)
-        if restored:
-            print(f"[scheduler] audit restored {restored} {name} record(s) PCO holds "
-                  f"that the mirror lacked", flush=True)
 
     def _split_edges(self) -> None:
         n = self.m.ingestor.repair_split_edges()

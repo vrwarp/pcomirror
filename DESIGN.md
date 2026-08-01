@@ -691,10 +691,12 @@ being what re-hashing a refused delivery actually needs.
 
 The **backstop that makes the mirror eventually-correct** regardless of what
 webhooks drop, reorder, or never deliver. Four cooperating jobs, all through the
-shared limiter and the canonical writers, all page-granular and checkpointed. A
-single **leader-elected reconciler** drives a `(priority, next_run_at)` queue,
-executing one page per tick so a long audit cooperatively interleaves with hot
-60 s sweeps.
+shared limiter and the canonical writers, all page-granular and checkpointed.
+The single-org profile implements this as the two-lane scheduler of §7.3 —
+bounded resumable units on a cold lane, hot work on its own — which is the
+same interleaving contract the multi-process profile states as a
+leader-elected reconciler driving a `(priority, next_run_at)` queue one page
+per tick.
 
 ### 7.1 Incremental catch-up sweep
 
@@ -781,10 +783,28 @@ person's children — some were *moved* to the survivor (same child id, now
 those via `mirror_confirm_live` (authoritative, resurrects even at equal
 `updated_at`); only children truly absent from the survivor are tombstoned.
 
-### 7.3 Bounding the audit cost
+### 7.3 Bounding the audit cost — and everyone else's latency
 
-Keyset on `created_at` keeps `offset ≈ 0` (full 100/20s tier); sparse fieldset
-shrinks rows from ~2 KB to ~60 B (bandwidth, not request count):
+**Bulk work runs as bounded resumable units on a cold lane.** The scheduler is
+two daemon threads: a *hot lane* for the work whose latency somebody feels
+(webhook inbox, hydration queue, divergence checks, incremental sweeps, merger
+poll, drift and repair scans — each small by construction) and a *cold lane*
+that takes the honest bulk — initial and late backfills, the delete audits, the
+per-parent walks — one unit of at most `COLD_UNIT_BUDGET` upstream requests per
+tick. Units persist their cursors (`mirror_sync_state` for backfills,
+`mirror_meta` + `audit_scratch` for audit rounds, `nested_walk_state` for walk
+rounds), so a unit that dies loses nothing and a restart resumes mid-round; a
+unit that *fails* backs off `COLD_RETRY_S` instead of burning a request per
+tick against a dead upstream. Measured before the split existed: on a real
+1,900-person organization, the first-day audit plus a burst of hang-and-retry
+cycles held the single loop for eight minutes — hydration tasks with
+`not_before` already past, webhook events and every divergence check queued
+behind work none of them needed — while serving carried on and hid it.
+
+Within one audit round the request cost itself is bounded the same way it
+always was. Keyset on `created_at` keeps `offset ≈ 0` (full 100/20s tier);
+sparse fieldset shrinks rows from ~2 KB to ~60 B (bandwidth, not request
+count):
 
 | Org size | Enum requests | Wall-clock (P4 draining ~4 req/s of slack) |
 |---|---|---|
