@@ -451,12 +451,35 @@ class Ingestor:
             (merger_id, json.dumps(raw), source, self.writer.api_version))
 
     # -- delete audit ------------------------------------------------------
-    def delete_audit(self, name: str = "person") -> int:
+
+    #: Records the audit will re-fetch per run when it finds ids PCO has and the
+    #: mirror does not. Bounds the audit's cost against its ordinary shape — a
+    #: handful of gaps — while a mirror missing thousands (a half-finished
+    #: backfill) converges over a few runs instead of turning the nightly audit
+    #: into a full backfill.
+    AUDIT_RESTORE_LIMIT = 500
+
+    def delete_audit(self, name: str = "person") -> tuple[int, int]:
+        """Reconcile the mirror's id set against PCO's, in both directions.
+
+        The enumeration is one pass and answers two questions. Ids the mirror
+        holds live and PCO no longer lists are hard deletes `updated_at`
+        filtering can never see — confirmed one by one, then tombstoned. Ids
+        PCO lists and the mirror lacks are the reverse gap: a record a
+        backfill, webhook and every sweep missed. Nothing else ever repairs
+        those — a divergence report showed one two *years* behind the sweep
+        watermark, which no sweep would ever collect again — so the audit,
+        already holding the only full id list anybody pays for, re-fetches
+        them. Returns `(tombstoned, restored)`.
+        """
         r = registry.by_name(name)
         # Snapshot the mirror's live ids BEFORE enumerating PCO, so rows created
         # during the audit are never candidates (avoids a second-precision race).
         candidates = {row["pco_id"] for row in
                       self.db.query(f"SELECT pco_id FROM {r.table} WHERE deleted_at IS NULL")}
+        # And every id the mirror knows at all: a tombstoned row PCO still lists
+        # is a burial to reconsider, not a gap to re-create around.
+        known = {row["pco_id"] for row in self.db.query(f"SELECT pco_id FROM {r.table}")}
         # Stamped before the work, not after: the scheduler reads the later of
         # started/completed to decide whether an audit is due, so an audit that
         # dies partway waits its interval instead of restarting on the next tick.
@@ -486,8 +509,39 @@ class Ingestor:
                 obj = (resp.json() or {}).get("data")
                 if obj:
                     self.writer.confirm_live(r.table, pid, obj, "reconcile")
+        restored = self._restore_missing(r, sorted(live - known)[:self.AUDIT_RESTORE_LIMIT])
         self._set(name, last_audit_completed_at=now_iso())
-        return tombstoned
+        return tombstoned, restored
+
+    def _restore_missing(self, r, missing) -> int:
+        """Fetch and store records PCO lists that the mirror has no row for.
+
+        Full fetches with the resource's declared includes, exactly the shape a
+        hydration uses, so the restored record arrives no thinner than a synced
+        one. The children ride through the ordinary router; the record itself is
+        `confirm_live` — the id enumeration just said it exists, which is the
+        authoritative liveness that writer exists for. A fetch that fails is
+        left for the next audit rather than retried: the id list is re-derived
+        every run, so a gap can only survive by outrunning every future pass.
+        """
+        include = ",".join(r.includes) or None
+        restored = 0
+        for pid in missing:
+            resp = self.client.get(f"{r.endpoint}/{pid}",
+                                   {"include": include} if include else None,
+                                   priority="backfill")
+            if not resp.ok:
+                continue    # deleted in the race window, or transient — next run
+            body = resp.json() or {}
+            obj = body.get("data")
+            if not obj:
+                continue
+            with self.db.transaction():
+                self.writer.route_page({"data": [], "included": body.get("included") or []},
+                                       "reconcile")
+                self.writer.confirm_live(r.table, pid, obj, "reconcile")
+            restored += 1
+        return restored
 
     # -- drift probe -------------------------------------------------------
     def drift_probe(self, name: str) -> dict:

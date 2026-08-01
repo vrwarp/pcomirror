@@ -97,6 +97,21 @@ def _updated_at(resource):
     return ((resource or {}).get("attributes") or {}).get("updated_at")
 
 
+def one_sided(mirror_body, pco_body):
+    """`(key, side, resource)` for every record only one document carries.
+
+    `side` names who returned it — `"pco"` or `"mirror"` — and `resource` is
+    that side's copy. This is the set the checker looks up in the mirror's own
+    store: a record one side returned and the other did not is either a store
+    gap, a tombstone disagreement, or a serving/search difference, and only the
+    store can say which.
+    """
+    mine, theirs = _resources(mirror_body), _resources(pco_body)
+    out = [(key, "pco", theirs[key]) for key in sorted(set(theirs) - set(mine))]
+    out += [(key, "mirror", mine[key]) for key in sorted(set(mine) - set(theirs))]
+    return out
+
+
 def compare(mirror_body, pco_body, mirror_status=200, pco_status=200) -> list:
     """Every way these two disagree that is not a documented decision."""
     found = []
@@ -184,7 +199,7 @@ def _compare_resource(key, mine, theirs, budget) -> list:
     return out
 
 
-def classify(differences, mirror_body, pco_body) -> str:
+def classify(differences, mirror_body, pco_body, store=None) -> str:
     """`staleness` if the sweep will fix it, `divergence` if nothing will.
 
     The distinction is the whole point of separating these, and it is not
@@ -200,6 +215,16 @@ def classify(differences, mirror_body, pco_body) -> str:
     primary email without moving `updated_at` was measured doing precisely this,
     and the mirror would have reported two primary numbers for one person
     indefinitely.
+
+    `store`, when given, maps each one-sided record's `(type, id)` to what the
+    mirror's own tables hold for it (see `ShadowChecker._store_facts`). It
+    exists because "PCO has it and the mirror does not" is *not* always lag: a
+    live report showed a record whose `updated_at` was two years behind the
+    sweep watermark filed as `staleness`, promising a repair no sweep would
+    ever make. With the store in hand the promise is checked instead of
+    assumed — a record the mirror holds live but did not return is a serving
+    or search difference, and a record it lacks is only "not swept yet" while
+    the watermark has not already passed it.
     """
     if not differences:
         return "match"
@@ -208,10 +233,41 @@ def classify(differences, mirror_body, pco_body) -> str:
         ours, upstream = _updated_at(mine[key]), _updated_at(theirs[key])
         if ours and upstream and upstream > ours:
             return "staleness"
-    # A record PCO has and the mirror does not is also just lag — it has not been
-    # swept yet — provided nothing else disagrees.
+    # A record PCO has and the mirror does not may be lag — it has not been
+    # swept yet — provided nothing else disagrees, and provided the sweep is in
+    # fact still going to collect it.
     if set(theirs) - set(mine) and not (set(mine) - set(theirs)):
         if all(d.pointer.startswith("$.included[") or d.pointer.startswith("$.data")
                or d.pointer.startswith("$.meta") for d in differences):
-            return "staleness"
+            if all(_sweep_converges(store.get(key) if store else None,
+                                    _updated_at(theirs[key]))
+                   for key in set(theirs) - set(mine)):
+                return "staleness"
     return "divergence"
+
+
+def _sweep_converges(fact, upstream_uat) -> bool:
+    """Whether the incremental sweep will still deliver this record.
+
+    Without store facts there is no basis to overrule the optimistic reading,
+    so absence of a fact keeps the old answer. With them, three ways the
+    promise fails: the mirror already *has* the record and chose not to return
+    it (a serving or search difference — syncing again changes nothing); the
+    record carries no `updated_at` for the sweep to see; or the watermark is
+    already past it, so the sweep's filter will never match it again. A
+    tombstoned row additionally needs the upstream copy to be newer than the
+    tombstone, or the canonical writer will refuse the resurrection.
+    """
+    if fact is None:
+        return True
+    if fact["held"] == "live":
+        return False
+    if not upstream_uat:
+        return False
+    watermark = fact.get("watermark")
+    if watermark and upstream_uat < watermark:
+        return False
+    if fact["held"] == "tombstoned":
+        buried_at = fact.get("tombstone_uat")
+        return not buried_at or upstream_uat > buried_at
+    return True

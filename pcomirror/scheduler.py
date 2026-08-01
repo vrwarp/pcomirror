@@ -129,9 +129,12 @@ class Scheduler:
         return not last or last <= self._minus(hours * 3600, now)
 
     def _audit(self, name: str) -> None:
-        n = self.m.ingestor.delete_audit(name)
-        if n:
-            print(f"[scheduler] audit tombstoned {n} deleted {name} record(s)", flush=True)
+        tombstoned, restored = self.m.ingestor.delete_audit(name)
+        if tombstoned:
+            print(f"[scheduler] audit tombstoned {tombstoned} deleted {name} record(s)", flush=True)
+        if restored:
+            print(f"[scheduler] audit restored {restored} {name} record(s) PCO holds "
+                  f"that the mirror lacked", flush=True)
 
     def _repair(self, name: str) -> None:
         n = self.m.ingestor.repair_incomplete(name)
