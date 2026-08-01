@@ -554,6 +554,19 @@ class TestDriftAsksForTheAudit(unittest.TestCase):
                         last_audit_completed_at=two_hours_ago)
         self.assertFalse(sched._audit_due("person", now_iso()))
 
+    def test_the_probe_never_demotes_an_operators_request(self):
+        """The probe re-measures every 15 minutes. Without the escalation
+        guard, a person clicking the audit button on a drifted mirror had
+        their request quietly downgraded to `drift` by the very next probe —
+        back behind the cooldown, or refused outright where scheduled audits
+        are switched off."""
+        from pcomirror import ingest as ingest_mod
+        m, fake = self._seeded()
+        fake.destroy("Person", "2")
+        ingest_mod.request_audit(m.db, "person", "operator")
+        m.ingestor.drift_probe("person")                   # measures the ghost
+        self.assertEqual(m.ingestor.audit_requested("person"), "operator")
+
     def test_the_audit_answers_the_request_and_clears_it(self):
         m, fake = self._seeded()
         fake.destroy("Person", "2")

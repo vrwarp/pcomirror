@@ -229,6 +229,107 @@ class TestKeysAndStats(AdminCase):
         self.assertIn(b"PCOMIRROR_ALLOW_ANONYMOUS", page)
 
 
+class TestSyncOnDemand(AdminCase):
+    """The page *requests*; the scheduler *runs*. The buttons exist because the
+    only other ways to bring a sweep or the id-set audit forward were the CLI
+    and waiting — and the person staring at a stale record is on the console,
+    not in the container."""
+
+    def setUp(self):
+        super().setUp()
+        self.cookie = self.configured_login()
+        self.fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        self.fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
+        self.m.ingestor.backfill("person")
+
+    def _dash_csrf(self):
+        _, _, page = self.get("/", cookie=self.cookie)
+        return re.search(rb'name=csrf value="([^"]+)"', page).group(1).decode()
+
+    def test_the_dashboard_offers_both_buttons(self):
+        _, _, page = self.get("/", cookie=self.cookie)
+        self.assertIn(b"/admin/sync/sweep", page)
+        self.assertIn(b"/admin/sync/audit", page)
+        self.assertIn(b"last audit", page)
+
+    def test_sweep_queues_and_the_scheduler_runs_it(self):
+        from pcomirror.scheduler import Scheduler
+        # As after any sweep: the next one is scheduled well into the future.
+        self.m.ingestor._set("person", next_run_at="2027-01-01T00:00:00Z")
+        _, _, page = self.post("/admin/sync/sweep", _form(
+            csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
+        self.assertIn(b"Queued the reconcile sweep for /people", page)
+        st = self.m.ingestor.state("person")
+        self.assertLess(st["next_run_at"], "2027-01-01T00:00:00Z",
+                        "the request should pull the sweep back to now")
+        self.assertIsNone(st["last_sweep_completed_at"])
+        Scheduler(self.m).run_once()
+        self.assertIsNotNone(self.m.ingestor.state("person")["last_sweep_completed_at"])
+
+    def test_audit_queues_as_an_operator_request_and_buries_a_ghost(self):
+        from pcomirror.scheduler import Scheduler
+        sched = Scheduler(self.m)
+        sched.run_once()                       # the cadence audit has just run…
+        self.fake.destroy("Person", "2")       # …when the ghost appears
+        _, _, page = self.post("/admin/sync/audit", _form(
+            csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
+        self.assertIn(b"Queued the id-set audit for /people", page)
+        self.assertEqual(self.m.ingestor.audit_requested("person"), "operator")
+        sched.run_once()                       # no day-long cadence, no cooldown
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
+        self.assertIsNone(self.m.ingestor.audit_requested("person"),
+                          "the completed audit answers the request")
+
+    def test_an_operator_audit_runs_even_where_scheduled_audits_are_off(self):
+        """`reconcile --audit` on the CLI has always worked under
+        `PCOMIRROR_AUDIT_INTERVAL_HOURS=0`; the button is the same person
+        making the same explicit choice."""
+        from pcomirror.scheduler import Scheduler
+        self.m.settings.audit_interval_hours = 0
+        self.fake.destroy("Person", "2")
+        self.post("/admin/sync/audit", _form(
+            csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
+        Scheduler(self.m).run_once()
+        self.assertIsNotNone(
+            self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
+
+    def test_a_pending_request_shows_as_queued_on_the_page(self):
+        self.post("/admin/sync/audit", _form(
+            csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
+        _, _, page = self.get("/", cookie=self.cookie)
+        self.assertIn(b"operator queued", page)
+
+    def test_no_resource_named_means_everything(self):
+        self.post("/admin/sync/sweep", _form(csrf=self._dash_csrf()), cookie=self.cookie)
+        from pcomirror import registry
+        for r in registry.full_and_lite():
+            self.assertIsNotNone(self.m.ingestor.state(r.name)["next_run_at"], r.name)
+        self.post("/admin/sync/audit", _form(csrf=self._dash_csrf()), cookie=self.cookie)
+        for r in registry.full_and_lite():
+            if r.audit_interval_s:
+                self.assertEqual(self.m.ingestor.audit_requested(r.name), "operator", r.name)
+
+    def test_an_unauditable_resource_is_refused(self):
+        _, _, page = self.post("/admin/sync/audit", _form(
+            csrf=self._dash_csrf(), resource="note"), cookie=self.cookie)
+        self.assertIn(b"No audit for", page)
+        self.assertIsNone(self.m.ingestor.audit_requested("note"))
+
+    def test_csrf_is_required(self):
+        self.m.ingestor._set("person", next_run_at="2027-01-01T00:00:00Z")
+        _, _, page = self.post("/admin/sync/sweep", _form(resource="person"),
+                               cookie=self.cookie)
+        self.assertIn(b"Session expired", page)
+        self.assertEqual(self.m.ingestor.state("person")["next_run_at"],
+                         "2027-01-01T00:00:00Z", "a csrf-less post must queue nothing")
+
+    def test_a_get_does_nothing(self):
+        status, headers, _ = self.get("/admin/sync/audit", cookie=self.cookie)
+        self.assertEqual(status, 303)
+        self.assertIsNone(self.m.ingestor.audit_requested("person"))
+
+
 class TestIsolation(AdminCase):
     def test_admin_pages_need_a_session_not_an_api_key(self):
         key = apikeys.create(self.m.db, "app", "read:*")

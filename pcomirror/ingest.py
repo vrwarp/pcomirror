@@ -35,6 +35,63 @@ class IngestError(RuntimeError):
     """A sync step could not complete — raised rather than recorded as success."""
 
 
+# -- sync on demand ---------------------------------------------------------
+#
+# Module functions taking a `db`, not `Ingestor` methods, because the callers
+# that *ask* are not the thread that *runs*: the drift probe and the admin page
+# record a request, and the scheduler — the one thread that does ingest work on
+# a cadence — answers it on its next tick. The admin page holds a database and
+# nothing else, which is the point: a page that could reach the ingestor would
+# be a page that can spend minutes of PCO budget inside one HTTP request.
+
+def _audit_request_key(name: str) -> str:
+    return f"audit_requested:{name}"
+
+
+def request_audit(db, name: str, source: str) -> None:
+    """Ask for an out-of-cadence id-set audit of `name`.
+
+    `source` is the urgency contract. `drift` is the probe speaking — a
+    measured count mismatch — and waits out the scheduler's cooldown so a
+    delta the audit cannot close costs one audit an hour, not one per probe.
+    `operator` is a person on the console clicking the button, which is the
+    same standing the CLI's `reconcile --audit` has always had: it runs at the
+    next tick, cadence, cooldown and even `PCOMIRROR_AUDIT_INTERVAL_HOURS=0`
+    notwithstanding.
+
+    A request only ever escalates. The probe re-measures every 15 minutes, so
+    without this a person clicking the button on a drifted mirror had their
+    request quietly demoted to `drift` by the very next probe — back behind
+    the cooldown, or refused outright where scheduled audits are off.
+    """
+    if source == "drift" and audit_request(db, name) == "operator":
+        return
+    db.set_meta(_audit_request_key(name), f"{source} {now_iso()}")
+
+
+def audit_request(db, name: str) -> str | None:
+    """The pending request's source — `drift`, `operator` — or None."""
+    held = db.get_meta(_audit_request_key(name))
+    return held.split()[0] if held else None
+
+
+def clear_audit_request(db, name: str) -> None:
+    db.execute("DELETE FROM mirror_meta WHERE key=?", (_audit_request_key(name),))
+
+
+def request_sweep(db, name: str) -> None:
+    """Make `name`'s incremental sweep due on the scheduler's next tick.
+
+    Nothing here runs the sweep — `next_run_at` is simply moved to now, and
+    the scheduler's ordinary loop does what it does for any due resource. A
+    resource that has never backfilled has no sweep to bring forward; the
+    scheduler is already backfilling it on every tick.
+    """
+    db.execute("INSERT OR IGNORE INTO mirror_sync_state(resource_type) VALUES(?)", (name,))
+    db.execute("UPDATE mirror_sync_state SET next_run_at=? WHERE resource_type=?",
+               (now_iso(), name))
+
+
 class Ingestor:
     ORG_META_KEY = "organization_id"
 
@@ -515,7 +572,7 @@ class Ingestor:
         # on start: an audit that dies partway has not answered anything, and
         # the request standing is what makes the scheduler come back — under
         # the same cooldown that stops it coming back every tick.
-        self._clear_audit_request(name)
+        clear_audit_request(self.db, name)
         return tombstoned, restored
 
     def _restore_missing(self, r, missing) -> int:
@@ -550,15 +607,9 @@ class Ingestor:
 
     # -- drift probe -------------------------------------------------------
 
-    def _audit_request_key(self, name: str) -> str:
-        return f"audit_requested:{name}"
-
     def audit_requested(self, name: str) -> str | None:
-        """When drift last asked for an out-of-cadence audit, or None."""
-        return self.db.get_meta(self._audit_request_key(name))
-
-    def _clear_audit_request(self, name: str) -> None:
-        self.db.execute("DELETE FROM mirror_meta WHERE key=?", (self._audit_request_key(name),))
+        """The pending audit request's source, or None. See `audit_request`."""
+        return audit_request(self.db, name)
 
     def drift_probe(self, name: str) -> dict:
         """Compare PCO's `total_count` with how many live rows the mirror holds.
@@ -594,7 +645,7 @@ class Ingestor:
             cols["total_count_last"] = total
         self._set(name, **cols)
         if r.audit_interval_s and total is not None and mirror != total:
-            self.db.set_meta(self._audit_request_key(name), now_iso())
+            request_audit(self.db, name, "drift")
         return {"resource": name, "total_count": total, "mirror_live": mirror,
                 "delta": (mirror - total) if total is not None else None}
 

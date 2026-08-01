@@ -816,6 +816,15 @@ strictly the probe *asking*: only the scheduler runs audits, and
 `PCOMIRROR_AUDIT_INTERVAL_HOURS=0` still switches the whole mechanism off,
 requests included.
 
+The admin dashboard asks through the same door (`/admin/sync/sweep`,
+`/admin/sync/audit`): a button records a request and the scheduler runs it on
+its next tick — never inside the HTTP request, which would put minutes of PCO
+budget behind a proxy timeout, with a second click starting a second copy. An
+`operator` request outranks the cooldown, the cadence and
+`PCOMIRROR_AUDIT_INTERVAL_HOURS=0` — the standing `reconcile --audit` on the
+CLI has always had — and a request only ever escalates: the probe's 15-minute
+re-measure must not demote a waiting operator back behind drift's cooldown.
+
 **`total_count` population parity (resolved).** The alarm compares two counts, so
 they must count the *same* population. PCO's docs don't state whether an
 unfiltered `GET /people` (and thus `meta.total_count`) includes inactive/pending

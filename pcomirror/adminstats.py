@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 
-from . import registry, webhooks
+from . import ingest, registry, webhooks
 
 
 def _one(db, sql, params=()):
@@ -41,6 +41,14 @@ def resource_rows(db) -> list[dict]:
             "drift": drift,
             "errors": st["consecutive_errors"] if st else 0,
             "last_error": st["last_error"] if st else None,
+            # For the sync buttons: whether this resource has a sweep to bring
+            # forward at all, whether it declares the id-set audit, when one
+            # last finished, and whether a request is already standing — so a
+            # click renders as "queued" straight away.
+            "sweepable": r.tier in ("full", "lite"),
+            "audited": bool(r.audit_interval_s),
+            "last_audit": st["last_audit_completed_at"] if st else None,
+            "audit_queued": ingest.audit_request(db, r.name),
         })
     return out
 
