@@ -50,7 +50,7 @@ import time
 
 from .. import registry
 from ..config import now_iso
-from .rules import Difference, classify, compare
+from .rules import Difference, classify, compare, one_sided
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
@@ -272,11 +272,17 @@ class ShadowChecker:
         pco_body = upstream.json() if upstream.body else {}
 
         differences = compare(mirror_body, pco_body, mirror_status, upstream.status)
-        verdict = classify(differences, mirror_body, pco_body)
+        facts = self._store_facts(mirror_body, pco_body)
+        verdict = classify(differences, mirror_body, pco_body, store=facts)
         if verdict == "match":
             self.db.execute("UPDATE shadow_sample SET last_agreed_at=? WHERE sample_id=?",
                             (now_iso(), sample_id))
             return verdict
+        # The store's testimony rides along in the report, after the verdict is
+        # decided: the reader of a one-sided record needs to know *which* of the
+        # three stories it is — store gap, tombstone, or a search the sync state
+        # cannot explain — and only these rows can say.
+        stored_differences = [*differences, *self._store_notes(facts)]
 
         p = self.pseudonymiser
         self.db.execute(
@@ -290,8 +296,10 @@ class ShadowChecker:
              # the reader can see one record eight places out of position and has
              # no way to learn which field put it there.
              "path": path, "query": json.dumps(p.query(params or {})), "verdict": verdict,
+             # The comparison's own count — the store rows below are testimony
+             # about it, not more places the documents disagree.
              "n": len(differences),
-             "diffs": json.dumps([_safe_difference(p, d) for d in differences]),
+             "diffs": json.dumps([_safe_difference(p, d) for d in stored_differences]),
              "ms": mirror_status, "ps": upstream.status,
              "mb": json.dumps(p.document(mirror_body)),
              "pb": json.dumps(p.document(pco_body)),
@@ -303,6 +311,83 @@ class ShadowChecker:
         row = self.db.query_one("SELECT shape FROM shadow_sample WHERE sample_id=?",
                                 (sample_id,))
         return row["shape"] if row else shape_of(path.split("?")[0], [])
+
+    def _store_facts(self, mirror_body, pco_body) -> dict:
+        """What the mirror's own tables hold for each record only one side returned.
+
+        The response can only say *that* the sides disagree about a record's
+        presence; whether that is a store gap, a tombstone, or a search that
+        will not match a row the mirror holds is knowable only here, next to
+        the database. `classify` uses these facts to keep its `staleness`
+        promise honest, and `_store_notes` writes them into the report.
+        """
+        facts = {}
+        for key, side, resource in one_sided(mirror_body, pco_body):
+            rtype, rid = key
+            r = registry.by_type(rtype)
+            if r is None:
+                continue    # an unmirrored type in an include set — no store to ask
+            row = self.db.query_one(
+                f"SELECT deleted_at, tombstone_reason, tombstone_uat, pco_updated_at, "
+                f"last_synced_at, source FROM {r.table} WHERE pco_id=?", (rid,))
+            state = self.db.query_one(
+                "SELECT reconcile_watermark FROM mirror_sync_state WHERE resource_type=?",
+                (r.name,))
+            facts[key] = {
+                "side": side,
+                "held": ("absent" if row is None
+                         else "tombstoned" if row["deleted_at"] is not None else "live"),
+                "stored_uat": row["pco_updated_at"] if row else None,
+                "tombstone_uat": row["tombstone_uat"] if row else None,
+                "tombstone_reason": row["tombstone_reason"] if row else None,
+                "last_synced_at": row["last_synced_at"] if row else None,
+                "source": row["source"] if row else None,
+                "watermark": state["reconcile_watermark"] if state else None,
+                "upstream_uat": (resource.get("attributes") or {}).get("updated_at"),
+            }
+        return facts
+
+    @staticmethod
+    def _store_notes(facts: dict) -> list:
+        """The store's testimony, one `$.store[...]` row per one-sided record.
+
+        Timestamps, sources and reasons only — nothing here is anybody's name,
+        so these pass the pseudonymiser untouched and the export stays safe to
+        hand to somebody.
+        """
+        notes = []
+        for (rtype, rid), f in sorted(facts.items()):
+            if f["held"] == "live":
+                held = (f"live, updated {f['stored_uat']}, "
+                        f"synced {f['last_synced_at']} via {f['source']}")
+                why = ("the mirror holds this record and did not return it — a serving or "
+                       "search difference, which no amount of re-syncing changes"
+                       if f["side"] == "pco" else
+                       "the mirror returned a record PCO did not — an over-broad search or "
+                       "filter match here, or an upstream deletion nothing has delivered yet")
+            elif f["held"] == "tombstoned":
+                held = f"tombstoned ({f['tombstone_reason']}) at {f['tombstone_uat']}"
+                why = ("PCO still returns a record the mirror has buried; only a payload "
+                       "newer than the tombstone resurrects it"
+                       if f["side"] == "pco" else
+                       "the mirror returned a record its own store holds tombstoned")
+            else:
+                held = "absent"
+                behind = (f["upstream_uat"] and f["watermark"]
+                          and f["upstream_uat"] < f["watermark"])
+                if f["side"] == "pco" and behind:
+                    why = (f"no such row, and the sweep watermark ({f['watermark']}) is "
+                           f"already past its updated_at ({f['upstream_uat']}) — no sweep "
+                           f"collects it again; the audit's restore pass or a backfill is "
+                           f"what repairs this")
+                elif f["side"] == "pco":
+                    why = "no such row yet — the next incremental sweep collects it"
+                else:
+                    why = "the mirror returned a record its own store does not hold"
+            notes.append(Difference(
+                f"$.store[{rtype}/{rid}]", held,
+                "returned" if f["side"] == "pco" else "not returned", why))
+        return notes
 
     def _note_failure(self, shape: str, error: Exception) -> None:
         if self._recorder is None:

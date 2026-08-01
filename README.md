@@ -30,9 +30,11 @@ duplicate/out-of-order delivery. An **initial backfill** keyset-walks
 `updated_at` (never deep-offset paging, to dodge the >30k-offset penalty) and
 sideloads children via `include=` to collapse N+1 into ~1 request per 100 people.
 **Webhooks** apply changes in seconds; **reconciliation** sweeps `where[updated_at]`
-watermarks, tails `/person_mergers`, and runs a periodic id-audit to catch hard
-deletes and merges that `updated_at` filtering can't see. Everything that calls
-PCO shares **one per-org rate limiter**.
+watermarks, tails `/person_mergers`, and runs a periodic id-audit both ways — it
+tombstones hard deletes and merges that `updated_at` filtering can't see, and
+restores records PCO lists that the mirror has no row for, the gap the sweep's
+watermark has already passed. Everything that calls PCO shares **one per-org
+rate limiter**.
 
 ## Documentation
 

@@ -114,10 +114,47 @@ class TestReconcile(unittest.TestCase):
         m.ingestor.backfill("person")
         # hard-delete at PCO (disappears from listings, GET returns 404)
         fake.destroy("Person", "2")
-        tombstoned = m.ingestor.delete_audit("person")
+        tombstoned, restored = m.ingestor.delete_audit("person")
         self.assertEqual(tombstoned, 1)
+        self.assertEqual(restored, 0)
         self.assertIsNotNone(m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
         self.assertIsNone(m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='1'")["deleted_at"])
+
+    def test_delete_audit_restores_a_record_the_mirror_lost(self):
+        """The reverse gap: PCO lists an id the mirror has no row for.
+
+        Nothing else ever repairs it — the sweep filters on `updated_at`, which
+        for a record this old is far behind the watermark, so a live divergence
+        report once promised `staleness` for a person no sweep would ever
+        collect again. The audit already enumerates every id, so it is the one
+        pass that can notice, and now the one that fixes."""
+        m, fake = self._seed()
+        fake.add_person("2", "Lost", "Person", "2024-01-31T06:37:30Z")
+        m.ingestor.backfill("person")
+        m.db.execute("DELETE FROM person WHERE pco_id='2'")
+
+        tombstoned, restored = m.ingestor.delete_audit("person")
+
+        self.assertEqual((tombstoned, restored), (0, 1))
+        row = m.db.query_one("SELECT deleted_at, source FROM person WHERE pco_id='2'")
+        self.assertIsNotNone(row)
+        self.assertIsNone(row["deleted_at"])
+
+    def test_delete_audit_does_not_dig_up_a_tombstone(self):
+        """`confirm_live` stays reserved for rows the mirror thinks live — the
+        writer's documented invariant. A burial PCO disagrees with is surfaced
+        by the divergence checker's store notes, never silently reversed on the
+        strength of an id listing alone."""
+        m, fake = self._seed()
+        fake.add_person("2", "Buried", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.writer.tombstone("person", "2", None, "destroyed")
+
+        tombstoned, restored = m.ingestor.delete_audit("person")
+
+        self.assertEqual(restored, 0)
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
 
     def test_include_diff_tombstones_removed_child(self):
         m, fake = build()
@@ -179,7 +216,7 @@ class TestAChildCannotOutliveItsOwner(unittest.TestCase):
     def test_the_audit_takes_the_children_with_the_person(self):
         m, fake = self._seed()
         fake.destroy("Person", "2")
-        self.assertEqual(m.ingestor.delete_audit("person"), 1)
+        self.assertEqual(m.ingestor.delete_audit("person")[0], 1)
         self.assertEqual(self._live(m, "email"), ["e1"])
         self.assertEqual(self._live(m, "phone_number"), [])
 

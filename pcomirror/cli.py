@@ -117,7 +117,8 @@ def cmd_reconcile(args):
     if args.audit:
         for r in registry.full_and_lite():
             if r.audit_interval_s:
-                print(f"audit {r.name}: {m.ingestor.delete_audit(r.name)} tombstoned")
+                tombstoned, restored = m.ingestor.delete_audit(r.name)
+                print(f"audit {r.name}: {tombstoned} tombstoned, {restored} restored")
 
 
 def cmd_drift(args):

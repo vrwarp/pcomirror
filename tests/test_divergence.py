@@ -148,6 +148,54 @@ class TestStalenessIsNotDivergence(unittest.TestCase):
         self.assertEqual(cmp_mod.classify([], doc, doc), "match")
 
 
+class TestTheStoreConsulted(unittest.TestCase):
+    """"Not swept yet" is a promise, and with store facts in hand it is checked
+    rather than assumed. A live report once filed a record two years behind the
+    sweep watermark as `staleness` — a repair no sweep would ever make."""
+
+    def _mirror_missing_nine(self):
+        mine = collection(total=0)
+        theirs = collection(person("9", updated="2024-01-31T06:37:30Z"), total=1)
+        return mine, theirs, cmp_mod.compare(mine, theirs)
+
+    def test_a_gap_the_watermark_has_passed_is_a_divergence(self):
+        mine, theirs, found = self._mirror_missing_nine()
+        store = {("Person", "9"): {"held": "absent", "watermark": "2026-07-31T00:00:00Z"}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "divergence")
+
+    def test_a_gap_the_sweep_is_still_short_of_is_lag(self):
+        mine, theirs, found = self._mirror_missing_nine()
+        store = {("Person", "9"): {"held": "absent", "watermark": "2024-01-01T00:00:00Z"}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "staleness")
+
+    def test_a_gap_before_the_first_sweep_is_lag(self):
+        # No watermark yet — the backfill is what will deliver it.
+        mine, theirs, found = self._mirror_missing_nine()
+        store = {("Person", "9"): {"held": "absent", "watermark": None}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "staleness")
+
+    def test_a_row_held_live_but_not_returned_is_a_divergence(self):
+        # The mirror *has* the record; re-syncing it changes nothing about the
+        # answer it gave. A search or serving difference, whatever the watermark.
+        mine, theirs, found = self._mirror_missing_nine()
+        store = {("Person", "9"): {"held": "live", "watermark": "2020-01-01T00:00:00Z"}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "divergence")
+
+    def test_a_tombstone_only_yields_to_a_newer_payload(self):
+        mine, theirs, found = self._mirror_missing_nine()
+        buried = {"held": "tombstoned", "watermark": None,
+                  "tombstone_uat": "2026-01-01T00:00:00Z"}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store={("Person", "9"): dict(buried)}),
+                         "divergence")
+        exhumable = dict(buried, tombstone_uat="2020-01-01T00:00:00Z")
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store={("Person", "9"): exhumable}),
+                         "staleness")
+
+    def test_without_the_store_the_old_reading_stands(self):
+        mine, theirs, found = self._mirror_missing_nine()
+        self.assertEqual(cmp_mod.classify(found, mine, theirs), "staleness")
+
+
 class TestSamplingByShape(unittest.TestCase):
     """Uniform sampling spends the budget on a thousand copies of one query."""
 
@@ -255,6 +303,28 @@ class TestTheCaseThisExistsFor(ShadowCase):
         self.m.writer.upsert("email", "e1", thinner, "reconcile")
         self.assertEqual(
             self.m.db.query_one("SELECT is_primary FROM email WHERE pco_id='e1'")["is_primary"], 1)
+
+
+class TestTheStoreTestimony(ShadowCase):
+    def test_a_gap_no_sweep_will_close_is_named_and_filed_divergence(self):
+        """The live case this repairs: a person years behind the sweep watermark,
+        missing from the store, filed as `staleness` — a promise nothing kept.
+        The verdict now says `divergence`, and the report says why, from the one
+        vantage that knows: the store itself."""
+        self.fake.add_person("2", "Left", "Behind", "2024-01-31T06:37:30Z")
+        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=100")
+        self.m.divergence.run_once()
+
+        reports = divergence.recent(self.m.db)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["verdict"], "divergence")
+        differences = json.loads(reports[0]["differences"])
+        note = next(d for d in differences if d["pointer"] == "$.store[Person/2]")
+        self.assertEqual(note["mirror"], "absent")
+        self.assertEqual(note["pco"], "returned")
+        self.assertIn("watermark", note["note"])
+        # The count stays the comparison's own; the testimony rides along.
+        self.assertEqual(reports[0]["difference_count"], len(differences) - 1)
 
 
 class TestWhatGetsStored(ShadowCase):
