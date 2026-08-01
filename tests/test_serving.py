@@ -559,6 +559,90 @@ class TestATopLevelWriteRefreshesThePeersItNames(unittest.TestCase):
         self.assertEqual(len(parent_reads), len(set(parent_reads)))
 
 
+class TestAWriteRacingPcosOwnReplication(unittest.TestCase):
+    """The peer re-read after `POST /households` is read-your-writes only when
+    PCO answers with what it just wrote — and it was measured not doing that:
+    hours after a family was built, the mirror still served the child
+    household-less while PCO's own page showed the parent, because the re-read
+    had collected a replica's pre-write copy at an `updated_at` the join never
+    moves. Nothing revisits a record whose timestamp will not change, so the
+    race froze. The write path now checks the copy it stored rather than
+    trusting it, and re-reads once the replicas have had a moment."""
+
+    def setUp(self):
+        self.fake = FakePCO()
+        self.fake.add_person("100", "Janet", "Lee", "2026-01-01T00:00:00Z")
+        self.m, _ = build(self.fake)
+        for name in ("person", "household"):
+            self.m.ingestor.backfill(name)
+
+    def _post(self, path, payload):
+        return wsgi_call(self.m.wsgi, "POST", path, body=json.dumps(payload).encode())
+
+    def _households_of(self, person_id):
+        _, _, doc = wsgi_get(self.m.wsgi, f"/people/v2/people/{person_id}", "include=households")
+        data = ((doc["data"].get("relationships") or {}).get("households") or {}).get("data") or []
+        return [d["id"] for d in data]
+
+    def _build_family_against_lagging_replicas(self):
+        import copy as _copy
+        _, _, parent = self._post("/people/v2/people", {"data": {
+            "type": "Person",
+            "attributes": {"first_name": "Mei", "last_name": "Lee", "child": False}}})
+        parent_id = parent["data"]["id"]
+        # The replica still serves both people as they were before the family
+        # existed — exactly once each, which is all the race needs.
+        for pid in (parent_id, "100"):
+            self.fake.stale_single_reads[("Person", pid)] = (
+                _copy.deepcopy(self.fake.data["Person"][pid]), 1)
+        _, _, household = self._post("/people/v2/households", {"data": {
+            "type": "Household",
+            "attributes": {"name": "Lee Household", "primary_contact_id": parent_id},
+            "relationships": {
+                "primary_contact": {"data": {"type": "Person", "id": parent_id}},
+                "people": {"data": [{"type": "Person", "id": parent_id},
+                                    {"type": "Person", "id": "100"}]}}}})
+        return parent_id, household["data"]["id"]
+
+    def test_the_race_reproduces_and_the_delayed_verify_heals_it(self):
+        parent_id, household_id = self._build_family_against_lagging_replicas()
+        # The bug, reproduced: the very next read finds the child householdless.
+        self.assertEqual(self._households_of("100"), [])
+
+        tasks = {r["pco_id"]: r for r in self.m.db.query(
+            "SELECT * FROM hydration_task WHERE reason='write_verify'")}
+        self.assertEqual(set(tasks), {"100", parent_id},
+                         "both stale copies should have been caught by the check")
+        now = self.m.db.query_one(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now') t")["t"]
+        self.assertGreater(tasks["100"]["not_before"], now,
+                           "the re-read must wait for the replicas, not race them again")
+
+        self.m.ingestor.drain_hydration()
+        self.assertEqual(self._households_of("100"), [],
+                         "a drain before not_before must not run the verify")
+        self.m.db.execute("UPDATE hydration_task SET not_before='2020-01-01T00:00:00Z'")
+        self.m.ingestor.drain_hydration()
+        self.assertEqual(self._households_of("100"), [household_id])
+        self.assertEqual(self._households_of(parent_id), [household_id])
+
+    def test_a_consistent_write_queues_no_verify(self):
+        """The check must be free when PCO answers with what it wrote."""
+        _, _, parent = self._post("/people/v2/people", {"data": {
+            "type": "Person",
+            "attributes": {"first_name": "Mei", "last_name": "Lee", "child": False}}})
+        parent_id = parent["data"]["id"]
+        self._post("/people/v2/households", {"data": {
+            "type": "Household",
+            "attributes": {"name": "Lee Household", "primary_contact_id": parent_id},
+            "relationships": {
+                "primary_contact": {"data": {"type": "Person", "id": parent_id}},
+                "people": {"data": [{"type": "Person", "id": parent_id},
+                                    {"type": "Person", "id": "100"}]}}}})
+        self.assertEqual(self.m.db.query(
+            "SELECT * FROM hydration_task WHERE reason='write_verify'"), [])
+
+
 class TestNestedWritesLeaveTheMirrorAgreeing(unittest.TestCase):
     """A write under a parent moves more than the row PCO hands back.
 

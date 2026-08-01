@@ -594,6 +594,95 @@ class TestDriftAsksForTheAudit(unittest.TestCase):
         self.assertIsNone(m.ingestor.audit_requested("person"))
 
 
+class TestSplitEdgesAreRejoined(unittest.TestCase):
+    """The household edge is stored twice — the household's `people` array and
+    each member's own `households` array — learned from different requests at
+    different moments, with neither record's `updated_at` obliged to move
+    again. When the halves disagree, the serving layer answers from whichever
+    half the caller reads: the household page showed the family while the
+    child's own read said they had none, for hours. This pass is what looks."""
+
+    def _split_person(self):
+        """Mirror holds: household names person 1; person 1 names no household."""
+        m, fake = build()
+        fake.add_person("1", "Janet", "Lee", "2026-01-01T00:00:00Z")
+        fake.add(res("Household", "77", {"name": "Lee Household"},
+                     updated="2026-01-01T00:00:00Z",
+                     relationships={"people": {"data": [{"type": "Person", "id": "1"}]}}))
+        m.ingestor.backfill("person")          # person raw carries no households edge
+        m.ingestor.backfill("household")
+        # PCO itself is consistent — the person's copy there has the edge — the
+        # mirror simply collected the person at the wrong moment.
+        fake.data["Person"]["1"]["relationships"] = {
+            "households": {"data": [{"type": "Household", "id": "77"}]}}
+        return m, fake
+
+    def _age(self, m, table, pco_id):
+        m.db.execute(f"UPDATE {table} SET last_synced_at='2026-01-01T00:00:00Z' "
+                     f"WHERE pco_id=?", (pco_id,))
+
+    def test_a_person_missing_their_households_edge_is_re_read(self):
+        m, fake = self._split_person()
+        self._age(m, "person", "1")
+        self.assertEqual(m.ingestor.repair_split_edges(), 1)
+        task = m.db.query_one("SELECT * FROM hydration_task WHERE pco_id='1'")
+        self.assertEqual(task["reason"], "split_edge")
+        m.ingestor.drain_hydration()
+        held = m.db.query_one("SELECT raw FROM person WHERE pco_id='1'")["raw"]
+        self.assertIn('"77"', held, "the re-read should land the missing edge")
+        self.assertEqual(m.ingestor.repair_split_edges(), 0, "and the pass goes quiet")
+
+    def test_a_household_missing_a_member_is_re_read(self):
+        m, fake = build()
+        fake.add_person("1", "Janet", "Lee", "2026-01-01T00:00:00Z",
+                        households={"data": [{"type": "Household", "id": "77"}]})
+        fake.add(res("Household", "77", {"name": "Lee Household"},
+                     updated="2026-01-01T00:00:00Z"))
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")       # household raw carries no people
+        fake.data["Household"]["77"]["relationships"] = {
+            "people": {"data": [{"type": "Person", "id": "1"}]}}
+        self._age(m, "household", "77")
+        self.assertEqual(m.ingestor.repair_split_edges(), 1)
+        task = m.db.query_one("SELECT * FROM hydration_task WHERE pco_id='77'")
+        self.assertEqual((task["resource_type"], task["reason"]), ("household", "split_edge"))
+        m.ingestor.drain_hydration()
+        held = m.db.query_one("SELECT raw FROM household WHERE pco_id='77'")["raw"]
+        self.assertIn('"people"', held)
+        self.assertEqual(m.ingestor.repair_split_edges(), 0)
+
+    def test_a_record_synced_recently_is_left_alone(self):
+        """The write path's own delayed verify owns the fresh window; this pass
+        owns everything older, and the split between them is what stops a
+        disagreement PCO itself serves from becoming a spin."""
+        m, fake = self._split_person()
+        self.assertEqual(m.ingestor.repair_split_edges(), 0)
+
+    def test_an_agreeing_family_queues_nothing(self):
+        m, fake = build()
+        fake.add_person("1", "Janet", "Lee", "2026-01-01T00:00:00Z",
+                        households={"data": [{"type": "Household", "id": "77"}]})
+        fake.add(res("Household", "77", {"name": "Lee Household"},
+                     updated="2026-01-01T00:00:00Z",
+                     relationships={"people": {"data": [{"type": "Person", "id": "1"}]}}))
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        self._age(m, "person", "1")
+        self._age(m, "household", "77")
+        self.assertEqual(m.ingestor.repair_split_edges(), 0)
+
+    def test_the_scheduler_runs_the_pass_and_the_family_converges(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = self._split_person()
+        self._age(m, "person", "1")
+        sched = Scheduler(m)
+        sched._last_drift = -1e9
+        sched.run_once()                       # queues the re-read…
+        sched.run_once()                       # …and the next tick drains it
+        held = m.db.query_one("SELECT raw FROM person WHERE pco_id='1'")["raw"]
+        self.assertIn('"77"', held)
+
+
 class TestAnEdgeThatDoesNotResolve(unittest.TestCase):
     """A relationship naming a record the mirror cannot serve.
 
