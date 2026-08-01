@@ -321,6 +321,10 @@ class FakePCO:
                 p = inner.split("][")
                 attr, op = p[0], (p[1] if len(p) > 1 else "eq")
                 v = vals[0]
+                if attr in ("search_name", "search_name_or_email"):
+                    if not self._search_matches(r, v, emails=attr.endswith("email")):
+                        ok = False
+                    continue
                 cur = r["attributes"].get(attr, "")
                 if op == "gte" and not (cur >= v):
                     ok = False
@@ -335,6 +339,31 @@ class FakePCO:
             if ok:
                 out.append(r)
         return out
+
+    def _search_matches(self, person, needle, emails=False):
+        """PCO's `where[search_name*]`, as measured: names match by word-prefix
+        over each name field, and the `_or_email` arm also matches an address by
+        substring. The email arm reads the *fake's* Email rows — which is the
+        point: a mirror whose own email table has drifted answers this search
+        differently than PCO does, and a fake without the arm could never model
+        that divergence."""
+        probe = (needle or "").lower().split()
+        a = person.get("attributes", {})
+        for hay in (a.get("name"), f'{a.get("first_name", "")} {a.get("last_name", "")}',
+                    a.get("first_name"), a.get("last_name"), a.get("nickname"),
+                    a.get("given_name")):
+            words = (hay or "").lower().split()
+            if probe and len(probe) <= len(words) and \
+                    all(words[i].startswith(probe[i]) for i in range(len(probe))):
+                return True
+        if emails:
+            flat = (needle or "").lower().strip()
+            for email in self.data.get("Email", {}).values():
+                owner = ((email.get("relationships") or {}).get("person") or {}).get("data") or {}
+                if owner.get("id") == person["id"] and flat and \
+                        flat in (email["attributes"].get("address") or "").lower():
+                    return True
+        return False
 
     def _sparse(self, r, fields):
         keys = [k for k in fields.split(",") if k]

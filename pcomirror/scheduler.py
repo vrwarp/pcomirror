@@ -104,6 +104,12 @@ class Scheduler:
             if r.audit_interval_s and self._audit_due(r.name, now):
                 self._guard(f"audit:{r.name}", self._audit, r.name)
 
+    #: How soon a drift-requested audit may follow the previous audit. The probe
+    #: runs every 15 minutes and re-requests for as long as the counts disagree,
+    #: so a delta the audit cannot close — a population-semantics difference,
+    #: not drift — costs one audit per hour, not one per probe.
+    DRIFT_AUDIT_MIN_INTERVAL_S = 3600
+
     def _audit_due(self, name: str, now: str) -> bool:
         """Due off the *persisted* completion time, not this process's clock.
 
@@ -116,17 +122,34 @@ class Scheduler:
         restarts more often than its own interval restarts the countdown too, and
         a check written for once a night then never happens at all. The audit
         already records when it finished, so that is the clock to read.
+
+        A request (`ingest.request_audit`, §7.4) pulls the audit forward, and
+        who asked decides how far. `drift` is the probe measuring the id sets
+        disagreeing — a ghost that waits out the nightly cadence is served, and
+        offered back by every duplicate-check search, the whole time — but it
+        still waits out the cooldown above, which is what stands between a
+        persistent count difference and an audit every fifteen minutes, and
+        `hours == 0` switches it off entirely. An `operator` request is a
+        person on the console clicking the button: it runs at the next tick,
+        cadence, cooldown and `hours == 0` notwithstanding — the same standing
+        the CLI's `reconcile --audit` has always had, since both are a human
+        explicitly spending the budget once.
         """
-        hours = max(0, getattr(self.m.settings, "audit_interval_hours", 24))
-        if not hours:
-            return False
         st = self.m.ingestor.state(name)
         if not st["backfill_completed_at"]:
+            return False
+        request = self.m.ingestor.audit_requested(name)
+        if request == "operator":
+            return True
+        hours = max(0, getattr(self.m.settings, "audit_interval_hours", 24))
+        if not hours:
             return False
         # The later of started/completed, so an audit that *fails* waits a full
         # interval rather than re-enumerating the organization every five seconds.
         last = max(st["last_audit_started_at"] or "", st["last_audit_completed_at"] or "")
-        return not last or last <= self._minus(hours * 3600, now)
+        if not last or last <= self._minus(hours * 3600, now):
+            return True
+        return bool(request) and last <= self._minus(self.DRIFT_AUDIT_MIN_INTERVAL_S, now)
 
     def _audit(self, name: str) -> None:
         tombstoned, restored = self.m.ingestor.delete_audit(name)

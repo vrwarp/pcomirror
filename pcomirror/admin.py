@@ -12,7 +12,7 @@ import json
 import urllib.parse
 
 from . import (adminauth, adminstats, apikeys, cors, diagnostics, divergence,
-               pcoevents, webhooklog, webhooks)
+               ingest, pcoevents, registry, webhooklog, webhooks)
 from .config import now_iso, parse_subscriptions
 
 PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
@@ -20,6 +20,7 @@ PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/cors", "/admin/cors/configure",
          "/admin/divergence", "/admin/divergence/download", "/admin/divergence/clear",
          "/admin/divergence/configure",
+         "/admin/sync/sweep", "/admin/sync/audit",
          "/admin/webhooks", "/admin/webhooks/add", "/admin/webhooks/remove",
          "/admin/webhooks/toggle", "/admin/webhooks/import", "/admin/webhooks/source",
          "/admin/webhooks/catalogue",
@@ -188,6 +189,10 @@ class AdminApp:
             return self._divergence_clear(method, body, session)
         if path == "/admin/divergence/configure":
             return self._divergence_configure(method, body, session)
+        if path == "/admin/sync/sweep":
+            return self._sync_action("sweep", method, body, session)
+        if path == "/admin/sync/audit":
+            return self._sync_action("audit", method, body, session)
         if path == "/admin/webhooks":
             return self._webhooks_page(qs, session)
         # Before the catch-all below, which is a POST-only action router: the
@@ -351,7 +356,7 @@ class AdminApp:
 
         return 200, _headers(), _page("Admin", "".join([
             "<p class=sub>operator console</p>", banners,
-            self._stats_section(st), self._diagnostics_section(),
+            self._stats_section(st, csrf), self._diagnostics_section(),
             self._divergence_section(), self._keys_section(csrf),
             self._cors_section(), self._webhooks_section(st),
         ]), nav=f"<nav><form method=post action=/admin/logout style='display:inline'>"
@@ -362,7 +367,7 @@ class AdminApp:
                 f"<a href=/admin/cors>browser access</a> · "
                 f"<a href=/admin/password>password</a></nav>")
 
-    def _stats_section(self, st) -> str:
+    def _stats_section(self, st, csrf: str) -> str:
         q, storage = st["queues"], st["storage"]
         cards = [
             ("mirrored records", f"{st['total_live']:,}"),
@@ -374,27 +379,90 @@ class AdminApp:
         ]
         cards_html = "".join(f"<div class=card><b>{E(v)}</b><span>{E(k)}</span></div>"
                              for k, v in cards)
+
+        def act(kind, resource):
+            return (f"<form method=post action=/admin/sync/{kind} style='display:inline'>"
+                    f"<input type=hidden name=csrf value=\"{csrf}\">"
+                    f"<input type=hidden name=resource value=\"{E(resource)}\">"
+                    f"<button class=link type=submit>{kind}</button></form>")
+
         rows = []
         for r in st["resources"]:
             drift = "—" if r["drift"] is None else (
                 f"<span class=warn>{r['drift']:+d}</span>" if r["drift"] else "0")
             errors = (f"<span class=warn>{r['errors']}</span>" if r["errors"]
                       else str(r["errors"]))
+            audit = _esc(r["last_audit"], "never") if r["audited"] else "—"
+            if r["audit_queued"]:
+                audit += f" <span class=muted>({E(r['audit_queued'])} queued)</span>"
+            actions = " · ".join(
+                ([act("sweep", r["name"])] if r["sweepable"] else [])
+                + ([act("audit", r["name"])] if r["audited"] else [])) or "—"
             rows.append(
                 f"<tr><td>{E(r['endpoint'])}</td><td>{r['live']:,}</td>"
                 f"<td>{r['tombstoned']:,}</td><td>{_esc(r['oldest_synced'])}</td>"
                 f"<td>{_esc(r['backfilled_at'], 'never')}</td>"
                 f"<td>{_esc(r['last_sweep'], 'never')}</td>"
-                f"<td>{drift}</td><td>{errors}</td></tr>")
+                f"<td>{audit}</td><td>{drift}</td><td>{errors}</td>"
+                f"<td>{actions}</td></tr>")
         return f"""
 <h2>Cache</h2>
 <div class=cards>{cards_html}</div>
 <p class=muted>{E(storage['path'])} · pass-through cache
   {q['passthrough_cached']:,} rows ({q['passthrough_expired']:,} expired)</p>
 <table><tr><th>resource<th>live<th>tombstoned<th>oldest sync<th>backfilled
-  <th>last sweep<th>drift<th>errors</tr>{''.join(rows)}</table>
+  <th>last sweep<th>last audit<th>drift<th>errors<th></tr>{''.join(rows)}</table>
 <p class=muted>Drift is mirror count minus PCO's reported total at the last probe;
-  anything non-zero means a sweep is due.</p>"""
+  a non-zero value requests the audit on its own. <i>sweep</i> catches up on
+  everything <code>updated_at</code> can see; <i>audit</i> reconciles the full
+  id set — the hard deletes and lost records no sweep can. Both are queued for
+  the scheduler and start within a few seconds.</p>
+<form method=post action=/admin/sync/sweep style='display:inline'>
+  <input type=hidden name=csrf value="{csrf}">
+  <button type=submit>Sweep everything now</button></form>
+<form method=post action=/admin/sync/audit style='display:inline'>
+  <input type=hidden name=csrf value="{csrf}">
+  <button type=submit>Audit everything now</button></form>"""
+
+    # -- sync on demand ----------------------------------------------------
+    def _sync_action(self, kind: str, method, body, session):
+        """Queue a reconcile sweep or an id-set audit; the scheduler runs it.
+
+        The page records a request and answers at once, exactly the shape the
+        drift probe uses: the one thread that does ingest work on a cadence —
+        the scheduler — picks the request up on its next tick, within seconds.
+        Running the work here instead would spend minutes of PCO budget inside
+        one HTTP request, behind whatever timeout the operator's proxy has,
+        with a second click starting a second copy.
+
+        An operator's audit request runs regardless of the audit cadence —
+        `reconcile --audit` on the CLI has always had that standing, and a
+        button that silently did nothing under `PCOMIRROR_AUDIT_INTERVAL_HOURS=0`
+        would be the page lying about what it queued.
+        """
+        if method != "POST":
+            return _redirect("/")
+        form = _form(body)
+        if not adminauth.check_csrf(session, form.get("csrf")):
+            return self._dashboard(session, {}, error="Session expired — try again.")
+        eligible = [r.name for r in registry.full_and_lite()
+                    if kind == "sweep" or r.audit_interval_s]
+        name = (form.get("resource") or "").strip()
+        if name and name not in eligible:
+            what = "sweep" if kind == "sweep" else "audit"
+            return self._dashboard(session, {}, error=f"No {what} for {name!r}.")
+        targets = [name] if name else eligible
+        for target in targets:
+            if kind == "sweep":
+                ingest.request_sweep(self.db, target)
+            else:
+                ingest.request_audit(self.db, target, "operator")
+        what = "reconcile sweep" if kind == "sweep" else "id-set audit"
+        which = (f"/{registry.by_name(name).endpoint.strip('/')}" if name
+                 else f"all {len(targets)} resources")
+        return self._dashboard(session, {}, notice=(
+            f"Queued the {what} for {which} — the scheduler picks it up "
+            f"within a few seconds."))
 
     def _keys_section(self, csrf: str) -> str:
         rows = []

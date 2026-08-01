@@ -28,6 +28,16 @@ checker never invents one: a synthesised query tests something nobody does, and
 spends the PCO budget doing it. `tests/golden/` is the same idea recorded by hand
 once; this is the same idea kept current by the traffic itself.
 
+**A diagnostic, and only a diagnostic.** The checker never writes to the mirror
+— not a tombstone, not a hydration, not a queued task. The moment it repaired
+what it found, it would be perturbing the thing it measures: the second check
+of a shape would agree because the first one patched it, a rule-level bug (a
+search arm matching wrongly) would hide behind record-level fixes for ever, and
+turning a diagnostic on would change production data. Repair belongs to the
+reconciliation machinery — the sweeps, the id-set audits, and the drift probe
+that requests an audit when the counts disagree (DESIGN §7.4) — which runs
+whether or not anybody is watching this log.
+
 **Shape is a fairness unit, not the sample.** Requests are grouped by shape — the
 path with ids and paging removed — and checking takes the least-recently-checked
 shape, then the least-recently-checked request *within* it. Grouping is what stops
@@ -361,7 +371,8 @@ class ShadowChecker:
                 held = (f"live, updated {f['stored_uat']}, "
                         f"synced {f['last_synced_at']} via {f['source']}")
                 why = ("the mirror holds this record and did not return it — a serving or "
-                       "search difference, which no amount of re-syncing changes"
+                       "search difference here, or a match that rides on a child row (an "
+                       "email, a number) the mirror lacks"
                        if f["side"] == "pco" else
                        "the mirror returned a record PCO did not — an over-broad search or "
                        "filter match here, or an upstream deletion nothing has delivered yet")

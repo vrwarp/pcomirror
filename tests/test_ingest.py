@@ -483,6 +483,117 @@ class TestScheduledAudit(unittest.TestCase):
         self.assertFalse(sched._audit_due("person", now_iso()))
 
 
+class TestDriftAsksForTheAudit(unittest.TestCase):
+    """§7.4 always said what a delta means — `mirror_live > total_count` ⇒
+    ghosts a missed delete left behind, `<` ⇒ rows nothing collected — and the
+    probe wrote it down every 15 minutes while a ghost stayed served, and
+    offered back by every duplicate-check search, until the nightly cadence.
+    Now the probe *requests* the audit; when it runs is still the scheduler's
+    decision, under a cooldown, so a count PCO and the mirror genuinely
+    disagree about costs a bounded re-audit rather than one per probe."""
+
+    def _seeded(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        fake.add_person("2", "Gone", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        return m, fake
+
+    def test_a_ghost_makes_the_probe_request_an_audit(self):
+        m, fake = self._seeded()
+        fake.destroy("Person", "2")
+        m.ingestor.drift_probe("person")
+        self.assertIsNotNone(m.ingestor.audit_requested("person"))
+
+    def test_a_row_the_mirror_lacks_requests_one_too(self):
+        """The restore direction: the audit is also what re-collects a record
+        every sweep's watermark has already passed."""
+        m, fake = self._seeded()
+        m.db.execute("DELETE FROM person WHERE pco_id='2'")
+        m.ingestor.drift_probe("person")
+        self.assertIsNotNone(m.ingestor.audit_requested("person"))
+
+    def test_matching_counts_request_nothing(self):
+        m, fake = self._seeded()
+        m.ingestor.drift_probe("person")
+        self.assertIsNone(m.ingestor.audit_requested("person"))
+
+    def test_a_resource_with_no_audit_declared_is_never_asked_for_one(self):
+        """The registry decides which resources are audited; a request the
+        scheduler could never honour would sit in `mirror_meta` for ever."""
+        m, fake = self._seeded()
+        m.writer.upsert("note", "n1",
+                        {"id": "n1", "type": "Note",
+                         "attributes": {"updated_at": "2026-01-01T00:00:00Z"}}, "reconcile")
+        m.ingestor.drift_probe("note")                     # mirror 1, PCO 0
+        self.assertIsNone(m.ingestor.audit_requested("note"))
+
+    def test_the_request_waits_out_the_cooldown_then_pulls_the_audit_forward(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = self._seeded()
+        sched = Scheduler(m)
+        sched.run_once()                                   # the first audit runs at once
+        self.assertIsNotNone(m.ingestor.state("person")["last_audit_completed_at"])
+        fake.destroy("Person", "2")
+        m.ingestor.drift_probe("person")
+        self.assertFalse(sched._audit_due("person", now_iso()),
+                         "inside the cooldown the request must wait")
+        two_hours_ago = sched._minus(2 * 3600, now_iso())
+        m.ingestor._set("person", last_audit_started_at=two_hours_ago,
+                        last_audit_completed_at=two_hours_ago)
+        self.assertTrue(sched._audit_due("person", now_iso()),
+                        "past the cooldown the request pulls the audit ahead of cadence")
+
+    def test_without_a_request_the_cadence_alone_decides(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = self._seeded()
+        sched = Scheduler(m)
+        sched.run_once()
+        two_hours_ago = sched._minus(2 * 3600, now_iso())
+        m.ingestor._set("person", last_audit_started_at=two_hours_ago,
+                        last_audit_completed_at=two_hours_ago)
+        self.assertFalse(sched._audit_due("person", now_iso()))
+
+    def test_the_probe_never_demotes_an_operators_request(self):
+        """The probe re-measures every 15 minutes. Without the escalation
+        guard, a person clicking the audit button on a drifted mirror had
+        their request quietly downgraded to `drift` by the very next probe —
+        back behind the cooldown, or refused outright where scheduled audits
+        are switched off."""
+        from pcomirror import ingest as ingest_mod
+        m, fake = self._seeded()
+        fake.destroy("Person", "2")
+        ingest_mod.request_audit(m.db, "person", "operator")
+        m.ingestor.drift_probe("person")                   # measures the ghost
+        self.assertEqual(m.ingestor.audit_requested("person"), "operator")
+
+    def test_the_audit_answers_the_request_and_clears_it(self):
+        m, fake = self._seeded()
+        fake.destroy("Person", "2")
+        m.ingestor.drift_probe("person")
+        tombstoned, _restored = m.ingestor.delete_audit("person")
+        self.assertEqual(tombstoned, 1)
+        self.assertIsNone(m.ingestor.audit_requested("person"),
+                          "a completed audit has answered whatever drift asked")
+
+    def test_a_scheduler_pass_carries_the_ghost_to_its_grave(self):
+        """End to end on the scheduler's own machinery: probe measures, request
+        stands, cooldown passes, audit runs, ghost buried, request cleared."""
+        from pcomirror.scheduler import Scheduler
+        m, fake = self._seeded()
+        sched = Scheduler(m)
+        sched.run_once()
+        fake.destroy("Person", "2")
+        sched._last_drift = -1e9                           # make the probe due again
+        two_hours_ago = sched._minus(2 * 3600, now_iso())
+        m.ingestor._set("person", last_audit_started_at=two_hours_ago,
+                        last_audit_completed_at=two_hours_ago)
+        sched.run_once()
+        self.assertIsNotNone(
+            m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
+        self.assertIsNone(m.ingestor.audit_requested("person"))
+
+
 class TestAnEdgeThatDoesNotResolve(unittest.TestCase):
     """A relationship naming a record the mirror cannot serve.
 
