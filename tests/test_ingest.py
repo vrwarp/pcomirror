@@ -140,6 +140,25 @@ class TestReconcile(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIsNone(row["deleted_at"])
 
+    def test_the_audits_expected_404s_are_not_error_diagnostics(self):
+        """A confirm exists to hear 404s — one per hard-deleted record. A live
+        feed held one error row per answer within minutes of a bulk delete,
+        burying anything real; the tombstones and the round's counters are
+        the record of what the audit found."""
+        m, fake = self._seed()
+        for i in range(2, 6):
+            fake.add_person(str(i), f"Gone{i}", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        for i in range(2, 6):
+            fake.destroy("Person", str(i))
+        m.db.execute("DELETE FROM diagnostic_event")
+
+        tombstoned, _ = m.ingestor.delete_audit("person")
+
+        self.assertEqual(tombstoned, 4)
+        self.assertEqual(m.db.query(
+            "SELECT * FROM diagnostic_event WHERE kind='upstream.error'"), [])
+
     def test_delete_audit_does_not_dig_up_a_tombstone(self):
         """`confirm_live` stays reserved for rows the mirror thinks live — the
         writer's documented invariant. A burial PCO disagrees with is surfaced

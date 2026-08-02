@@ -327,7 +327,10 @@ class Application:
             # crashed something is the one nobody can otherwise reconstruct.
             started = time.monotonic()
             try:
-                code, note = self.webhooks.receive(token, body, sig)
+                code, note = self.webhooks.receive(
+                    token, body, sig,
+                    delivery_id=environ.get("HTTP_X_PCO_WEBHOOKS_EVENT"),
+                    attempt=environ.get("HTTP_X_PCO_WEBHOOKS_ATTEMPT"))
             except Exception as e:  # noqa: BLE001 — recorded, then re-raised unchanged
                 self.webhook_calls.record(environ, path, token, body, None,
                                           f"{type(e).__name__}: {e}", _ms_since(started))

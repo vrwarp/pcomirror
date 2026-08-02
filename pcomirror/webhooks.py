@@ -344,6 +344,31 @@ def apply_env(db, specs) -> list[dict]:
     return out
 
 
+def retry_dead_letters(db) -> int:
+    """Put every dead-lettered event back in the inbox for another run.
+
+    Exists for exactly one shape of history: a *processor* bug — the
+    payload-envelope misread dead-lettered every real destroy for as long as
+    it stood — fixed in code the dead letters predate. Processing is
+    idempotent end to end (the monotonic writer, tombstone upgrades, the
+    merger dedup), and an event whose facts the sweeps have since overtaken
+    simply no-ops, so the worst a replay can do is nothing. The scheduler's
+    next webhook drain picks the events up. Returns how many went back.
+
+    A module function over the db, like the sweep and audit requests, because
+    the admin door is the caller and the door holds a database, not a mirror.
+    """
+    rows = db.query("SELECT event_id FROM webhook_dead_letter")
+    for row in rows:
+        db.execute(
+            "UPDATE webhook_event SET status='pending', process_attempts=0, "
+            "next_attempt_at=NULL, last_error=NULL WHERE event_id=?",
+            (row["event_id"],))
+        db.execute("DELETE FROM webhook_dead_letter WHERE event_id=?",
+                   (row["event_id"],))
+    return len(rows)
+
+
 class WebhookProcessor:
     def __init__(self, db, writer, ingestor):
         self.db = db
@@ -351,8 +376,16 @@ class WebhookProcessor:
         self.ingestor = ingestor
 
     # -- edge: verify + capture + ack -------------------------------------
-    def receive(self, url_token: str, raw: bytes, signature: str | None) -> tuple[int, str]:
+    def receive(self, url_token: str, raw: bytes, signature: str | None,
+                delivery_id: str | None = None,
+                attempt: str | None = None) -> tuple[int, str]:
         """Verify, capture, ack. One token may carry several subscriptions.
+
+        `delivery_id` and `attempt` come from the `X-Pco-Webhooks-Event` and
+        `X-Pco-Webhooks-Attempt` headers: a real delivery's *envelope* carries
+        only `data`, so without the header every delivery row was filed under
+        `nodelivery-<second>` and same-second deliveries collapsed into one
+        audit row. An envelope `id` still wins when a sender provides one.
 
         The signature is what selects which of them is delivering: every
         candidate secret is tried, and the one that verifies is by construction
@@ -388,7 +421,7 @@ class WebhookProcessor:
         # which unchecked subscription it belongs to — and it is only a label on
         # the delivery row, never a decision about whether to accept it.
         sub = matched or _by_event_name(open_subs, env)
-        delivery_id = env.get("id") or f"nodelivery-{now_iso()}"
+        delivery_id = env.get("id") or delivery_id or f"nodelivery-{now_iso()}"
         try:
             self.db.execute(
                 "INSERT OR IGNORE INTO webhook_delivery(delivery_id,subscription_pco_id,signature,raw_body,attempt) "
@@ -398,7 +431,7 @@ class WebhookProcessor:
                 # string keeps the audit row; letting the insert fail would have
                 # answered 503 and had PCO redeliver, forever.
                 (delivery_id, sub["subscription_pco_id"], signature or "", raw,
-                 env.get("attempt")))
+                 env.get("attempt") or attempt))
             for item in env.get("data", []):
                 name = item.get("attributes", {}).get("name", sub["event_name"])
                 res, act = parse_event_name(name)

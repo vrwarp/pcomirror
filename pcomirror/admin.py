@@ -23,7 +23,7 @@ PATHS = ("/", "/admin/login", "/admin/logout", "/admin/password",
          "/admin/sync/sweep", "/admin/sync/audit",
          "/admin/webhooks", "/admin/webhooks/add", "/admin/webhooks/remove",
          "/admin/webhooks/toggle", "/admin/webhooks/import", "/admin/webhooks/source",
-         "/admin/webhooks/catalogue",
+         "/admin/webhooks/catalogue", "/admin/webhooks/retry-dead",
          "/admin/webhooks/calls", "/admin/webhooks/calls/download",
          "/admin/webhooks/calls/clear", "/admin/webhooks/calls/configure")
 
@@ -358,7 +358,7 @@ class AdminApp:
             "<p class=sub>operator console</p>", banners,
             self._stats_section(st, csrf), self._diagnostics_section(),
             self._divergence_section(), self._keys_section(csrf),
-            self._cors_section(), self._webhooks_section(st),
+            self._cors_section(), self._webhooks_section(st, csrf),
         ]), nav=f"<nav><form method=post action=/admin/logout style='display:inline'>"
                 f"<button class=link type=submit>sign out</button></form> · "
                 f"<a href=/admin/diagnostics>diagnostics</a> · "
@@ -970,7 +970,7 @@ class AdminApp:
         divergence.clear(self.db)
         return _redirect("/admin/divergence")
 
-    def _webhooks_section(self, st) -> str:
+    def _webhooks_section(self, st, csrf: str = "") -> str:
         w = st["webhooks"]
         statuses = ", ".join(f"{E(k)} {v:,}" for k, v in sorted(w["by_status"].items())) or "none"
         rows = "".join(
@@ -987,10 +987,18 @@ class AdminApp:
             f"{', ' + str(calls['rejected']) + ' rejected' if calls['rejected'] else ''}"
             if webhooklog.effective(self.db, self.s)["keep"] else
             " · <a href=/admin/webhooks/calls>not recording calls</a>")
+        # The retry appears only when there is something to retry: a processor
+        # bug's leftovers. Processing is idempotent, so the button cannot make
+        # anything worse than the drain already would.
+        retry = (
+            f""" <form method=post action=/admin/webhooks/retry-dead style="display:inline">
+  <input type=hidden name=csrf value="{csrf}">
+  <button class=small>retry dead letters</button></form>"""
+            if w["dead_letters"] and csrf else "")
         return f"""
 <h2>Webhooks</h2>{table}
 <p class=muted>{w['deliveries']:,} deliveries · events by status: {statuses} ·
-  {w['dead_letters']:,} dead-lettered · last received {_esc(w['last_received'], 'never')} ·
+  {w['dead_letters']:,} dead-lettered{retry} · last received {_esc(w['last_received'], 'never')} ·
   <a href=/admin/webhooks>manage subscriptions</a>{recording}</p>"""
 
     # -- webhooks ---------------------------------------------------------
@@ -1021,6 +1029,10 @@ class AdminApp:
                 return self._webhooks_source(form, session)
             if tail == "catalogue":
                 return self._webhooks_catalogue(form, session)
+            if tail == "retry-dead":
+                n = webhooks.retry_dead_letters(self.db)
+                print(f"[admin] re-queued {n} dead-lettered webhook event(s)", flush=True)
+                return _redirect("/admin?saved=1")
         except ValueError as e:
             return self._webhooks_page({}, session, error=str(e))
         return _redirect("/admin/webhooks")

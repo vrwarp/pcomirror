@@ -265,6 +265,45 @@ class TestTheRealPayloadShape(unittest.TestCase):
         self.assertEqual(row["status"], "ignored")
         self.assertEqual(self.m.db.query("SELECT * FROM webhook_dead_letter"), [])
 
+    def test_the_delivery_row_carries_the_headers_identity(self):
+        # A real envelope has no top-level id; the X-Pco-Webhooks-Event header
+        # is what names the delivery. Without it every same-second delivery
+        # collapsed into one nodelivery-<second> audit row.
+        doc = _document(self._person("9020", "Head"))
+        raw = json.dumps(_real_delivery("people.v2.events.person.created", doc, "rev-h1")).encode()
+        code, _ = self.m.webhooks.receive(self.token, raw, _sign(self.secret, raw),
+                                          delivery_id="0ae1c5fe-4d6d-4b18", attempt="2")
+        self.assertEqual(code, 204)
+        row = self.m.db.query_one(
+            "SELECT delivery_id, attempt FROM webhook_delivery")
+        self.assertEqual((row["delivery_id"], row["attempt"]), ("0ae1c5fe-4d6d-4b18", 2))
+
+    def test_dead_letters_from_the_envelope_era_can_be_retried(self):
+        # The production shape this exists for: destroys dead-lettered by the
+        # payload misread, retried after the fix, landing their tombstones.
+        from pcomirror import webhooks as webhooks_mod
+        self.m.writer.upsert("person", "9021", self._person("9021", "Buried"), "backfill")
+        self.m.db.execute(
+            "INSERT INTO webhook_delivery(delivery_id,subscription_pco_id,signature,raw_body,attempt) "
+            "VALUES('d-old','sub1','',x'',NULL)")
+        self.m.db.execute(
+            "INSERT INTO webhook_event(event_id,delivery_id,event_name,resource_type,action,pco_id,payload,"
+            "status,process_attempts,last_error) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("ev-old", "d-old", "people.v2.events.person.destroyed", "person", "destroyed",
+             None, json.dumps(_document({"id": "9021", "type": "Person", "relationships": {}})),
+             "dead", 8, "'id'"))
+        self.m.db.execute(
+            "INSERT INTO webhook_dead_letter(event_id,event_name,payload,last_error,attempts) "
+            "VALUES('ev-old','people.v2.events.person.destroyed','{}',\"'id'\",8)")
+
+        self.assertEqual(webhooks_mod.retry_dead_letters(self.m.db), 1)
+        self.assertEqual(self.m.db.query("SELECT * FROM webhook_dead_letter"), [])
+        self.m.webhooks.drain()
+        self.assertIsNotNone(self.m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='9021'")["deleted_at"])
+        self.assertEqual(self.m.db.query_one(
+            "SELECT status FROM webhook_event WHERE event_id='ev-old'")["status"], "done")
+
     def test_a_list_results_destroy_document_tombstones_it(self):
         # `list_result` is mirrored (a walked child of `list`), so its destroy
         # is applied, not ignored - through the same document unwrapping.

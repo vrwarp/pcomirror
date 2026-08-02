@@ -322,7 +322,10 @@ class Ingestor:
         it through the cascade.
         """
         try:
-            resp = self.client.get(f"{r.endpoint}/{pco_id}", priority="reconcile")
+            # `record_outcome=False`: the 404 is the answer being asked for, and
+            # the tombstone row is its record — not a failed exchange to alarm on.
+            resp = self.client.get(f"{r.endpoint}/{pco_id}", priority="reconcile",
+                                   record_outcome=False)
         except Exception:  # noqa: BLE001
             return False
         if resp.status != 404:
@@ -782,7 +785,11 @@ class Ingestor:
                     state["phase"] = "restore"
                     break
                 pid = row["pco_id"]
-                resp = self.client.get(f"{r.endpoint}/{pid}", priority="backfill")
+                # `record_outcome=False`: a confirm exists to hear 404s, one per
+                # hard-deleted record — the tombstone and the round's counters
+                # are the log, not an error row per answer.
+                resp = self.client.get(f"{r.endpoint}/{pid}", priority="backfill",
+                                       record_outcome=False)
                 spent += 1
                 if resp.status == 404:
                     self.writer.tombstone(r.table, pid, None, "audit_absent")
@@ -838,9 +845,12 @@ class Ingestor:
         every round, so a gap can only survive by outrunning every future pass.
         """
         include = ",".join(r.includes) or None
+        # `record_outcome=False` for the same reason as the confirm above: a
+        # candidate deleted inside the race window answers 404, and that is an
+        # expected outcome the round accounts for, not a failed exchange.
         resp = self.client.get(f"{r.endpoint}/{pid}",
                                {"include": include} if include else None,
-                               priority="backfill")
+                               priority="backfill", record_outcome=False)
         if not resp.ok:
             return False    # deleted in the race window, or transient — next round
         body = resp.json() or {}
