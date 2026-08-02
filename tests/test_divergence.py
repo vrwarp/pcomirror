@@ -438,6 +438,25 @@ class TestTheCheckerIsOnlyADiagnostic(ShadowCase):
         self.assertEqual([m for m, _ in self.fake.request_log], ["GET"])
 
 
+class TestATombstoneAnswerIsNotDrift(ShadowCase):
+    """The mirror's 410 against PCO's 404 for a deleted record is §4.4 working,
+    not a disagreement — measured live, half a report log was exactly this,
+    one row per deleted record's shape on every re-check."""
+
+    def test_a_deleted_records_shape_re_checks_as_a_match(self):
+        self.fake.add_person("2", "Was", "Here", "2026-01-02T00:00:00Z")
+        self.m.ingestor.incremental_sweep("person")
+        wsgi_get(self.m.wsgi, "/people/v2/people/2")
+        self.fake.destroy("Person", "2")
+        self.m.writer.tombstone("person", "2", None, "destroyed")
+        self.assertEqual(self.m.divergence.check(1, "/people/v2/people/2", {}), "match")
+        self.assertEqual(divergence.recent(self.m.db), [])
+
+    def test_any_other_status_pair_still_diverges(self):
+        found = cmp_mod.compare({}, {}, mirror_status=404, pco_status=200)
+        self.assertTrue(any(d.pointer == "$.status" for d in found))
+
+
 class TestChildTablesAreAudited(ShadowCase):
     """An email is hard-deleted by the same click as a person, is equally
     invisible to `where[updated_at]`, and a deleted address that stays live

@@ -120,7 +120,11 @@ def compare(mirror_body, pco_body, mirror_status=200, pco_status=200) -> list:
         if len(found) < MAX_DIFFERENCES:
             found.append(Difference(pointer, mine, theirs, why))
 
-    if mirror_status != pco_status:
+    if mirror_status != pco_status and not (mirror_status == 410 and pco_status == 404):
+        # 410-for-404 is a decision, not drift: PCO forgets a deleted record
+        # entirely, while the mirror keeps the tombstone and answers with when
+        # it died, why, and where a merge went (§4.4). A live log filled with
+        # a report per deleted record's shape re-check taught nobody anything.
         note("$.status", mirror_status, pco_status, "different status")
 
     # -- the page itself ---------------------------------------------------
