@@ -41,6 +41,11 @@ class FakePCO:
         # `(stale_copy, reads_remaining)`: `_single` serves the staged copy
         # that many times, then the truth again.
         self.stale_single_reads: dict[tuple[str, str], tuple[dict, int]] = {}
+        # Types whose `where[created_at]` the fake ignores — silently returning
+        # the full collection, exactly as `/addresses` was measured doing on
+        # the live API. A fake that always honoured the filter could never
+        # have caught the audit oscillating on it.
+        self.ignore_created_filters: set[str] = set()
 
     # -- population --------------------------------------------------------
     def add(self, resource: dict):
@@ -146,6 +151,8 @@ class FakePCO:
         if rtype is None:
             return Response(404, {}, b'{"errors":[{"code":"404"}]}')
         items = list(self.data.get(rtype, {}).values())
+        if rtype in self.ignore_created_filters:
+            qs = {k: v for k, v in qs.items() if not k.startswith("where[created_at]")}
         items = self._filter(items, qs)
         order = qs.get("order", [None])[0]
         if order:

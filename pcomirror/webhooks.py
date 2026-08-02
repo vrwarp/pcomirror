@@ -163,6 +163,27 @@ def parse_event_name(name: str) -> tuple[str, str]:
     return (parts[-2], parts[-1]) if len(parts) >= 2 else (name, "")
 
 
+def _unwrap(payload: dict) -> dict:
+    """The resource inside a delivery's payload, wherever this sender put it.
+
+    A real Planning Center delivery's `payload` is a whole JSON:API document —
+    `{"data": {"type": "Person", ...}, "meta": {...}}` — with the resource one
+    level down. Everything here wants the resource itself, and reading the
+    document as if it *were* the resource is how every real `destroyed` event
+    dead-lettered on a missing `id` while every real merge no-opped on missing
+    attributes, invisibly: the sweeps, the merger poll and the delete audit
+    kept converging on the same answers hours later, so nothing looked broken
+    unless you read the dead-letter table. Measured against a production
+    receiver's recorded calls — 116 of 116 carried the document shape.
+
+    The bare-resource shape is kept accepted deliberately: a document with no
+    `data` *is* the payload (and PCO's own destroy payloads have no top-level
+    `id`, so the two shapes cannot be confused).
+    """
+    data = payload.get("data")
+    return data if isinstance(data, dict) else payload
+
+
 def upsert_subscription(db, subscription_id: str, event_name: str, secret: str,
                         url_token: str | None = None,
                         managed: str = "env") -> tuple[str, bool]:
@@ -323,6 +344,31 @@ def apply_env(db, specs) -> list[dict]:
     return out
 
 
+def retry_dead_letters(db) -> int:
+    """Put every dead-lettered event back in the inbox for another run.
+
+    Exists for exactly one shape of history: a *processor* bug — the
+    payload-envelope misread dead-lettered every real destroy for as long as
+    it stood — fixed in code the dead letters predate. Processing is
+    idempotent end to end (the monotonic writer, tombstone upgrades, the
+    merger dedup), and an event whose facts the sweeps have since overtaken
+    simply no-ops, so the worst a replay can do is nothing. The scheduler's
+    next webhook drain picks the events up. Returns how many went back.
+
+    A module function over the db, like the sweep and audit requests, because
+    the admin door is the caller and the door holds a database, not a mirror.
+    """
+    rows = db.query("SELECT event_id FROM webhook_dead_letter")
+    for row in rows:
+        db.execute(
+            "UPDATE webhook_event SET status='pending', process_attempts=0, "
+            "next_attempt_at=NULL, last_error=NULL WHERE event_id=?",
+            (row["event_id"],))
+        db.execute("DELETE FROM webhook_dead_letter WHERE event_id=?",
+                   (row["event_id"],))
+    return len(rows)
+
+
 class WebhookProcessor:
     def __init__(self, db, writer, ingestor):
         self.db = db
@@ -330,8 +376,16 @@ class WebhookProcessor:
         self.ingestor = ingestor
 
     # -- edge: verify + capture + ack -------------------------------------
-    def receive(self, url_token: str, raw: bytes, signature: str | None) -> tuple[int, str]:
+    def receive(self, url_token: str, raw: bytes, signature: str | None,
+                delivery_id: str | None = None,
+                attempt: str | None = None) -> tuple[int, str]:
         """Verify, capture, ack. One token may carry several subscriptions.
+
+        `delivery_id` and `attempt` come from the `X-Pco-Webhooks-Event` and
+        `X-Pco-Webhooks-Attempt` headers: a real delivery's *envelope* carries
+        only `data`, so without the header every delivery row was filed under
+        `nodelivery-<second>` and same-second deliveries collapsed into one
+        audit row. An envelope `id` still wins when a sender provides one.
 
         The signature is what selects which of them is delivering: every
         candidate secret is tried, and the one that verifies is by construction
@@ -367,7 +421,7 @@ class WebhookProcessor:
         # which unchecked subscription it belongs to — and it is only a label on
         # the delivery row, never a decision about whether to accept it.
         sub = matched or _by_event_name(open_subs, env)
-        delivery_id = env.get("id") or f"nodelivery-{now_iso()}"
+        delivery_id = env.get("id") or delivery_id or f"nodelivery-{now_iso()}"
         try:
             self.db.execute(
                 "INSERT OR IGNORE INTO webhook_delivery(delivery_id,subscription_pco_id,signature,raw_body,attempt) "
@@ -377,7 +431,7 @@ class WebhookProcessor:
                 # string keeps the audit row; letting the insert fail would have
                 # answered 503 and had PCO redeliver, forever.
                 (delivery_id, sub["subscription_pco_id"], signature or "", raw,
-                 env.get("attempt")))
+                 env.get("attempt") or attempt))
             for item in env.get("data", []):
                 name = item.get("attributes", {}).get("name", sub["event_name"])
                 res, act = parse_event_name(name)
@@ -391,7 +445,7 @@ class WebhookProcessor:
                     "(event_id,delivery_id,event_name,resource_type,action,pco_id,payload) "
                     "VALUES(?,?,?,?,?,?,?)",
                     (item["id"], delivery_id, name, res, act,
-                     json.loads(payload).get("id") if payload else None, payload))
+                     _unwrap(json.loads(payload)).get("id") if payload else None, payload))
             self.db.execute(
                 "UPDATE webhook_subscription SET last_event_at=? WHERE subscription_pco_id=?",
                 (now_iso(), sub["subscription_pco_id"]))
@@ -418,6 +472,7 @@ class WebhookProcessor:
             payload = json.loads(ev["payload"]) if ev["payload"] else {}
         except json.JSONDecodeError:
             return self._dead(ev, "unparseable payload")
+        payload = _unwrap(payload)
         if r is None and res_token != "person_merger":
             # Not a failure. Planning Center offers events for resources this
             # mirror holds no table for, and an operator may legitimately
@@ -445,8 +500,12 @@ class WebhookProcessor:
 
     def _handle_merge(self, payload: dict) -> None:
         a = payload.get("attributes", {})
-        keep, gone = a.get("person_to_keep_id"), a.get("person_to_remove_id")
-        merger_id = payload.get("id", f"merge-{keep}-{gone}")
+        # PCO serializes these two as JSON numbers, unlike every other id in the
+        # API. Stringified here so the tombstone, the hydration queue and the
+        # merger record hold the same value the rest of the mirror keys on.
+        keep = str(a["person_to_keep_id"]) if a.get("person_to_keep_id") else None
+        gone = str(a["person_to_remove_id"]) if a.get("person_to_remove_id") else None
+        merger_id = payload.get("id") or f"merge-{keep}-{gone}"
         # A merge the poll already applied is not news. Without this a redelivery,
         # or simply the poll getting there first, queues the survivor for another
         # hydration — one PCO request for an answer we have.

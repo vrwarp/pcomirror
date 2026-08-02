@@ -140,6 +140,25 @@ class TestReconcile(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertIsNone(row["deleted_at"])
 
+    def test_the_audits_expected_404s_are_not_error_diagnostics(self):
+        """A confirm exists to hear 404s — one per hard-deleted record. A live
+        feed held one error row per answer within minutes of a bulk delete,
+        burying anything real; the tombstones and the round's counters are
+        the record of what the audit found."""
+        m, fake = self._seed()
+        for i in range(2, 6):
+            fake.add_person(str(i), f"Gone{i}", "Person", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        for i in range(2, 6):
+            fake.destroy("Person", str(i))
+        m.db.execute("DELETE FROM diagnostic_event")
+
+        tombstoned, _ = m.ingestor.delete_audit("person")
+
+        self.assertEqual(tombstoned, 4)
+        self.assertEqual(m.db.query(
+            "SELECT * FROM diagnostic_event WHERE kind='upstream.error'"), [])
+
     def test_delete_audit_does_not_dig_up_a_tombstone(self):
         """`confirm_live` stays reserved for rows the mirror thinks live — the
         writer's documented invariant. A burial PCO disagrees with is surfaced
@@ -433,17 +452,18 @@ class TestScheduledAudit(unittest.TestCase):
     def test_scheduler_runs_the_delete_audit(self):
         m, fake, sched = self._seeded()
         fake.destroy("Person", "2")
-        sched.run_once()
+        sched.drain_cold()
         self.assertIsNotNone(
             m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
 
     def test_audit_is_not_repeated_within_its_interval(self):
         m, fake, sched = self._seeded()
-        sched.run_once()
+        sched.drain_cold()
         first = m.ingestor.state("person")["last_audit_completed_at"]
         self.assertIsNotNone(first)
         fake.request_log.clear()
         sched.run_once()
+        sched.drain_cold()
         self.assertEqual([p for meth, p in fake.request_log if "fields[Person]" in p], [])
 
     def test_audit_interval_of_zero_switches_it_off(self):
@@ -451,6 +471,7 @@ class TestScheduledAudit(unittest.TestCase):
         m.settings.audit_interval_hours = 0
         fake.destroy("Person", "2")
         sched.run_once()
+        sched.drain_cold()
         self.assertIsNone(m.ingestor.state("person")["last_audit_completed_at"])
 
     def test_the_audit_covers_every_resource_that_declares_one(self):
@@ -464,7 +485,7 @@ class TestScheduledAudit(unittest.TestCase):
         m.ingestor.backfill("person")
         m.ingestor.backfill("household")
         fake.destroy("Household", "h1")
-        Scheduler(m).run_once()
+        Scheduler(m).drain_cold()
         self.assertIsNotNone(
             m.db.query_one("SELECT deleted_at FROM household WHERE pco_id='h1'")["deleted_at"])
 
@@ -477,10 +498,258 @@ class TestScheduledAudit(unittest.TestCase):
             raise ConnectionResetError("PCO is unreachable")
         m.ingestor.client.get = explode
         sched.run_once()
+        sched.drain_cold()
         st = m.ingestor.state("person")
         self.assertIsNone(st["last_audit_completed_at"])
         self.assertIsNotNone(st["last_audit_started_at"])
         self.assertFalse(sched._audit_due("person", now_iso()))
+
+
+class TestTheColdLaneInterleaves(unittest.TestCase):
+    """Bulk work runs as bounded resumable units so the hot lane never queues
+    behind it. Measured live before this existed: a first-day audit plus a
+    burst of hang-and-retry held the single loop for eight minutes while
+    hydration tasks with `not_before` in the past sat undrained."""
+
+    def _org(self, people=12):
+        m, fake = build()
+        for i in range(1, people + 1):
+            fake.add_person(str(i), f"P{i}", "Reed", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        return m, fake
+
+    def test_an_audit_step_is_bounded_and_resumes(self):
+        m, fake = self._org()
+        for pid in ("3", "7"):
+            fake.destroy("Person", pid)
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.delete_audit_step("person", budget=1)
+            steps += 1
+            self.assertLess(steps, 50)
+            if out["done"]:
+                break
+        self.assertGreater(steps, 2, "one budgeted request per step cannot finish in two")
+        self.assertEqual(out["tombstoned"], 2)
+        for pid in ("3", "7"):
+            self.assertIsNotNone(m.db.query_one(
+                "SELECT deleted_at FROM person WHERE pco_id=?", (pid,))["deleted_at"])
+
+    def test_a_round_survives_between_steps(self):
+        m, fake = self._org()
+        fake.destroy("Person", "5")
+        m.ingestor.delete_audit_step("person", budget=1)
+        # State and scratch are on disk; the next step resumes this round
+        # rather than starting over — which is also what makes a crash free.
+        self.assertIsNotNone(m.ingestor.audit_round("person"))
+        started = m.ingestor.state("person")["last_audit_started_at"]
+        while not m.ingestor.delete_audit_step("person", budget=2)["done"]:
+            pass
+        self.assertEqual(m.ingestor.state("person")["last_audit_started_at"], started,
+                         "resuming is not restarting")
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='5'")["deleted_at"])
+
+    def test_the_one_shot_audit_still_answers_at_once(self):
+        m, fake = self._org()
+        fake.destroy("Person", "2")
+        self.assertEqual(m.ingestor.delete_audit("person"), (1, 0))
+
+    def test_restores_resume_too(self):
+        m, fake = self._org()
+        m.db.execute("DELETE FROM person WHERE pco_id='9'")     # the mirror lost one
+        while not m.ingestor.delete_audit_step("person", budget=1)["done"]:
+            pass
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT 1 FROM person WHERE pco_id='9' AND deleted_at IS NULL"))
+
+    def test_a_walk_round_is_paced_and_completes(self):
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        for h in ("71", "72", "73"):
+            fake.add(res("Household", h, {"name": f"H{h}"}, updated="2026-01-01T00:00:00Z"))
+            fake.add_membership(f"m{h}", h, "1")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("household")
+        m.ingestor.backfill("household_membership")
+        m.db.execute("UPDATE nested_walk_state SET walked_at='2026-01-01T00:00:00Z'")
+        fake.destroy("HouseholdMembership", "m72")              # dropped upstream since
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.walk_round_step("household_membership", budget=1)
+            steps += 1
+            self.assertLess(steps, 10)
+            if out["done"]:
+                break
+        self.assertGreaterEqual(steps, 4,
+                                "three parents at one per step, plus the completing call")
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM household_membership WHERE pco_id='m72'")["deleted_at"])
+
+    def test_a_bounded_backfill_resumes_to_the_same_place(self):
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Reed", f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}Z")
+        calls = 0
+        while m.ingestor.state("person")["backfill_completed_at"] is None:
+            m.ingestor.backfill("person", max_pages=1)
+            calls += 1
+            self.assertLess(calls, 20)
+        self.assertGreater(calls, 1, "one page per call cannot finish in one")
+        self.assertEqual(m.db.query_one("SELECT count(*) c FROM person")["c"], 250)
+
+    def test_a_saturated_second_does_not_stall_the_enumeration(self):
+        """The signature of a bulk import: more records created in one second
+        than a page holds. Measured live — the address audit sat at one 2024
+        cursor re-reading the same page every tick, for ever. The enumeration
+        pages through the saturated second by offset, like the backfill's
+        `_drain_second`, and completes."""
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Imported", "2026-01-01T00:00:00Z",)
+        for i, p in enumerate(fake.data["Person"].values()):
+            p["attributes"]["created_at"] = "2024-01-30T06:37:57Z"    # one second, all of them
+        m.ingestor.backfill("person")
+        fake.destroy("Person", "17")
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.delete_audit_step("person", budget=2)
+            steps += 1
+            self.assertLess(steps, 40, "the enumeration must advance past the cluster")
+            if out["done"]:
+                break
+        self.assertEqual(out["tombstoned"], 1)
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='17'")["deleted_at"])
+
+    def test_an_ignored_filter_is_detected_and_the_walk_restarts_by_offset(self):
+        """/addresses was measured *silently ignoring* `where[created_at]` —
+        every keyset page came from the top and the round oscillated between
+        two cursors for ever. A page behind the cursor is impossible under an
+        honoured `gte`, so that is the tell: the round flips to plain offset
+        enumeration and completes."""
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Imported", "2026-01-01T00:00:00Z")
+        for i, p in enumerate(fake.data["Person"].values()):
+            p["attributes"]["created_at"] = ("2024-01-30T06:37:57Z" if i < 150
+                                             else "2024-01-30T06:38:17Z")
+        fake.ignore_created_filters = {"Person"}
+        m.ingestor.backfill("person")
+        fake.destroy("Person", "44")
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.delete_audit_step("person", budget=2)
+            steps += 1
+            self.assertLess(steps, 40, "the round must not oscillate")
+            if out["done"]:
+                break
+        self.assertEqual(out["tombstoned"], 1)
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='44'")["deleted_at"])
+
+    def test_a_resource_flagged_filterless_never_sends_the_keyset(self):
+        """The registry's measurement spares the round the wasted discovery:
+        `supports_cat_filter=False` enumerates by offset from the first page."""
+        from pcomirror import registry as reg
+        self.assertFalse(reg.by_name("address").supports_cat_filter)
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        for i in range(1, 121):
+            fake.add_child("Address", f"a{i}", "1",
+                           {"city": "Metropolis", "primary": i == 1}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("address")
+        fake.destroy("Address", "a7")
+        tombstoned, _ = m.ingestor.delete_audit("address")
+        self.assertEqual(tombstoned, 1)
+        keyset_pages = [p for meth, p in fake.request_log
+                        if "/addresses?" in p and "where[created_at]" in p
+                        and "fields[Address]" in p]
+        self.assertEqual(keyset_pages, [],
+                         "an endpoint that ignores the filter must not be sent one")
+
+    def test_one_long_round_does_not_own_the_lane(self):
+        """Rotation: with one audit round in progress and another due, the lane
+        alternates instead of feeding every tick to the first in registry
+        order — which was measured starving the second audit and the walks."""
+        from pcomirror import ingest as ingest_mod
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Reed", "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e1", "1", {"address": "a@x.org"}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("email")
+        sched = Scheduler(m)
+        sched.drain_cold()                         # settle late-backfills + day-one audits
+        sched.COLD_UNIT_BUDGET = 1                 # person needs several units
+        sched._cold_ring_last = None               # deterministic ring start
+        ingest_mod.request_audit(m.db, "person", "operator")
+        ingest_mod.request_audit(m.db, "email", "operator")
+        sched.run_cold_once()                      # person's round opens
+        self.assertIsNotNone(m.ingestor.audit_round("person"))
+        sched.run_cold_once()                      # rotation hands email its unit
+        for _ in range(30):
+            if m.ingestor.state("email")["last_audit_completed_at"]:
+                break
+            sched.run_cold_once()
+        self.assertIsNotNone(m.ingestor.state("email")["last_audit_completed_at"],
+                             "the second audit must not wait for the first round")
+        self.assertIsNotNone(m.ingestor.audit_round("person") or
+                             m.ingestor.state("person")["last_audit_completed_at"])
+        sched.drain_cold()
+        self.assertIsNotNone(m.ingestor.state("person")["last_audit_completed_at"])
+
+    def test_the_hot_lane_never_runs_the_bulk(self):
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        sched = Scheduler(m)
+        sched.run_once()
+        self.assertIsNone(m.ingestor.state("person")["last_audit_started_at"],
+                          "audits belong to the cold lane")
+        self.assertIsNone(m.ingestor.state("email")["backfill_completed_at"],
+                          "late backfills belong to the cold lane")
+        sched.drain_cold()
+        self.assertIsNotNone(m.ingestor.state("person")["last_audit_started_at"])
+        self.assertIsNotNone(m.ingestor.state("email")["backfill_completed_at"])
+
+    def test_a_hung_cold_unit_does_not_stall_the_hot_lane(self):
+        """The measured failure, reproduced: an audit enumeration that never
+        returns, and a hydration task the hot lane drains beside it anyway."""
+        import threading as _t
+        from pcomirror import ingest as ingest_mod
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        sched = Scheduler(m)
+        sched.drain_cold()                     # settle the backfills and day-one audit
+        ingest_mod.request_audit(m.db, "person", "operator")
+
+        release, entered = _t.Event(), _t.Event()
+        original = fake.send
+
+        def hanging(method, url, headers, body):
+            if "fields%5BPerson%5D" in url or "fields[Person]" in url:
+                entered.set()
+                release.wait(timeout=30)
+            return original(method, url, headers, body)
+
+        fake.send = hanging
+        cold = _t.Thread(target=sched.run_cold_once, daemon=True)
+        cold.start()
+        self.assertTrue(entered.wait(timeout=10), "the audit should be mid-hang")
+        m.ingestor.enqueue_hydration("person", "1", reason="write_verify")
+        sched.run_once()                       # the hot lane, on this thread
+        self.assertEqual(
+            m.db.query_one("SELECT count(*) c FROM hydration_task")["c"], 0,
+            "the hot lane drained while the cold lane hung")
+        release.set()
+        cold.join(timeout=30)
+        self.assertFalse(cold.is_alive())
 
 
 class TestDriftAsksForTheAudit(unittest.TestCase):
@@ -532,7 +801,7 @@ class TestDriftAsksForTheAudit(unittest.TestCase):
         from pcomirror.scheduler import Scheduler
         m, fake = self._seeded()
         sched = Scheduler(m)
-        sched.run_once()                                   # the first audit runs at once
+        sched.drain_cold()                                 # the first audit runs at once
         self.assertIsNotNone(m.ingestor.state("person")["last_audit_completed_at"])
         fake.destroy("Person", "2")
         m.ingestor.drift_probe("person")
@@ -548,7 +817,7 @@ class TestDriftAsksForTheAudit(unittest.TestCase):
         from pcomirror.scheduler import Scheduler
         m, fake = self._seeded()
         sched = Scheduler(m)
-        sched.run_once()
+        sched.drain_cold()
         two_hours_ago = sched._minus(2 * 3600, now_iso())
         m.ingestor._set("person", last_audit_started_at=two_hours_ago,
                         last_audit_completed_at=two_hours_ago)
@@ -582,13 +851,14 @@ class TestDriftAsksForTheAudit(unittest.TestCase):
         from pcomirror.scheduler import Scheduler
         m, fake = self._seeded()
         sched = Scheduler(m)
-        sched.run_once()
+        sched.drain_cold()
         fake.destroy("Person", "2")
         sched._last_drift = -1e9                           # make the probe due again
         two_hours_ago = sched._minus(2 * 3600, now_iso())
         m.ingestor._set("person", last_audit_started_at=two_hours_ago,
                         last_audit_completed_at=two_hours_ago)
         sched.run_once()
+        sched.drain_cold()
         self.assertIsNotNone(
             m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
         self.assertIsNone(m.ingestor.audit_requested("person"))

@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS hydration_task (
   enqueued_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (resource_type, pco_id)
 );
+CREATE TABLE IF NOT EXISTS audit_scratch (
+  -- The delete audit's working sets. It runs as bounded units across scheduler
+  -- ticks (DESIGN §7.3), so what it has snapshotted ('candidate': live at the
+  -- start, 'known': any row at all) and what PCO's enumeration has returned so
+  -- far ('live') cannot be local variables; they live here, and the round's
+  -- phase and counters live in mirror_meta under audit_round:<resource>.
+  resource_type TEXT NOT NULL, kind TEXT NOT NULL, pco_id TEXT NOT NULL,
+  PRIMARY KEY (resource_type, kind, pco_id)
+);
 CREATE TABLE IF NOT EXISTS webhook_dead_letter (
   event_id TEXT PRIMARY KEY, event_name TEXT, payload TEXT, last_error TEXT, attempts INTEGER,
   died_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))

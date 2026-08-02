@@ -269,13 +269,14 @@ class TestSyncOnDemand(AdminCase):
     def test_audit_queues_as_an_operator_request_and_buries_a_ghost(self):
         from pcomirror.scheduler import Scheduler
         sched = Scheduler(self.m)
-        sched.run_once()                       # the cadence audit has just run…
+        sched.run_once()
+        sched.drain_cold()                     # the cadence audit has just run…
         self.fake.destroy("Person", "2")       # …when the ghost appears
         _, _, page = self.post("/admin/sync/audit", _form(
             csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
         self.assertIn(b"Queued the id-set audit for /people", page)
         self.assertEqual(self.m.ingestor.audit_requested("person"), "operator")
-        sched.run_once()                       # no day-long cadence, no cooldown
+        sched.drain_cold()                     # no day-long cadence, no cooldown
         self.assertIsNotNone(
             self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
         self.assertIsNone(self.m.ingestor.audit_requested("person"),
@@ -290,7 +291,7 @@ class TestSyncOnDemand(AdminCase):
         self.fake.destroy("Person", "2")
         self.post("/admin/sync/audit", _form(
             csrf=self._dash_csrf(), resource="person"), cookie=self.cookie)
-        Scheduler(self.m).run_once()
+        Scheduler(self.m).drain_cold()
         self.assertIsNotNone(
             self.m.db.query_one("SELECT deleted_at FROM person WHERE pco_id='2'")["deleted_at"])
 

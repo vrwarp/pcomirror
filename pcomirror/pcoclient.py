@@ -204,6 +204,7 @@ class PcoClient:
         return resp
 
     def get(self, path: str, params: dict | None = None, priority: str = "reconcile",
-            max_wait: float | None = None, base: str | None = None) -> Response:
+            max_wait: float | None = None, base: str | None = None,
+            record_outcome: bool = True) -> Response:
         return self.request("GET", path, params=params, priority=priority,
-                            max_wait=max_wait, base=base)
+                            max_wait=max_wait, base=base, record_outcome=record_outcome)

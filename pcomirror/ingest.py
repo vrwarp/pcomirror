@@ -20,6 +20,11 @@ def _plus_one_second(iso: str) -> str:
     return (dt + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _iso_in(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)) \
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _related_ids(resource: dict) -> set[tuple[str, str]]:
     """Every `(type, id)` a resource's own relationships name."""
     out: set[tuple[str, str]] = set()
@@ -195,6 +200,65 @@ class Ingestor:
         self.walk_parent(name, parent_id, source)
         return True
 
+    #: Parents one walk step visits. A parent is one request, so this is the
+    #: step's request ceiling too.
+    WALK_STEP_PARENTS = 5
+
+    def _walk_round_key(self, name: str) -> str:
+        return f"walk_round:{name}"
+
+    def walk_round(self, name: str) -> dict | None:
+        held = self.db.get_meta(self._walk_round_key(name))
+        return json.loads(held) if held else None
+
+    def walk_round_step(self, name: str, budget: int = WALK_STEP_PARENTS) -> dict:
+        """One bounded unit of a nested-walk refresh; call until `done`.
+
+        The full walk is one request per live parent — five hundred households
+        is five hundred requests, minutes of them — and it used to run inline,
+        holding the scheduler for all of it. A round now walks at most `budget`
+        parents per call, oldest-walked first, and is complete when every live
+        parent has been walked since the round began. Per-parent authority is
+        untouched: each parent's answer still tombstones whatever that parent
+        no longer has, in `_walk_one`, exactly as the inline walk did.
+
+        A parent that fails stays un-walked and is retried on a later step; the
+        round does not complete past it, so a walk never records a sweep it did
+        not finish — the same property the inline walk kept by raising.
+        """
+        r = registry.by_name(name)
+        parent = registry.by_name(r.parent)
+        state = self.walk_round(name)
+        if state is None:
+            state = {"started": now_iso(), "walked": 0}
+            self.db.set_meta(self._walk_round_key(name), json.dumps(state))
+            self._set(name, last_sweep_started_at=state["started"])
+        due = self.db.query(
+            f"SELECT p.pco_id FROM {parent.table} p "
+            f"LEFT JOIN nested_walk_state w ON w.resource_type=? AND w.parent_pco_id=p.pco_id "
+            f"WHERE p.deleted_at IS NULL AND (w.walked_at IS NULL OR w.walked_at < ?) "
+            f"ORDER BY w.walked_at IS NOT NULL, w.walked_at, CAST(p.pco_id AS INTEGER) LIMIT ?",
+            (name, state["started"], budget))
+        if not due:
+            self._set(name, last_sweep_completed_at=now_iso(), consecutive_errors=0,
+                      last_error=None, mirror_count_last=self._live_count(r.table))
+            self.db.execute("DELETE FROM mirror_meta WHERE key=?", (self._walk_round_key(name),))
+            return {"done": True, "walked": state["walked"]}
+        failed = []
+        for row in due:
+            try:
+                self.walk_parent(name, row["pco_id"], "reconcile")
+                state["walked"] += 1
+            except Exception as e:  # noqa: BLE001 — the parent stays un-walked; retried later
+                failed.append(f"{row['pco_id']}: {e}")
+        self.db.set_meta(self._walk_round_key(name), json.dumps(state))
+        if failed and len(failed) == len(due):
+            # Nothing in this step landed — surface it so the guard logs it,
+            # with the round intact for the next attempt.
+            raise IngestError(f"walk step of {name}: all {len(failed)} parents failed: "
+                              f"{failed[0][:120]}")
+        return {"done": False, "walked": state["walked"]}
+
     def walk_parent(self, name: str, parent_id: str, source: str = "reconcile") -> int:
         """Walk exactly one parent and record that it was walked."""
         r = registry.by_name(name)
@@ -258,7 +322,10 @@ class Ingestor:
         it through the cascade.
         """
         try:
-            resp = self.client.get(f"{r.endpoint}/{pco_id}", priority="reconcile")
+            # `record_outcome=False`: the 404 is the answer being asked for, and
+            # the tombstone row is its record — not a failed exchange to alarm on.
+            resp = self.client.get(f"{r.endpoint}/{pco_id}", priority="reconcile",
+                                   record_outcome=False)
         except Exception:  # noqa: BLE001
             return False
         if resp.status != 404:
@@ -270,18 +337,42 @@ class Ingestor:
         return self.db.query_one(f"SELECT count(*) c FROM {table} WHERE deleted_at IS NULL")["c"]
 
     # -- backfill ----------------------------------------------------------
-    def backfill(self, name: str) -> int:
+    def backfill(self, name: str, max_pages: int | None = None) -> int:
+        """Backfill one resource; `max_pages` makes it one bounded unit of it.
+
+        Every cursor was already persisted page by page so a crashed backfill
+        could resume; `max_pages` reuses exactly that, returning after N
+        upstream pages with the phase still `backfilling`. The scheduler's cold
+        lane calls it that way in a loop of ticks, so a first-day backfill no
+        longer holds everything else the scheduler owes (§7.3). Completion is
+        observable as `backfill_completed_at`, same as ever.
+        """
         r = registry.by_name(name)
         if r.method == "nested_walk":
+            if max_pages is not None:
+                step = self.walk_round_step(name, budget=max_pages)
+                if not step["done"]:
+                    self._set(name, phase="backfilling")
+                    return step["walked"]
+                # The walk that just completed *is* the first sweep; without
+                # pushing `next_run_at` out, the born-due default started a
+                # second full round the moment the first one finished.
+                self._set(name, phase="streaming", backfill_completed_at=now_iso(),
+                          next_run_at=_iso_in(r.incr_interval_s))
+                return step["walked"]
             n = self.nested_walk(name, source="backfill")
-            self._set(name, phase="streaming", backfill_completed_at=now_iso())
+            self._set(name, phase="streaming", backfill_completed_at=now_iso(),
+                      next_run_at=_iso_in(r.incr_interval_s))
             return n
         if r.method == "reference_periodic":
             n = self.reference_refresh(name)
             self._set(name, phase="streaming", backfill_completed_at=now_iso())
             return n
         if not r.supports_uat_filter:
-            n = self._offset_page_all(r, source="backfill")
+            done, n = self._offset_page_all(r, source="backfill", max_pages=max_pages)
+            if not done:
+                self._set(name, phase="backfilling")
+                return n
             hi = self._max_uat(r.table)
             self._set(name, phase="streaming", backfill_completed_at=now_iso(),
                       reconcile_watermark=hi or "", reconcile_cursor=hi or "")
@@ -292,11 +383,17 @@ class Ingestor:
         seen = set(json.loads(st["backfill_seen_ids"] or "[]"))
         include = ",".join(r.includes) or None
         applied: set[str] = set()
+        pages = 0
         while True:
+            if max_pages is not None and pages >= max_pages:
+                self._set(name, phase="backfilling", backfill_cursor_ts=cursor,
+                          backfill_seen_ids=json.dumps(sorted(seen)))
+                return len(applied)
             params = {"order": "updated_at", "per_page": 100, "include": include}
             if cursor:
                 params["where[updated_at][gte]"] = cursor
             resp = self.client.get(r.endpoint, params, priority="backfill")
+            pages += 1
             if not resp.ok:
                 # A 404 here used to read as "the collection is empty", so the
                 # backfill recorded success and the table stayed empty forever.
@@ -311,6 +408,9 @@ class Ingestor:
             uats = [d["attributes"]["updated_at"] for d in data]
             max_ts = max(uats)
             if max_ts == cursor and len(data) == 100:            # saturated single second
+                # The drain is re-run from its start if this unit's budget ends
+                # inside it — its writes are idempotent, and the cursor only
+                # advances past the second once the whole of it has been read.
                 self._drain_second(r, cursor, seen, include)
                 cursor = _plus_one_second(cursor)
                 seen = set()
@@ -340,18 +440,32 @@ class Ingestor:
                 break
             off += 100
 
-    def _offset_page_all(self, r, source: str) -> int:
-        off, total = 0, 0
+    def _offset_page_all(self, r, source: str, max_pages: int | None = None,
+                         start_offset: int | None = None) -> tuple[bool, int]:
+        """Page a collection with no `updated_at` filter; `(completed, applied)`.
+
+        Bounded runs resume from the persisted `reconcile_cursor`, which for
+        this method holds the next offset rather than a timestamp — the only
+        cursor an offset walk has.
+        """
+        st = self.state(r.name)
+        off = start_offset if start_offset is not None else (
+            int(st["reconcile_cursor"]) if (st["reconcile_cursor"] or "").isdigit() else 0)
+        total, pages = 0, 0
         while True:
+            if max_pages is not None and pages >= max_pages:
+                self._set(r.name, reconcile_cursor=str(off))
+                return False, total
             body = self.client.get(r.endpoint, {"per_page": 100, "offset": off,
                                                  "include": ",".join(r.includes) or None},
                                     priority="backfill").json() or {}
+            pages += 1
             data = body.get("data", [])
             total += self.writer.route_page(body, source)
             if len(data) < 100:
-                break
+                self._set(r.name, reconcile_cursor="")
+                return True, total
             off += 100
-        return total
 
     # -- incremental sweep -------------------------------------------------
     def incremental_sweep(self, name: str) -> int:
@@ -479,7 +593,9 @@ class Ingestor:
                 wm = max(wm, a["created_at"])
                 if not self._merger_is_new(m["id"]):
                     continue
-                keep, gone = a["person_to_keep_id"], a["person_to_remove_id"]
+                # JSON numbers on the wire, unlike every other id (same note as
+                # the webhook handler): stringified so every table keys alike.
+                keep, gone = str(a["person_to_keep_id"]), str(a["person_to_remove_id"])
                 self.writer.tombstone("person", gone, None, "merged", merged_into=keep)
                 self.enqueue_hydration("person", keep, reason="merge_survivor")
                 # Recorded last: a crash before this leaves the merge looking new,
@@ -519,91 +635,233 @@ class Ingestor:
     def delete_audit(self, name: str = "person") -> tuple[int, int]:
         """Reconcile the mirror's id set against PCO's, in both directions.
 
-        The enumeration is one pass and answers two questions. Ids the mirror
-        holds live and PCO no longer lists are hard deletes `updated_at`
-        filtering can never see — confirmed one by one, then tombstoned. Ids
-        PCO lists and the mirror lacks are the reverse gap: a record a
-        backfill, webhook and every sweep missed. Nothing else ever repairs
-        those — a divergence report showed one two *years* behind the sweep
-        watermark, which no sweep would ever collect again — so the audit,
-        already holding the only full id list anybody pays for, re-fetches
-        them. Returns `(tombstoned, restored)`.
+        The enumeration answers two questions. Ids the mirror holds live and
+        PCO no longer lists are hard deletes `updated_at` filtering can never
+        see — confirmed one by one, then tombstoned. Ids PCO lists and the
+        mirror lacks are the reverse gap: a record a backfill, webhook and
+        every sweep missed. Nothing else ever repairs those — a divergence
+        report showed one two *years* behind the sweep watermark, which no
+        sweep would ever collect again — so the audit, already holding the only
+        full id list anybody pays for, re-fetches them.
+
+        Run-to-completion form, for the CLI and for tests: the scheduler never
+        calls this — it takes the same round one bounded step at a time through
+        `delete_audit_step` (§7.3), which is also what this loops over, so the
+        two cannot come to audit differently. Returns `(tombstoned, restored)`.
+        """
+        while True:
+            outcome = self.delete_audit_step(name, budget=10_000)
+            if outcome["done"]:
+                return outcome["tombstoned"], outcome["restored"]
+
+    #: How many upstream requests one audit step may spend. At the 100-per-page
+    #: enumeration this is a few thousand people per tick; the point is the
+    #: ceiling, not the throughput — everything else the scheduler owes runs
+    #: between steps instead of behind the whole audit.
+    AUDIT_STEP_REQUESTS = 8
+
+    def _audit_round_key(self, name: str) -> str:
+        return f"audit_round:{name}"
+
+    def audit_round(self, name: str) -> dict | None:
+        """The in-progress audit round's state, or None. A round in progress is
+        the cold lane's to continue whatever the cadence says — abandoning it
+        would leave the scratch sets to a next round that never comes."""
+        held = self.db.get_meta(self._audit_round_key(name))
+        return json.loads(held) if held else None
+
+    def _save_audit_round(self, name: str, state: dict) -> None:
+        self.db.set_meta(self._audit_round_key(name), json.dumps(state))
+
+    def _scratch_count(self, name: str, kind: str) -> int:
+        return self.db.query_one(
+            "SELECT count(*) c FROM audit_scratch WHERE resource_type=? AND kind=?",
+            (name, kind))["c"]
+
+    def delete_audit_step(self, name: str = "person",
+                          budget: int = AUDIT_STEP_REQUESTS) -> dict:
+        """One bounded unit of the delete audit; call until `done`.
+
+        The audit used to run to completion inline, and against a real
+        organization that held the scheduler for minutes — hydration drains,
+        webhook processing and every sweep queued behind an enumeration nobody
+        could interrupt. Now the round's working sets live in `audit_scratch`,
+        its phase and counters in `mirror_meta`, and each call spends at most
+        `budget` upstream requests before yielding. A step that dies mid-phase
+        loses nothing: the next call resumes exactly where the state says.
+
+        The candidate snapshot is still taken *before* enumeration begins —
+        first step, `start` phase — so records created while the round is in
+        flight are never candidates, exactly as the one-shot form guaranteed.
         """
         r = registry.by_name(name)
-        # Snapshot the mirror's live ids BEFORE enumerating PCO, so rows created
-        # during the audit are never candidates (avoids a second-precision race).
-        candidates = {row["pco_id"] for row in
-                      self.db.query(f"SELECT pco_id FROM {r.table} WHERE deleted_at IS NULL")}
-        # And every id the mirror knows at all: a tombstoned row PCO still lists
-        # is a burial to reconsider, not a gap to re-create around.
-        known = {row["pco_id"] for row in self.db.query(f"SELECT pco_id FROM {r.table}")}
-        # Stamped before the work, not after: the scheduler reads the later of
-        # started/completed to decide whether an audit is due, so an audit that
-        # dies partway waits its interval instead of restarting on the next tick.
-        self._set(name, last_audit_started_at=now_iso())
-        live, cursor = set(), ""
-        while True:
-            params = {"order": "created_at", "per_page": 100,
-                      f"fields[{r.type}]": "created_at"}
-            if cursor:
-                params["where[created_at][gte]"] = cursor
-            body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
-            data = body.get("data", [])
-            if not data:
-                break
-            for d in data:
-                live.add(d["id"])
-            cursor = data[-1]["attributes"]["created_at"]
-            if len(data) < 100:
-                break
-        tombstoned = 0
-        for pid in candidates - live:
-            resp = self.client.get(f"{r.endpoint}/{pid}", priority="backfill")
-            if resp.status == 404:
-                self.writer.tombstone(r.table, pid, None, "audit_absent")
-                tombstoned += 1
-            elif resp.ok:
-                obj = (resp.json() or {}).get("data")
-                if obj:
-                    self.writer.confirm_live(r.table, pid, obj, "reconcile")
-        restored = self._restore_missing(r, sorted(live - known)[:self.AUDIT_RESTORE_LIMIT])
-        self._set(name, last_audit_completed_at=now_iso())
-        # This run answers whatever drift asked for. Cleared on completion, not
-        # on start: an audit that dies partway has not answered anything, and
-        # the request standing is what makes the scheduler come back — under
-        # the same cooldown that stops it coming back every tick.
-        clear_audit_request(self.db, name)
-        return tombstoned, restored
+        state = self.audit_round(name)
+        spent = 0
 
-    def _restore_missing(self, r, missing) -> int:
-        """Fetch and store records PCO lists that the mirror has no row for.
+        if state is None:
+            self._set(name, last_audit_started_at=now_iso())
+            self.db.execute("DELETE FROM audit_scratch WHERE resource_type=?", (name,))
+            self.db.execute(
+                f"INSERT INTO audit_scratch(resource_type, kind, pco_id) "
+                f"SELECT ?, 'candidate', pco_id FROM {r.table} WHERE deleted_at IS NULL", (name,))
+            self.db.execute(
+                f"INSERT INTO audit_scratch(resource_type, kind, pco_id) "
+                f"SELECT ?, 'known', pco_id FROM {r.table}", (name,))
+            state = {"phase": "enumerate", "cursor": "", "tombstoned": 0, "restored": 0}
+            self._save_audit_round(name, state)
 
-        Full fetches with the resource's declared includes, exactly the shape a
+        if state["phase"] == "enumerate":
+            if "mode" not in state:
+                state["mode"] = "keyset" if r.supports_cat_filter else "offset"
+            while spent < budget:
+                params = {"order": "created_at", "per_page": 100,
+                          f"fields[{r.type}]": "created_at"}
+                if state["mode"] == "keyset":
+                    if state["cursor"]:
+                        params["where[created_at][gte]"] = state["cursor"]
+                    if state.get("offset"):
+                        params["offset"] = state["offset"]
+                else:
+                    params["offset"] = state.get("offset", 0)
+                body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
+                spent += 1
+                data = body.get("data", [])
+                for d in data:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO audit_scratch(resource_type,kind,pco_id) "
+                        "VALUES(?,?,?)", (name, "live", d["id"]))
+                if data:
+                    page_max = data[-1]["attributes"]["created_at"]
+                    if state["mode"] == "keyset" and state["cursor"] \
+                            and page_max < state["cursor"]:
+                        # A page *behind* the cursor is impossible under an
+                        # honoured `gte` — it means this endpoint ignores the
+                        # filter and every page came from the top. `/addresses`
+                        # was measured doing exactly that, silently, and the
+                        # round oscillated between two cursors for ever. Fall
+                        # back to plain offset enumeration; the ids already
+                        # collected dedup, so nothing is lost by starting the
+                        # walk over.
+                        print(f"[audit] {r.endpoint} ignores where[created_at]; "
+                              f"enumerating {name} by offset", flush=True)
+                        state.update(mode="offset", cursor="", offset=0)
+                        self._save_audit_round(name, state)
+                        continue
+                    if state["mode"] == "offset":
+                        state["offset"] = state.get("offset", 0) + len(data)
+                    elif len(data) == 100 and page_max == state["cursor"]:
+                        # A whole page inside one second — a bulk import's
+                        # signature — and a keyset alone re-reads it for ever.
+                        # Page *through* the saturated second by offset, exactly
+                        # as the backfill's `_drain_second` does, and drop back
+                        # to the keyset the moment the timestamps move again.
+                        state["offset"] = state.get("offset", 0) + len(data)
+                    else:
+                        state["cursor"], state["offset"] = page_max, 0
+                if len(data) < 100:
+                    # Enumeration complete. Settle the cheap set arithmetic now,
+                    # in SQL, so the per-id phases only ever see real work:
+                    # candidates PCO still lists need no confirming GET, and
+                    # live ids the mirror already knows need no restoring.
+                    self.db.execute(
+                        "DELETE FROM audit_scratch WHERE resource_type=? AND kind='candidate' "
+                        "AND pco_id IN (SELECT pco_id FROM audit_scratch "
+                        "               WHERE resource_type=? AND kind='live')", (name, name))
+                    self.db.execute(
+                        "DELETE FROM audit_scratch WHERE resource_type=? AND kind='live' "
+                        "AND pco_id IN (SELECT pco_id FROM audit_scratch "
+                        "               WHERE resource_type=? AND kind='known')", (name, name))
+                    state["phase"] = "confirm"
+                    break
+                self._save_audit_round(name, state)
+            self._save_audit_round(name, state)
+
+        if state["phase"] == "confirm":
+            while spent < budget:
+                row = self.db.query_one(
+                    "SELECT pco_id FROM audit_scratch WHERE resource_type=? AND kind='candidate' "
+                    "ORDER BY CAST(pco_id AS INTEGER), pco_id LIMIT 1", (name,))
+                if row is None:
+                    state["phase"] = "restore"
+                    break
+                pid = row["pco_id"]
+                # `record_outcome=False`: a confirm exists to hear 404s, one per
+                # hard-deleted record — the tombstone and the round's counters
+                # are the log, not an error row per answer.
+                resp = self.client.get(f"{r.endpoint}/{pid}", priority="backfill",
+                                       record_outcome=False)
+                spent += 1
+                if resp.status == 404:
+                    self.writer.tombstone(r.table, pid, None, "audit_absent")
+                    state["tombstoned"] += 1
+                elif resp.ok:
+                    obj = (resp.json() or {}).get("data")
+                    if obj:
+                        self.writer.confirm_live(r.table, pid, obj, "reconcile")
+                self.db.execute(
+                    "DELETE FROM audit_scratch WHERE resource_type=? AND kind='candidate' "
+                    "AND pco_id=?", (name, pid))
+                self._save_audit_round(name, state)
+            self._save_audit_round(name, state)
+
+        if state["phase"] == "restore":
+            while spent < budget:
+                row = self.db.query_one(
+                    "SELECT pco_id FROM audit_scratch WHERE resource_type=? AND kind='live' "
+                    "ORDER BY CAST(pco_id AS INTEGER), pco_id LIMIT 1", (name,))
+                if row is None or state["restored"] >= self.AUDIT_RESTORE_LIMIT:
+                    self.db.execute("DELETE FROM audit_scratch WHERE resource_type=?", (name,))
+                    self._set(name, last_audit_completed_at=now_iso())
+                    # This round answers whatever drift asked for. Cleared on
+                    # completion, not on start: a round that dies partway has
+                    # not answered anything, and the request standing is what
+                    # makes the scheduler come back.
+                    clear_audit_request(self.db, name)
+                    self.db.execute("DELETE FROM mirror_meta WHERE key=?",
+                                    (self._audit_round_key(name),))
+                    return {"done": True,
+                            "tombstoned": state["tombstoned"], "restored": state["restored"]}
+                pid = row["pco_id"]
+                if self._restore_one(r, pid):
+                    state["restored"] += 1
+                spent += 1
+                self.db.execute(
+                    "DELETE FROM audit_scratch WHERE resource_type=? AND kind='live' "
+                    "AND pco_id=?", (name, pid))
+                self._save_audit_round(name, state)
+
+        return {"done": False,
+                "tombstoned": state["tombstoned"], "restored": state["restored"]}
+
+    def _restore_one(self, r, pid: str) -> bool:
+        """Fetch and store one record PCO lists that the mirror has no row for.
+
+        A full fetch with the resource's declared includes, exactly the shape a
         hydration uses, so the restored record arrives no thinner than a synced
         one. The children ride through the ordinary router; the record itself is
         `confirm_live` — the id enumeration just said it exists, which is the
         authoritative liveness that writer exists for. A fetch that fails is
         left for the next audit rather than retried: the id list is re-derived
-        every run, so a gap can only survive by outrunning every future pass.
+        every round, so a gap can only survive by outrunning every future pass.
         """
         include = ",".join(r.includes) or None
-        restored = 0
-        for pid in missing:
-            resp = self.client.get(f"{r.endpoint}/{pid}",
-                                   {"include": include} if include else None,
-                                   priority="backfill")
-            if not resp.ok:
-                continue    # deleted in the race window, or transient — next run
-            body = resp.json() or {}
-            obj = body.get("data")
-            if not obj:
-                continue
-            with self.db.transaction():
-                self.writer.route_page({"data": [], "included": body.get("included") or []},
-                                       "reconcile")
-                self.writer.confirm_live(r.table, pid, obj, "reconcile")
-            restored += 1
-        return restored
+        # `record_outcome=False` for the same reason as the confirm above: a
+        # candidate deleted inside the race window answers 404, and that is an
+        # expected outcome the round accounts for, not a failed exchange.
+        resp = self.client.get(f"{r.endpoint}/{pid}",
+                               {"include": include} if include else None,
+                               priority="backfill", record_outcome=False)
+        if not resp.ok:
+            return False    # deleted in the race window, or transient — next round
+        body = resp.json() or {}
+        obj = body.get("data")
+        if not obj:
+            return False
+        with self.db.transaction():
+            self.writer.route_page({"data": [], "included": body.get("included") or []},
+                                   "reconcile")
+            self.writer.confirm_live(r.table, pid, obj, "reconcile")
+        return True
 
     # -- drift probe -------------------------------------------------------
 
