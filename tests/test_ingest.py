@@ -579,6 +579,62 @@ class TestTheColdLaneInterleaves(unittest.TestCase):
         self.assertGreater(calls, 1, "one page per call cannot finish in one")
         self.assertEqual(m.db.query_one("SELECT count(*) c FROM person")["c"], 250)
 
+    def test_a_saturated_second_does_not_stall_the_enumeration(self):
+        """The signature of a bulk import: more records created in one second
+        than a page holds. Measured live — the address audit sat at one 2024
+        cursor re-reading the same page every tick, for ever. The enumeration
+        pages through the saturated second by offset, like the backfill's
+        `_drain_second`, and completes."""
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Imported", "2026-01-01T00:00:00Z",)
+        for i, p in enumerate(fake.data["Person"].values()):
+            p["attributes"]["created_at"] = "2024-01-30T06:37:57Z"    # one second, all of them
+        m.ingestor.backfill("person")
+        fake.destroy("Person", "17")
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.delete_audit_step("person", budget=2)
+            steps += 1
+            self.assertLess(steps, 40, "the enumeration must advance past the cluster")
+            if out["done"]:
+                break
+        self.assertEqual(out["tombstoned"], 1)
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='17'")["deleted_at"])
+
+    def test_one_long_round_does_not_own_the_lane(self):
+        """Rotation: with one audit round in progress and another due, the lane
+        alternates instead of feeding every tick to the first in registry
+        order — which was measured starving the second audit and the walks."""
+        from pcomirror import ingest as ingest_mod
+        from pcomirror.scheduler import Scheduler
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Reed", "2026-01-01T00:00:00Z")
+        fake.add_child("Email", "e1", "1", {"address": "a@x.org"}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("email")
+        sched = Scheduler(m)
+        sched.drain_cold()                         # settle late-backfills + day-one audits
+        sched.COLD_UNIT_BUDGET = 1                 # person needs several units
+        sched._cold_ring_last = None               # deterministic ring start
+        ingest_mod.request_audit(m.db, "person", "operator")
+        ingest_mod.request_audit(m.db, "email", "operator")
+        sched.run_cold_once()                      # person's round opens
+        self.assertIsNotNone(m.ingestor.audit_round("person"))
+        sched.run_cold_once()                      # rotation hands email its unit
+        for _ in range(30):
+            if m.ingestor.state("email")["last_audit_completed_at"]:
+                break
+            sched.run_cold_once()
+        self.assertIsNotNone(m.ingestor.state("email")["last_audit_completed_at"],
+                             "the second audit must not wait for the first round")
+        self.assertIsNotNone(m.ingestor.audit_round("person") or
+                             m.ingestor.state("person")["last_audit_completed_at"])
+        sched.drain_cold()
+        self.assertIsNotNone(m.ingestor.state("person")["last_audit_completed_at"])
+
     def test_the_hot_lane_never_runs_the_bulk(self):
         from pcomirror.scheduler import Scheduler
         m, fake = build()

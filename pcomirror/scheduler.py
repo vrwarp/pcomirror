@@ -49,6 +49,7 @@ class Scheduler:
         self._last_merger = 0.0
         self._last_drift = 0.0
         self._cold_retry_at: dict[str, float] = {}
+        self._cold_ring_last: str | None = None
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name="pcomirror-scheduler", daemon=True)
@@ -151,19 +152,21 @@ class Scheduler:
                 if ok and ing.state(r.name)["backfill_completed_at"]:
                     print(f"[scheduler] backfilled newly declared resource {r.name}", flush=True)
                 return True
+        # Audits and walks share one rotating ring. Taking the first eligible
+        # unit every tick was measured starving everything behind it: one audit
+        # stuck enumerating held the lane while the walks — and even the other
+        # audits' in-progress rounds — waited indefinitely. Rotation bounds any
+        # single round's share of the lane to one unit per revolution.
+        ring: list[tuple[str, object]] = []
         for r in registry.full_and_lite():
             if not r.audit_interval_s:
                 continue
             # A round in progress is continued whatever the cadence says —
             # abandoning it would strand its scratch sets; a new round starts
             # only when the audit is due.
-            if ing.audit_round(r.name) is None and not self._audit_due(r.name, now):
-                continue
-            if not self._cold_ready(f"audit:{r.name}"):
-                continue
-            ok = self._guard(f"audit:{r.name}", self._audit_step, r.name)
-            self._cold_outcome(f"audit:{r.name}", ok)
-            return True
+            if ing.audit_round(r.name) is not None or self._audit_due(r.name, now):
+                ring.append((f"audit:{r.name}",
+                             lambda n=r.name: self._audit_step(n)))
         for r in registry.full_and_lite():
             if r.method != "nested_walk":
                 continue
@@ -171,14 +174,25 @@ class Scheduler:
             if st["backfill_completed_at"] is None:
                 continue
             due = st["next_run_at"] and st["next_run_at"] <= now
-            if ing.walk_round(r.name) is None and not due:
+            if ing.walk_round(r.name) is not None or due:
+                ring.append((f"walk:{r.name}",
+                             lambda n=r.name: self._walk_step(n)))
+        for key, run in self._rotated(ring):
+            if not self._cold_ready(key):
                 continue
-            if not self._cold_ready(f"walk:{r.name}"):
-                continue
-            ok = self._guard(f"walk:{r.name}", self._walk_step, r.name)
-            self._cold_outcome(f"walk:{r.name}", ok)
+            ok = self._guard(key, run)
+            self._cold_outcome(key, ok)
+            self._cold_ring_last = key
             return True
         return False
+
+    def _rotated(self, ring):
+        """The ring, starting just past the unit that ran last."""
+        keys = [k for k, _ in ring]
+        if self._cold_ring_last in keys:
+            i = keys.index(self._cold_ring_last) + 1
+            return ring[i:] + ring[:i]
+        return ring
 
     def drain_cold(self, max_units: int = 10_000) -> int:
         """Run cold units until none is due. For tests and for the CLI, where

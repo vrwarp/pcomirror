@@ -711,6 +711,8 @@ class Ingestor:
                           f"fields[{r.type}]": "created_at"}
                 if state["cursor"]:
                     params["where[created_at][gte]"] = state["cursor"]
+                if state.get("offset"):
+                    params["offset"] = state["offset"]
                 body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
                 spent += 1
                 data = body.get("data", [])
@@ -719,7 +721,18 @@ class Ingestor:
                         "INSERT OR IGNORE INTO audit_scratch(resource_type,kind,pco_id) "
                         "VALUES(?,?,?)", (name, "live", d["id"]))
                 if data:
-                    state["cursor"] = data[-1]["attributes"]["created_at"]
+                    page_max = data[-1]["attributes"]["created_at"]
+                    if len(data) == 100 and page_max == state["cursor"]:
+                        # A whole page inside one second — a bulk import's
+                        # signature — and a keyset alone re-reads it for ever:
+                        # measured live, the address audit sat at one 2024
+                        # cursor burning its budget every tick. Page *through*
+                        # the saturated second by offset, exactly as the
+                        # backfill's `_drain_second` does, and drop back to the
+                        # keyset the moment the timestamps move again.
+                        state["offset"] = state.get("offset", 0) + len(data)
+                    else:
+                        state["cursor"], state["offset"] = page_max, 0
                 if len(data) < 100:
                     # Enumeration complete. Settle the cheap set arithmetic now,
                     # in SQL, so the per-id phases only ever see real work:
