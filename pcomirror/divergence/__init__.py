@@ -277,8 +277,14 @@ class ShadowChecker:
         # `divergence` is deferrable and bounded: nobody is waiting on this, and
         # holding the scheduler thread while a busy foreground keeps the bucket
         # would stall the webhook drain and every sweep behind it.
+        # `record_outcome=False`: whatever status PCO answers is the thing being
+        # compared, not a failed exchange — a deleted record's shape re-checks as
+        # a 404 on cadence for ever, and each one logged at error severity buried
+        # the feed. Disagreements get a report; an incomplete check gets a
+        # failure note below; both are this caller logging its own result.
         upstream = self.client.get(_upstream_path(path), params or None,
-                                   priority="divergence", max_wait=MAX_LIMITER_WAIT)
+                                   priority="divergence", max_wait=MAX_LIMITER_WAIT,
+                                   record_outcome=False)
         pco_body = upstream.json() if upstream.body else {}
 
         differences = compare(mirror_body, pco_body, mirror_status, upstream.status)
