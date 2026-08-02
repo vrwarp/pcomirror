@@ -88,6 +88,12 @@ class Resource:
     parent_fk: str | None = None    # for nested_walk: our column holding the parent id
     timestamped: bool = True        # has attributes.updated_at
     supports_uat_filter: bool = True  # where[updated_at] usable (False -> descending walk, e.g. address)
+    #: `where[created_at]` usable for the audit's keyset enumeration. False means
+    #: the endpoint ignores it — *silently*, returning the full collection — so
+    #: the audit enumerates by offset instead. Measured on `/addresses`
+    #: (2026-08-02): `gte` set a day past every record still returned all 1,400,
+    #: the same endpoint quirk family as its missing `where[updated_at]`.
+    supports_cat_filter: bool = True
     owner_rel: str | None = None    # for children: relationship name pointing at the owner (e.g. "person")
     projections: tuple[Projection, ...] = ()
     includes: tuple[str, ...] = ()  # default includes for backfill / hydration
@@ -243,6 +249,7 @@ _reg(Resource(
 _reg(Resource(
     name="address", type="Address", table="address", endpoint="/addresses",
     tier="full", owner_rel="person", supports_uat_filter=False,  # /addresses has no where[updated_at]
+    supports_cat_filter=False,      # …and silently ignores where[created_at] too (measured)
     incr_interval_s=300, audit_interval_s=86400, priority=2,
     projections=(
         ("person_pco_id", "TEXT", "json", "$.relationships.person.data.id"),

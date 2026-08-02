@@ -706,13 +706,18 @@ class Ingestor:
             self._save_audit_round(name, state)
 
         if state["phase"] == "enumerate":
+            if "mode" not in state:
+                state["mode"] = "keyset" if r.supports_cat_filter else "offset"
             while spent < budget:
                 params = {"order": "created_at", "per_page": 100,
                           f"fields[{r.type}]": "created_at"}
-                if state["cursor"]:
-                    params["where[created_at][gte]"] = state["cursor"]
-                if state.get("offset"):
-                    params["offset"] = state["offset"]
+                if state["mode"] == "keyset":
+                    if state["cursor"]:
+                        params["where[created_at][gte]"] = state["cursor"]
+                    if state.get("offset"):
+                        params["offset"] = state["offset"]
+                else:
+                    params["offset"] = state.get("offset", 0)
                 body = self.client.get(r.endpoint, params, priority="backfill").json() or {}
                 spent += 1
                 data = body.get("data", [])
@@ -722,14 +727,29 @@ class Ingestor:
                         "VALUES(?,?,?)", (name, "live", d["id"]))
                 if data:
                     page_max = data[-1]["attributes"]["created_at"]
-                    if len(data) == 100 and page_max == state["cursor"]:
+                    if state["mode"] == "keyset" and state["cursor"] \
+                            and page_max < state["cursor"]:
+                        # A page *behind* the cursor is impossible under an
+                        # honoured `gte` — it means this endpoint ignores the
+                        # filter and every page came from the top. `/addresses`
+                        # was measured doing exactly that, silently, and the
+                        # round oscillated between two cursors for ever. Fall
+                        # back to plain offset enumeration; the ids already
+                        # collected dedup, so nothing is lost by starting the
+                        # walk over.
+                        print(f"[audit] {r.endpoint} ignores where[created_at]; "
+                              f"enumerating {name} by offset", flush=True)
+                        state.update(mode="offset", cursor="", offset=0)
+                        self._save_audit_round(name, state)
+                        continue
+                    if state["mode"] == "offset":
+                        state["offset"] = state.get("offset", 0) + len(data)
+                    elif len(data) == 100 and page_max == state["cursor"]:
                         # A whole page inside one second — a bulk import's
-                        # signature — and a keyset alone re-reads it for ever:
-                        # measured live, the address audit sat at one 2024
-                        # cursor burning its budget every tick. Page *through*
-                        # the saturated second by offset, exactly as the
-                        # backfill's `_drain_second` does, and drop back to the
-                        # keyset the moment the timestamps move again.
+                        # signature — and a keyset alone re-reads it for ever.
+                        # Page *through* the saturated second by offset, exactly
+                        # as the backfill's `_drain_second` does, and drop back
+                        # to the keyset the moment the timestamps move again.
                         state["offset"] = state.get("offset", 0) + len(data)
                     else:
                         state["cursor"], state["offset"] = page_max, 0

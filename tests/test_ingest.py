@@ -603,6 +603,53 @@ class TestTheColdLaneInterleaves(unittest.TestCase):
         self.assertIsNotNone(m.db.query_one(
             "SELECT deleted_at FROM person WHERE pco_id='17'")["deleted_at"])
 
+    def test_an_ignored_filter_is_detected_and_the_walk_restarts_by_offset(self):
+        """/addresses was measured *silently ignoring* `where[created_at]` —
+        every keyset page came from the top and the round oscillated between
+        two cursors for ever. A page behind the cursor is impossible under an
+        honoured `gte`, so that is the tell: the round flips to plain offset
+        enumeration and completes."""
+        m, fake = build()
+        for i in range(1, 251):
+            fake.add_person(str(i), f"P{i}", "Imported", "2026-01-01T00:00:00Z")
+        for i, p in enumerate(fake.data["Person"].values()):
+            p["attributes"]["created_at"] = ("2024-01-30T06:37:57Z" if i < 150
+                                             else "2024-01-30T06:38:17Z")
+        fake.ignore_created_filters = {"Person"}
+        m.ingestor.backfill("person")
+        fake.destroy("Person", "44")
+        steps, out = 0, None
+        while True:
+            out = m.ingestor.delete_audit_step("person", budget=2)
+            steps += 1
+            self.assertLess(steps, 40, "the round must not oscillate")
+            if out["done"]:
+                break
+        self.assertEqual(out["tombstoned"], 1)
+        self.assertIsNotNone(m.db.query_one(
+            "SELECT deleted_at FROM person WHERE pco_id='44'")["deleted_at"])
+
+    def test_a_resource_flagged_filterless_never_sends_the_keyset(self):
+        """The registry's measurement spares the round the wasted discovery:
+        `supports_cat_filter=False` enumerates by offset from the first page."""
+        from pcomirror import registry as reg
+        self.assertFalse(reg.by_name("address").supports_cat_filter)
+        m, fake = build()
+        fake.add_person("1", "Ada", "L", "2026-01-01T00:00:00Z")
+        for i in range(1, 121):
+            fake.add_child("Address", f"a{i}", "1",
+                           {"city": "Metropolis", "primary": i == 1}, "2026-01-01T00:00:00Z")
+        m.ingestor.backfill("person")
+        m.ingestor.backfill("address")
+        fake.destroy("Address", "a7")
+        tombstoned, _ = m.ingestor.delete_audit("address")
+        self.assertEqual(tombstoned, 1)
+        keyset_pages = [p for meth, p in fake.request_log
+                        if "/addresses?" in p and "where[created_at]" in p
+                        and "fields[Address]" in p]
+        self.assertEqual(keyset_pages, [],
+                         "an endpoint that ignores the filter must not be sent one")
+
     def test_one_long_round_does_not_own_the_lane(self):
         """Rotation: with one audit round in progress and another due, the lane
         alternates instead of feeding every tick to the first in registry
