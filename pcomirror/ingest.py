@@ -590,7 +590,9 @@ class Ingestor:
                 wm = max(wm, a["created_at"])
                 if not self._merger_is_new(m["id"]):
                     continue
-                keep, gone = a["person_to_keep_id"], a["person_to_remove_id"]
+                # JSON numbers on the wire, unlike every other id (same note as
+                # the webhook handler): stringified so every table keys alike.
+                keep, gone = str(a["person_to_keep_id"]), str(a["person_to_remove_id"])
                 self.writer.tombstone("person", gone, None, "merged", merged_into=keep)
                 self.enqueue_hydration("person", keep, reason="merge_survivor")
                 # Recorded last: a crash before this leaves the merge looking new,
