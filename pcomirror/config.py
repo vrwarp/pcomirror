@@ -135,7 +135,8 @@ class Settings:
     # it is something an operator turns on while chasing a problem.
     shadow_per_minute: int = 0
     # How many divergence reports to keep. Each holds two whole responses, so
-    # this is the setting that decides the log's size on disk.
+    # the count says little about the disk — `divergence.MAX_BYTES` (25 MB) is
+    # the bound that does, and whichever bites first drops the oldest reports.
     shadow_keep: int = 200
     # How many webhook calls to record verbatim — every header and the exact
     # body, of the deliveries that were rejected as much as the ones that were

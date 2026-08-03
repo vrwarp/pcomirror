@@ -49,6 +49,17 @@ mean re-verifying one person for ever.
 computed differences. Pseudonyms are what make the log safe to hand to somebody
 while still being worth reading — the structure survives, the people do not.
 
+**What that costs, bounded in bytes.** A report holds two entire responses, so
+counting reports never bounded the disk: two hundred single-person GETs is a few
+hundred kilobytes and two hundred include-heavy pages of a hundred records is
+hundreds of megabytes of somebody else's volume — the same setting, three orders
+of magnitude apart. `MAX_BYTES` is the bound that does hold, at 25 MB, and
+`shadow_keep` still counts reports; whichever bites first applies, oldest first
+either way. `MAX_REPORT_BYTES` is what makes the total reachable by dropping
+whole reports: without a per-report ceiling one enormous pair of bodies either
+blows the total on its own or evicts the entire log to make room for itself, so
+past it the bodies are dropped and the differences — the finding — are kept.
+
 Off unless `PCOMIRROR_SHADOW_PER_MINUTE` is set above zero. It spends real PCO
 budget, so it is a thing an operator turns on while chasing something.
 """
@@ -64,7 +75,8 @@ from .rules import Difference, classify, compare, one_sided
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
-           "MAX_PER_MINUTE", "OVERRIDE_KEY", "SAMPLES_PER_SHAPE"]
+           "trim_to_size", "MAX_PER_MINUTE", "MAX_BYTES", "MAX_REPORT_BYTES",
+           "OVERRIDE_KEY", "SAMPLES_PER_SHAPE"]
 
 #: How many distinct requests to keep per shape. Enough that a shape covers a
 #: spread of records rather than one, bounded so a caller iterating a thousand
@@ -85,6 +97,28 @@ OVERRIDE_KEY = "shadow_per_minute"
 #: from hurting PCO, but a large enough number would still crowd out the reads
 #: real callers are waiting on — and nothing this feature learns is worth that.
 MAX_PER_MINUTE = 60
+
+#: The most disk the log may take, whatever `shadow_keep` says. `shadow_keep`
+#: counts reports, and a report is two whole responses: the same 200 is a few
+#: hundred kilobytes of single-record GETs or hundreds of megabytes of paged
+#: include-heavy collections, and the operator who typed it cannot tell which
+#: they asked for. This is the bound that means the same thing every time. The
+#: newest reports are the ones kept, as under the count bound.
+MAX_BYTES = 25 * 1024 * 1024
+
+#: The most one report may take, so that the total above is always reachable by
+#: dropping whole reports. A tenth: large enough that a real response pair —
+#: a hundred records with their includes, twice — is kept intact, small enough
+#: that no single report can evict most of the log to make room for itself.
+MAX_REPORT_BYTES = MAX_BYTES // 10
+
+#: What one report occupies, measured as stored. `length()` over TEXT counts
+#: characters, so it is cast to BLOB first: a pseudonym is ASCII but an
+#: attribute value need not be, and a bound that under-counts the bytes of the
+#: rows it is bounding is not a bound.
+_ROW_BYTES = " + ".join(
+    f"length(cast(coalesce({c},'') AS BLOB))"
+    for c in ("mirror_body", "pco_body", "differences", "query", "path", "shape"))
 
 
 def effective(db, settings) -> dict:
@@ -298,9 +332,13 @@ class ShadowChecker:
         # decided: the reader of a one-sided record needs to know *which* of the
         # three stories it is — store gap, tombstone, or a search the sync state
         # cannot explain — and only these rows can say.
-        stored_differences = [*differences, *self._store_notes(facts)]
-
         p = self.pseudonymiser
+        # Pseudonymised before they are measured: the bound is on what is stored,
+        # and there is no unpseudonymised copy for a size check to reason about.
+        mirror_json, pco_json, oversize = _fit_bodies(
+            json.dumps(p.document(mirror_body)), json.dumps(p.document(pco_body)))
+        stored_differences = [*differences, *self._store_notes(facts), *oversize]
+
         self.db.execute(
             """INSERT INTO shadow_report
                  (at, shape, path, query, verdict, difference_count, differences,
@@ -317,8 +355,7 @@ class ShadowChecker:
              "n": len(differences),
              "diffs": json.dumps([_safe_difference(p, d) for d in stored_differences]),
              "ms": mirror_status, "ps": upstream.status,
-             "mb": json.dumps(p.document(mirror_body)),
-             "pb": json.dumps(p.document(pco_body)),
+             "mb": mirror_json, "pb": pco_json,
              "rid": getattr(upstream, "request_id", None)})
         self._trim()
         return verdict
@@ -417,10 +454,16 @@ class ShadowChecker:
             error_detail=edetail)
 
     def _trim(self) -> None:
+        """Both bounds, oldest first: the count of reports and the bytes of them.
+
+        The count runs first because it is a single statement and usually the
+        one that bites; the byte pass then reads only what the count left.
+        """
         keep = max(1, getattr(self.s, "shadow_keep", 200))
         self.db.execute(
             "DELETE FROM shadow_report WHERE report_id <= "
             "(SELECT max(report_id) FROM shadow_report) - ?", (keep,))
+        trim_to_size(self.db)
 
 
 def _safe_difference(pseudonymiser, difference: Difference) -> dict:
@@ -437,6 +480,63 @@ def _safe_difference(pseudonymiser, difference: Difference) -> dict:
         out["mirror"] = pseudonymiser.value(attribute, out["mirror"])
         out["pco"] = pseudonymiser.value(attribute, out["pco"])
     return out
+
+
+def _placeholder(size: int) -> str:
+    """What stands in for a body too big to keep — still a JSON document.
+
+    A clipped body would be neither: `export` and every reader of the log parse
+    these columns, and half a document is a parse error rather than a shorter
+    answer. This says what was dropped and how large it was, which is the part a
+    reader can act on.
+    """
+    return json.dumps({"pcomirror_elided": True, "bytes": size,
+                       "why": f"over the {MAX_REPORT_BYTES}-byte limit on one report"})
+
+
+def _fit_bodies(mirror_json: str, pco_json: str):
+    """The two bodies as they will be stored, plus a note if they did not fit.
+
+    Both go or neither does. A report is a comparison, and one side of one is
+    not a smaller version of it — the reader who opens a body opens it to hold
+    it against the other. What survives is the differences, which is where the
+    finding actually is; the bodies were only ever the corroboration.
+    """
+    sizes = (len(mirror_json.encode()), len(pco_json.encode()))
+    if sizes[0] + sizes[1] <= MAX_REPORT_BYTES:
+        return mirror_json, pco_json, []
+    note = Difference(
+        "$.report.bodies", f"{sizes[0]} bytes", f"{sizes[1]} bytes",
+        f"the two bodies together exceed the {MAX_REPORT_BYTES} bytes one report "
+        f"may hold, so neither was kept — the differences are the finding; re-run "
+        f"the request against both sides to see the documents")
+    return _placeholder(sizes[0]), _placeholder(sizes[1]), [note]
+
+
+def trim_to_size(db, cap: int | None = None) -> int:
+    """Drop the oldest reports until the log fits `cap` bytes. Returns how many.
+
+    Counted newest-first and cut at the first report that does not fit, so what
+    survives is the most recent history the budget affords — the same eviction
+    order as the count bound, for the same reason: the check somebody is reading
+    the page for is the one that just ran.
+
+    A single report larger than the whole budget is dropped like any other. It
+    cannot be one this version wrote — `_fit_bodies` sees to that — but a log
+    carried over from before this bound existed can hold one, and that is the
+    case the bound is for.
+    """
+    cap = MAX_BYTES if cap is None else cap
+    total = 0
+    for row in db.query(f"SELECT report_id, {_ROW_BYTES} AS bytes "
+                        f"FROM shadow_report ORDER BY report_id DESC"):
+        total += row["bytes"]
+        if total > cap:
+            n = (db.query_one("SELECT count(*) c FROM shadow_report WHERE report_id <= ?",
+                              (row["report_id"],)) or {"c": 0})["c"]
+            db.execute("DELETE FROM shadow_report WHERE report_id <= ?", (row["report_id"],))
+            return n
+    return 0
 
 
 # -- reading, for the admin page ------------------------------------------
@@ -457,10 +557,16 @@ def summary(db) -> dict:
         "SELECT count(*) samples, count(DISTINCT shape) shapes, sum(seen) seen, "
         "max(last_checked_at) last_checked, count(last_checked_at) checked "
         "FROM shadow_sample") or {}
+    held = db.query_one(f"SELECT coalesce(sum({_ROW_BYTES}),0) bytes FROM shadow_report")
     return {
         "divergence": by_verdict.get("divergence", 0),
         "staleness": by_verdict.get("staleness", 0),
         "total": sum(by_verdict.values()),
+        # What the log is costing, against what it may cost. Reports vary by
+        # three orders of magnitude in size, so the count on its own tells an
+        # operator nothing about the disk they have given this.
+        "bytes": held["bytes"] or 0,
+        "bytes_cap": MAX_BYTES,
         "shapes": corpus["shapes"] or 0,
         "samples": corpus["samples"] or 0,
         "checked": corpus["checked"] or 0,

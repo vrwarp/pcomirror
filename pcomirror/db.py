@@ -202,6 +202,9 @@ CREATE INDEX IF NOT EXISTS shadow_sample_shape_idx ON shadow_sample (shape, last
 -- Where the mirror and PCO disagreed. Both bodies are stored **pseudonymised**;
 -- there is no unpseudonymised copy anywhere, so an export cannot forget to strip
 -- one. `verdict` separates lag the sweep will fix from divergence nothing will.
+-- One row here is two whole responses, so this table is bounded by bytes as
+-- well as by rows — 25 MB, `divergence.MAX_BYTES`, oldest first — and a report
+-- whose bodies alone would take a tenth of that keeps only its differences.
 CREATE TABLE IF NOT EXISTS shadow_report (
   report_id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),

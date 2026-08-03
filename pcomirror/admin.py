@@ -891,8 +891,12 @@ class AdminApp:
 <h2>Log</h2>
 <p class=muted>show: {tabs}</p>
 {body}
-<p class=muted>Showing {len(reports):,} of {s['total']:,} kept. Every request
-  checked is one a caller really made — nothing here is synthesised. Values are
+<p class=muted>Showing {len(reports):,} of {s['total']:,} kept, holding
+  {adminstats.human_bytes(s['bytes'])} of the
+  {adminstats.human_bytes(s['bytes_cap'])} this log may occupy — past that, and
+  past {getattr(self.s, 'shadow_keep', 200):,} reports, the oldest fall off.
+  Every request checked is one a caller really made — nothing here is
+  synthesised. Values are
   pseudonymised, consistent per organization and reversible by nobody, so this is
   safe to send on; record ids and structure are real.</p>
 <form method=get action=/admin/divergence/download style='display:inline'>
