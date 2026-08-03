@@ -52,9 +52,18 @@ class Search:
       * ``contains``      - normalised substring; how PCO matches email addresses
       * ``digits_suffix`` - the stored number ends with the digits typed (phone)
       * ``digits_exact``  - the same digits, punctuation discounted (E.164)
+
+    `single_token_contains` is the one measured place the *or-email* family's
+    name arm departs from `search_name`: a needle with no spaces matches the
+    name fields by **substring anywhere** — `onzale` finds Gonzalez, `z` finds
+    293 people where word-prefixing finds 234 — while a needle of two or more
+    words matches exactly like `search_name` (`santiag gonz` finds Santiago
+    Gonzalez; `o gonz` and `iago gonz`, both raw substrings of that name, find
+    nobody). A live shadow report was half made of exactly this difference.
     """
     names: tuple[str, ...] = ()
     children: tuple[tuple[str, str, str, str], ...] = ()
+    single_token_contains: bool = False
 
 
 # The name haystacks, each matched from its own first word (see `db.name_matches`).
@@ -184,14 +193,14 @@ _reg(Resource(
     search_filters={
         "search_name": Search(names=_PERSON_NAMES),
         "search_name_or_email": Search(
-            names=_PERSON_NAMES,
+            names=_PERSON_NAMES, single_token_contains=True,
             children=(("email", "person_pco_id", "address", "contains"),)),
         "search_phone_number": Search(
             children=(("phone_number", "person_pco_id", "number", "digits_suffix"),)),
         "search_phone_number_e164": Search(
             children=(("phone_number", "person_pco_id", "e164", "digits_exact"),)),
         "search_name_or_email_or_phone_number": Search(
-            names=_PERSON_NAMES,
+            names=_PERSON_NAMES, single_token_contains=True,
             children=(("email", "person_pco_id", "address", "contains"),
                       ("phone_number", "person_pco_id", "number", "digits_suffix"))),
     },

@@ -1204,12 +1204,25 @@ class Application:
         not. Email addresses match by substring. Phone numbers match on a digits
         *suffix*, which is how a person searches for one. Treating all three as
         "contains" returned a hundred people where PCO returned nine.
+
+        One measured exception, live only in the or-email family
+        (`Search.single_token_contains`): a needle with **no spaces** matches
+        the name fields by substring anywhere. `onzale` finds the Gonzalezes
+        there and nobody under `search_name`; a production report showed the
+        word-prefix reading answering `z` with 234 people to PCO's 293, and
+        both directions wrong on one page — prefix missed Boaz and Gonzalez,
+        substring-on-email kept people the sort order then exposed. Two or
+        more words fall back to exactly `search_name`'s rule: `santiag gonz`
+        matches, `o gonz` and `iago gonz` — raw substrings of the same name —
+        do not.
         """
         terms, params = [], []
         text = norm_text(needle)
         if text:
+            single = " " not in text
+            name_mode = "contains" if (search.single_token_contains and single) else "words"
             for expr in search.names:
-                terms.append(_MATCHERS["words"](expr))
+                terms.append(_MATCHERS[name_mode](expr))
                 params.append(text)
         for target, child_fk, col, mode in search.children:
             probe = norm_digits(needle) if mode.startswith("digits") else text

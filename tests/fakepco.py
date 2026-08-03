@@ -368,13 +368,19 @@ class FakePCO:
         substring. The email arm reads the *fake's* Email rows — which is the
         point: a mirror whose own email table has drifted answers this search
         differently than PCO does, and a fake without the arm could never model
-        that divergence."""
+        that divergence.
+
+        One more measured wrinkle, or-email family only: a single-word needle
+        matches the name fields by substring anywhere (`onzale` finds
+        Gonzalez), while two or more words keep the word-prefix rule."""
         probe = (needle or "").lower().split()
         a = person.get("attributes", {})
         for hay in (a.get("name"), f'{a.get("first_name", "")} {a.get("last_name", "")}',
                     a.get("first_name"), a.get("last_name"), a.get("nickname"),
                     a.get("given_name")):
             words = (hay or "").lower().split()
+            if emails and len(probe) == 1 and probe[0] in (hay or "").lower():
+                return True
             if probe and len(probe) <= len(words) and \
                     all(words[i].startswith(probe[i]) for i in range(len(probe))):
                 return True
