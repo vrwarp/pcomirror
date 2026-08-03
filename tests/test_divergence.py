@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
 
 from base import build, wsgi_get
 from pcomirror import divergence
@@ -384,6 +385,21 @@ class TestWhatGetsStored(ShadowCase):
         self.assertEqual(
             self.m.db.query_one("SELECT count(*) c FROM shadow_report")["c"], 3)
 
+    def test_the_log_is_capped_in_bytes_as_well(self):
+        """A report is two whole responses, so `shadow_keep` never said what it
+        would cost: the same 200 is a few hundred kilobytes of single-person GETs
+        or hundreds of megabytes of paged, include-heavy collections."""
+        self.m.settings.shadow_keep = 1000
+        self._make_a_divergence()
+        one = divergence.summary(self.m.db)["bytes"]
+        with mock.patch.object(divergence, "MAX_BYTES", one * 3):
+            for i in range(8):
+                self.fake.data["Person"]["1"]["attributes"]["first_name"] = f"Name{i}"
+                self.m.divergence.check(1, "/people/v2/people/1", {})
+            held = divergence.summary(self.m.db)
+        self.assertLessEqual(held["bytes"], one * 3)
+        self.assertGreater(held["total"], 0)
+
     def test_export_carries_no_real_value_and_clear_empties_it(self):
         self._make_a_divergence()
         payload = divergence.export(self.m.db).decode()
@@ -392,6 +408,85 @@ class TestWhatGetsStored(ShadowCase):
         self.assertIn("pseudonymised", payload)
         self.assertEqual(divergence.clear(self.m.db), 1)
         self.assertEqual(divergence.recent(self.m.db), [])
+
+
+class TestTheLogFitsItsBudget(ShadowCase):
+    """25 MB, whatever `shadow_keep` says and whatever the responses are.
+
+    The count bound alone was a promise about rows, and nobody runs out of rows.
+    """
+
+    def _reports(self, n: int):
+        for i in range(n):
+            self.fake.data["Person"]["1"]["attributes"]["first_name"] = f"Name{i}"
+            self.m.divergence.check(1, "/people/v2/people/1", {})
+
+    def test_the_budget_is_twenty_five_megabytes(self):
+        self.assertEqual(divergence.MAX_BYTES, 25 * 1024 * 1024)
+        self.assertEqual(divergence.summary(self.m.db)["bytes_cap"], 25 * 1024 * 1024)
+
+    def test_the_oldest_fall_off_and_the_newest_stays(self):
+        """The same eviction order as the count bound, for the same reason: the
+        check somebody has the page open for is the one that just ran."""
+        self._reports(6)
+        held = divergence.summary(self.m.db)["bytes"]
+        newest = self.m.db.query_one("SELECT max(report_id) m FROM shadow_report")["m"]
+
+        divergence.trim_to_size(self.m.db, cap=held // 3)
+
+        after = divergence.summary(self.m.db)
+        self.assertLessEqual(after["bytes"], held // 3)
+        self.assertGreater(after["total"], 0)
+        self.assertEqual(
+            self.m.db.query_one("SELECT max(report_id) m FROM shadow_report")["m"], newest)
+
+    def test_a_report_larger_than_the_whole_budget_is_not_kept(self):
+        """Only a log carried over from before this bound can hold one — and it
+        is exactly what the bound is for, so it goes like any other."""
+        self._reports(1)
+        self.assertEqual(divergence.trim_to_size(self.m.db, cap=1), 1)
+        self.assertEqual(divergence.recent(self.m.db), [])
+
+    def test_bytes_are_counted_as_bytes_and_not_as_characters(self):
+        """A pseudonym is ASCII; an attribute value need not be, and a bound that
+        under-counts the rows it bounds is not a bound."""
+        self.m.db.execute(
+            "INSERT INTO shadow_report (at, shape, path, verdict, mirror_body) "
+            "VALUES ('2026-01-01T00:00:00Z','/s','/p','divergence',?)", ("é" * 100,))
+        self.assertGreaterEqual(divergence.summary(self.m.db)["bytes"], 200)
+
+    def test_bodies_too_large_to_keep_are_dropped_and_the_finding_stays(self):
+        """One report may not evict the log to make room for itself. The bodies
+        were the corroboration; the differences are the finding."""
+        with mock.patch.object(divergence, "MAX_REPORT_BYTES", 64):
+            self._reports(1)
+        row = self.m.db.query_one("SELECT * FROM shadow_report")
+        self.assertTrue(json.loads(row["mirror_body"])["pcomirror_elided"])
+        self.assertTrue(json.loads(row["pco_body"])["pcomirror_elided"])
+        differences = json.loads(row["differences"])
+        self.assertTrue(any(d["pointer"].endswith("attributes.first_name")
+                            for d in differences))
+        elision = next(d for d in differences if d["pointer"] == "$.report.bodies")
+        self.assertIn("64 bytes", elision["note"])
+        # The count stays the comparison's own — the note is testimony about the
+        # report, not another place the two documents disagree.
+        self.assertEqual(row["difference_count"], len(differences) - 1)
+
+    def test_an_elided_report_still_exports_as_json(self):
+        """A clipped body would be a parse error rather than a shorter answer;
+        every reader of these columns parses them."""
+        with mock.patch.object(divergence, "MAX_REPORT_BYTES", 64):
+            self._reports(1)
+        report = json.loads(divergence.export(self.m.db))["reports"][0]
+        self.assertTrue(report["mirror_body"]["pcomirror_elided"])
+        self.assertGreater(report["mirror_body"]["bytes"], 64)
+
+    def test_a_real_response_pair_is_kept_whole(self):
+        """The per-report ceiling is a guard against the pathological, not a
+        clip everything passes through."""
+        self._reports(1)
+        row = self.m.db.query_one("SELECT mirror_body FROM shadow_report")
+        self.assertNotIn("pcomirror_elided", row["mirror_body"])
 
 
 class TestTheCheckerIsOnlyADiagnostic(ShadowCase):

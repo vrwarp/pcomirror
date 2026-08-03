@@ -753,8 +753,16 @@ few seconds, and a plain per-pass limit would have made the number mean twelve
 times what it said.
 
 Both responses are stored **pseudonymised**, so the log is safe to hand to
-somebody. Download it as JSON or clear it from the page; the store is capped by
-`PCOMIRROR_SHADOW_KEEP` (default 200 reports).
+somebody. Download it as JSON or clear it from the page.
+
+**The log is capped twice, and by bytes as well as by reports** — at 25 MB, and
+at `PCOMIRROR_SHADOW_KEEP` reports (default 200). Two bounds because one report
+is two entire responses: 200 single-person GETs is a few hundred kilobytes and
+200 include-heavy pages of a hundred records is hundreds of megabytes, so the
+count alone never said what a setting would cost. Whichever bound bites first
+drops the oldest reports. A single report over a tenth of the budget keeps its
+differences and drops its bodies, saying so in the report — one report is never
+allowed to evict the log to make room for itself.
 
 A report keeps the **concrete parameters**, not only the shape. That is what
 makes an ordering difference readable: a real export showed one record eight
