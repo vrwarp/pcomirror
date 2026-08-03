@@ -112,6 +112,29 @@ class TestSearchFilters(unittest.TestCase):
         self.assertEqual(self.ids("where[search_name_or_email]=byron"), ["1", "4"])
         self.assertEqual(self.ids("where[search_name_or_email]=example.org"), ["1", "2", "3", "4"])
 
+    def test_a_single_word_reaches_inside_names_in_the_or_email_family(self):
+        """Measured 2026-08-03 on a live 1,900-person organization: `onzale`
+        found the Gonzalezes under `search_name_or_email` and nobody under
+        `search_name`, and the word-prefix reading of one production query
+        answered `z` with 234 people to PCO's 293. Single word: substring
+        anywhere in the name fields — mid-word included."""
+        self.assertEqual(self.ids("where[search_name_or_email]=yron"), ["1", "4"])
+        self.assertEqual(self.ids("where[search_name_or_email]=race"), ["2"])
+        self.assertEqual(self.ids("where[search_name_or_email]=ddi"), ["1"])  # nickname too
+        # …while search_name keeps refusing interior fragments (asserted above).
+
+    def test_two_words_keep_the_word_prefix_rule_even_with_email_in_reach(self):
+        """`santiag gonz` matched live and `o gonz` / `iago gonz` — raw
+        substrings of the very same name — did not: with two or more words the
+        or-email family matches exactly like `search_name`."""
+        self.assertEqual(self.ids("where[search_name_or_email]=ada byr"), ["1"])
+        self.assertEqual(self.ids("where[search_name_or_email]=da byron"), [])
+        self.assertEqual(self.ids("where[search_name_or_email]=yron ada"), [])
+
+    def test_the_combined_filter_shares_the_single_word_rule(self):
+        self.assertEqual(
+            self.ids("where[search_name_or_email_or_phone_number]=urin"), ["3"])
+
     def test_phone_search_matches_a_digits_suffix(self):
         # How a person actually searches for a number: the last few digits.
         # Formatting is discounted on both sides.
