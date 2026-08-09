@@ -739,6 +739,32 @@ cannot drift apart. Live it is *stricter* in one respect: `meta.total_count` mus
 match, because the mirror holds the whole organization where the corpus is a
 sample.
 
+**A page is a window, and the window moves.** Page *membership* is the one thing
+a paged comparison cannot read straight. Two result sets of different sizes,
+ordered the same way, put their hundredth record in different places: every
+record the smaller side is missing from the shared prefix pushes one more record
+of the larger side past its page edge. So a record one side returned and the
+other did not is evidence only against a *last* page — `meta.next`, which both
+sides send, is what settles it.
+
+Read otherwise it does not merely over-report, it reports the opposite. A live
+export of 96 checks of `where[search_name_or_email]` — one bug, the mirror
+matching names by word-prefix where PCO matched by substring, so every mirror
+result set was a strict subset of PCO's — carried 1,888 rows accusing the mirror
+of returning people PCO did not, and 110 rows of store testimony per report
+saying each was held live, which is exactly what a page boundary predicts. The
+same report now reads: `$.data`, 55 records past the far side's edge either way;
+`$.meta.total_count`, 234 against 293. Two rows, and the second is the bug.
+
+Records both sides returned are compared **before** the one-sided roll-call, for
+the same reason: a page whose membership differs is one cause and up to two
+hundred rows restating it, and enumerated first it spent the whole 40-difference
+budget — so an attribute difference on a record both sides returned, which is the
+class this feature exists to find, never got a row. The `$.store[…]` testimony
+that rides behind the differences is bounded the same way, and had no bound at
+all: a hundred-record page filed 150 rows against a documented ceiling of 40, into
+a log whose real limit is bytes.
+
 **Turning it on.** `/admin/divergence` has the switch: a checks-per-minute box
 where `0` is off. `PCOMIRROR_SHADOW_PER_MINUTE` sets the default and the page
 overrides it, persistently — the person who wants this on at 9pm while chasing
