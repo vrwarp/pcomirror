@@ -31,6 +31,22 @@ a few hundred rows sampled out of a 1,915-person organization and a page boundar
 naturally falls somewhere else. Live, the mirror holds the whole organization, so
 a page that differs from PCO's is a real bug and a count that differs is the
 plainest possible statement of one.
+
+**A page is a window, and the window moves.** One thing page membership does
+*not* say is which records a side matched. Two result sets of different sizes,
+ordered the same way, put their hundredth record in different places: every
+record the smaller side is missing from the shared prefix pushes one more record
+across the larger side's page edge. So a record one side returned and the other
+did not is evidence only when the other side's page was its *last* — otherwise
+the record may simply sit past the edge, on a page nobody fetched.
+
+Reading it as evidence regardless is not a harmless over-report. A live export
+of 96 checks of `where[search_name_or_email]` — one bug, the mirror matching
+names by word-prefix where PCO matched by substring, so every mirror result set
+was a strict *subset* of PCO's — carried 1,888 rows accusing the mirror of
+returning people PCO did not. Every one of them was the window: the mirror was
+under-matching, in one direction only, and the report said both. `meta.next`
+(and `links.next`) is what settles it, and both sides send it.
 """
 from __future__ import annotations
 
@@ -45,6 +61,13 @@ IGNORED_META = MIRROR_ONLY_META | {"can_filter", "parent", "next", "prev"}
 #: three hundred places has one cause, and three hundred rows of it in an admin
 #: page is a wall nobody reads to the end of.
 MAX_DIFFERENCES = 40
+
+#: How many `$.store[…]` rows ride along behind those. They are testimony about
+#: the differences rather than more of them, so they have their own budget — but
+#: they had none at all, and a hundred-record page produced a report of 150 rows
+#: against a documented ceiling of 40. The bound the log is trimmed by is bytes
+#: (`MAX_BYTES`), which those rows spend without ever being read to the end of.
+MAX_STORE_NOTES = MAX_DIFFERENCES
 
 
 class Difference:
@@ -83,6 +106,36 @@ def _data_ids(body):
     return [str(i["id"]) for i in (data or []) if isinstance(i, dict) and i.get("id")]
 
 
+def _data_keys(body):
+    """`{(type, id)}` for the records in `data`, as distinct from `included`."""
+    data = (body or {}).get("data")
+    items = data if isinstance(data, list) else [data]
+    return {(i.get("type"), str(i["id"])) for i in items
+            if isinstance(i, dict) and i.get("id")}
+
+
+def has_more(body) -> bool:
+    """Whether this side had pages left after the one being compared.
+
+    PCO reports the cursor in `meta` and in `links`, and so does the mirror;
+    either is enough. A response with neither is the whole answer, which is what
+    makes a record's absence from it mean something.
+    """
+    meta = (body or {}).get("meta") or {}
+    links = (body or {}).get("links") or {}
+    return bool(meta.get("next") or links.get("next"))
+
+
+def windowed_sides(mirror_body, pco_body) -> dict:
+    """Whose exclusive records are explained by the *other* side's page ending.
+
+    Keyed by the side that returned the record, because that is how `one_sided`
+    names it: `windowed["mirror"]` is true when PCO had more pages, so a record
+    only the mirror returned proves nothing about what PCO matched.
+    """
+    return {"mirror": has_more(pco_body), "pco": has_more(mirror_body)}
+
+
 def _relationship_ids(resource, name):
     """The ids on one side of a relationship, order-insensitively."""
     node = ((resource.get("relationships") or {}).get(name) or {}).get("data")
@@ -98,17 +151,33 @@ def _updated_at(resource):
 
 
 def one_sided(mirror_body, pco_body):
-    """`(key, side, resource)` for every record only one document carries.
+    """`(key, side, resource, windowed)` for every record only one document carries.
 
     `side` names who returned it — `"pco"` or `"mirror"` — and `resource` is
     that side's copy. This is the set the checker looks up in the mirror's own
     store: a record one side returned and the other did not is either a store
     gap, a tombstone disagreement, or a serving/search difference, and only the
     store can say which.
+
+    Unless it is none of those. `windowed` is true when this is a `data` member
+    and the *other* side still had pages, and then its absence there is not a
+    fact about the other side at all — it is where the page ended. The store has
+    nothing to say about those, and asking it a hundred times a check to print a
+    hundred rows of "held live", which is exactly what the window predicts, is
+    how one bug filled a report.
+
+    `data` membership is the whole of it. A page boundary explains a record the
+    far side's page did not reach; it does not explain a *sideload* the far side
+    left out of the page it did return, and suppressing one of those would lose
+    the include-set difference that child-delete detection rests on.
     """
     mine, theirs = _resources(mirror_body), _resources(pco_body)
-    out = [(key, "pco", theirs[key]) for key in sorted(set(theirs) - set(mine))]
-    out += [(key, "mirror", mine[key]) for key in sorted(set(mine) - set(theirs))]
+    windowed = windowed_sides(mirror_body, pco_body)
+    mine_data, their_data = _data_keys(mirror_body), _data_keys(pco_body)
+    out = [(key, "pco", theirs[key], windowed["pco"] and key in their_data)
+           for key in sorted(set(theirs) - set(mine))]
+    out += [(key, "mirror", mine[key], windowed["mirror"] and key in mine_data)
+            for key in sorted(set(mine) - set(theirs))]
     return out
 
 
@@ -129,14 +198,24 @@ def compare(mirror_body, pco_body, mirror_status=200, pco_status=200) -> list:
 
     # -- the page itself ---------------------------------------------------
     mine_ids, their_ids = _data_ids(mirror_body), _data_ids(pco_body)
+    windowed = windowed_sides(mirror_body, pco_body)
     if mine_ids != their_ids:
         only_mine = [i for i in mine_ids if i not in set(their_ids)]
         only_theirs = [i for i in their_ids if i not in set(mine_ids)]
-        if only_mine or only_theirs:
-            note("$.data", only_mine or None, only_theirs or None,
-                 "records on one side only")
-        else:
+        if not (only_mine or only_theirs):
             note("$.data", mine_ids, their_ids, "same records, different order")
+        else:
+            said_mine = [] if windowed["mirror"] else only_mine
+            said_theirs = [] if windowed["pco"] else only_theirs
+            if said_mine or said_theirs:
+                note("$.data", said_mine or None, said_theirs or None,
+                     "records on one side only")
+            past_mine = len(only_mine) - len(said_mine)
+            past_theirs = len(only_theirs) - len(said_theirs)
+            if past_mine or past_theirs:
+                note("$.data", past_mine or None, past_theirs or None,
+                     "records the other side still had pages to reach — a page "
+                     "boundary, not a statement about what the other side matched")
 
     mine_meta = (mirror_body or {}).get("meta") or {}
     their_meta = (pco_body or {}).get("meta") or {}
@@ -146,19 +225,35 @@ def compare(mirror_body, pco_body, mirror_status=200, pco_status=200) -> list:
         elif key in ("total_count", "count") and mine_meta[key] != their_meta[key]:
             note(f"$.meta.{key}", mine_meta[key], their_meta[key], "count differs")
 
-    # -- included ----------------------------------------------------------
-    mine_res, their_res = _resources(mirror_body), _resources(pco_body)
-    for key in sorted(set(their_res) - set(mine_res)):
-        note(f"$.included[{key[0]}/{key[1]}]", None, "present",
-             "resource PCO returned and the mirror did not")
-    for key in sorted(set(mine_res) - set(their_res)):
-        note(f"$.included[{key[0]}/{key[1]}]", "present", None,
-             "resource the mirror returned and PCO did not")
-
     # -- resource by resource ----------------------------------------------
+    # Before the one-sided roll-call below, not after. A record both sides
+    # returned whose *attributes* differ is the class this feature exists to
+    # find — the silent primary demotion — and it is one row. A page whose
+    # membership differs is one cause and up to two hundred rows restating the
+    # `$.data` difference above. Enumerated first, the roll-call spent the whole
+    # budget and the attribute difference was never reached.
+    mine_res, their_res = _resources(mirror_body), _resources(pco_body)
     for key in sorted(set(mine_res) & set(their_res)):
         found.extend(_compare_resource(key, mine_res[key], their_res[key],
                                        MAX_DIFFERENCES - len(found)))
+
+    # -- records only one side carries -------------------------------------
+    # Named where they were found: a `data` member is page membership, an
+    # `included` one is a sideload the other side did not send. The ones past
+    # the far side's page edge are already summarised on `$.data` and are not
+    # worth a row each.
+    mine_data, their_data = _data_keys(mirror_body), _data_keys(pco_body)
+    for key, side, _resource, is_windowed in one_sided(mirror_body, pco_body):
+        if is_windowed:
+            continue
+        in_data = key in (mine_data if side == "mirror" else their_data)
+        where = "$.data" if in_data else "$.included"
+        if side == "pco":
+            note(f"{where}[{key[0]}/{key[1]}]", None, "present",
+                 "resource PCO returned and the mirror did not")
+        else:
+            note(f"{where}[{key[0]}/{key[1]}]", "present", None,
+                 "resource the mirror returned and PCO did not")
     return found[:MAX_DIFFERENCES]
 
 
@@ -237,15 +332,24 @@ def classify(differences, mirror_body, pco_body, store=None) -> str:
         ours, upstream = _updated_at(mine[key]), _updated_at(theirs[key])
         if ours and upstream and upstream > ours:
             return "staleness"
+    # Presence is read from the same window as everything else: a record only
+    # one side returned, where the other side had pages left, says nothing in
+    # either direction and must not be weighed as though it did — least of all
+    # the mirror's, where a single tail record beyond PCO's page edge used to
+    # read as "the mirror invented one" and rule out lag outright.
+    unexplained = [(key, side) for key, side, _res, is_windowed
+                   in one_sided(mirror_body, pco_body) if not is_windowed]
+    only_theirs = {key for key, side in unexplained if side == "pco"}
+    only_mine = {key for key, side in unexplained if side == "mirror"}
     # A record PCO has and the mirror does not may be lag — it has not been
     # swept yet — provided nothing else disagrees, and provided the sweep is in
     # fact still going to collect it.
-    if set(theirs) - set(mine) and not (set(mine) - set(theirs)):
+    if only_theirs and not only_mine:
         if all(d.pointer.startswith("$.included[") or d.pointer.startswith("$.data")
                or d.pointer.startswith("$.meta") for d in differences):
             if all(_sweep_converges(store.get(key) if store else None,
                                     _updated_at(theirs[key]))
-                   for key in set(theirs) - set(mine)):
+                   for key in only_theirs):
                 return "staleness"
     return "divergence"
 

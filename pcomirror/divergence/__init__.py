@@ -71,7 +71,7 @@ import time
 
 from .. import registry
 from ..config import now_iso
-from .rules import Difference, classify, compare, one_sided
+from .rules import MAX_STORE_NOTES, Difference, classify, compare, one_sided
 
 __all__ = ["Difference", "classify", "compare", "shape_of", "ShadowChecker",
            "recent", "summary", "clear", "export", "effective", "configure",
@@ -322,7 +322,7 @@ class ShadowChecker:
         pco_body = upstream.json() if upstream.body else {}
 
         differences = compare(mirror_body, pco_body, mirror_status, upstream.status)
-        facts = self._store_facts(mirror_body, pco_body)
+        facts, past_the_edge = self._store_facts(mirror_body, pco_body)
         verdict = classify(differences, mirror_body, pco_body, store=facts)
         if verdict == "match":
             self.db.execute("UPDATE shadow_sample SET last_agreed_at=? WHERE sample_id=?",
@@ -337,7 +337,8 @@ class ShadowChecker:
         # and there is no unpseudonymised copy for a size check to reason about.
         mirror_json, pco_json, oversize = _fit_bodies(
             json.dumps(p.document(mirror_body)), json.dumps(p.document(pco_body)))
-        stored_differences = [*differences, *self._store_notes(facts), *oversize]
+        stored_differences = [*differences,
+                              *self._store_notes(facts, past_the_edge), *oversize]
 
         self.db.execute(
             """INSERT INTO shadow_report
@@ -365,7 +366,7 @@ class ShadowChecker:
                                 (sample_id,))
         return row["shape"] if row else shape_of(path.split("?")[0], [])
 
-    def _store_facts(self, mirror_body, pco_body) -> dict:
+    def _store_facts(self, mirror_body, pco_body):
         """What the mirror's own tables hold for each record only one side returned.
 
         The response can only say *that* the sides disagree about a record's
@@ -373,9 +374,18 @@ class ShadowChecker:
         will not match a row the mirror holds is knowable only here, next to
         the database. `classify` uses these facts to keep its `staleness`
         promise honest, and `_store_notes` writes them into the report.
+
+        Returns `(facts, past_the_edge)`, the second a `{side: count}` of the
+        records the other side still had pages to reach. Those get no fact and
+        no query: the store would answer "held live" for every one of them,
+        which is what a page boundary already predicts, and it answered it two
+        hundred times a check to say so.
         """
-        facts = {}
-        for key, side, resource in one_sided(mirror_body, pco_body):
+        facts, past_the_edge = {}, {"mirror": 0, "pco": 0}
+        for key, side, resource, is_windowed in one_sided(mirror_body, pco_body):
+            if is_windowed:
+                past_the_edge[side] += 1
+                continue
             rtype, rid = key
             r = registry.by_type(rtype)
             if r is None:
@@ -398,18 +408,40 @@ class ShadowChecker:
                 "watermark": state["reconcile_watermark"] if state else None,
                 "upstream_uat": (resource.get("attributes") or {}).get("updated_at"),
             }
-        return facts
+        return facts, past_the_edge
 
     @staticmethod
-    def _store_notes(facts: dict) -> list:
+    def _store_notes(facts: dict, past_the_edge=None) -> list:
         """The store's testimony, one `$.store[...]` row per one-sided record.
 
         Timestamps, sources and reasons only — nothing here is anybody's name,
         so these pass the pseudonymiser untouched and the export stays safe to
         hand to somebody.
+
+        Bounded, like the differences they follow. These rows had no ceiling at
+        all, so a hundred-record page whose membership differed filed a report
+        of 150 rows against a documented 40 — and the log's real bound is bytes,
+        which they spent. Past `MAX_STORE_NOTES` the count is kept and the rows
+        are not: a hundred more of the same sentence names no new cause.
         """
         notes = []
-        for (rtype, rid), f in sorted(facts.items()):
+        for side, n in sorted((past_the_edge or {}).items()):
+            if not n:
+                continue
+            notes.append(Difference(
+                "$.store", f"{n} records" if side == "mirror" else None,
+                f"{n} records" if side == "pco" else None,
+                "past the far side's page edge — the store was not asked, because "
+                "a record beyond a page boundary is not a record either side is "
+                "missing"))
+        listed = sorted(facts.items())
+        for position, ((rtype, rid), f) in enumerate(listed):
+            if position >= MAX_STORE_NOTES:
+                notes.append(Difference(
+                    "$.store", None, None,
+                    f"{len(listed) - position} more records only one side returned, "
+                    f"not listed — they have the cause above, not another one"))
+                break
             if f["held"] == "live":
                 held = (f"live, updated {f['stored_uat']}, "
                         f"synced {f['last_synced_at']} via {f['source']}")

@@ -25,6 +25,15 @@ def collection(*people, total=None):
                      "count": len(people)}}
 
 
+def paged(*people, total=None, more=True):
+    """A collection with pages left after it, as both sides report one."""
+    doc = collection(*people, total=total if total is not None else len(people) + 1)
+    if more:
+        doc["meta"]["next"] = {"offset": len(people)}
+        doc["links"] = {"next": f"/people/v2/people?offset={len(people)}"}
+    return doc
+
+
 def person(pid, first="Ada", last="Lovelace", updated="2026-01-01T00:00:00Z", **attrs):
     return {"id": pid, "type": "Person",
             "attributes": {"first_name": first, "last_name": last,
@@ -112,6 +121,100 @@ class TestTheDifferencesItFinds(unittest.TestCase):
         many = collection(*[person(str(i), first=f"A{i}") for i in range(200)])
         other = collection(*[person(str(i), first=f"B{i}") for i in range(200)])
         self.assertLessEqual(len(cmp_mod.compare(many, other)), cmp_mod.MAX_DIFFERENCES)
+
+    def test_a_difference_in_a_shared_record_outranks_the_roll_call(self):
+        """The wall and the finding competed for the same budget, and the wall
+        won: a page of one-sided records was enumerated first and the attribute
+        difference on a record *both* sides returned — the silent-demotion class
+        this feature exists for — never got a row."""
+        mine = collection(person("shared", first="Ada"),
+                          *[person(f"m{i}") for i in range(200)])
+        theirs = collection(person("shared", first="Grace"),
+                            *[person(f"p{i}") for i in range(200)])
+        found = cmp_mod.compare(mine, theirs)
+        self.assertIn("$.[Person/shared].attributes.first_name",
+                      [d.pointer for d in found])
+
+
+class TestThePageIsAWindow(unittest.TestCase):
+    """Two result sets of different sizes put their hundredth record in
+    different places. Page membership is evidence only against a *last* page —
+    read otherwise, 96 checks of one under-matching search filter produced 1,888
+    rows accusing the mirror of the opposite."""
+
+    def test_a_record_past_the_far_sides_page_edge_is_not_a_record_pco_lacks(self):
+        mine = paged(person("1"), person("tail"))
+        theirs = paged(person("1"), person("new"))
+        found = cmp_mod.compare(mine, theirs)
+        page = [d for d in found if d.pointer == "$.data"]
+        self.assertEqual([d.note for d in page],
+                         ["records the other side still had pages to reach — a page "
+                          "boundary, not a statement about what the other side matched"])
+        self.assertEqual((page[0].mirror, page[0].pco), (1, 1))
+        self.assertNotIn("Person/tail", " ".join(d.pointer for d in found))
+
+    def test_the_last_page_still_speaks(self):
+        """Nothing past the edge when there is no next page: the same records,
+        compared the same way, are a difference again."""
+        mine = paged(person("1"), person("tail"), more=False)
+        theirs = paged(person("1"), person("new"), more=False)
+        found = cmp_mod.compare(mine, theirs)
+        page = next(d for d in found if d.pointer == "$.data")
+        self.assertEqual(page.note, "records on one side only")
+        self.assertEqual((page.mirror, page.pco), (["tail"], ["new"]))
+
+    def test_one_side_still_paging_only_covers_that_side(self):
+        """PCO's page ended, the mirror's did not. A record only PCO returned may
+        be on the mirror's next page; one only the mirror returned is a record
+        PCO's complete answer does not contain, and is still a difference."""
+        mine = paged(person("1"), person("tail"))
+        theirs = paged(person("1"), person("new"), more=False)
+        page = [d for d in cmp_mod.compare(mine, theirs) if d.pointer == "$.data"]
+        said = next(d for d in page if d.note == "records on one side only")
+        self.assertEqual((said.mirror, said.pco), (["tail"], None))
+        self.assertTrue(any("still had pages to reach" in d.note for d in page))
+
+    def test_a_tail_record_beyond_the_far_edge_does_not_rule_out_lag(self):
+        """`classify` weighed the same phantom. The mirror's answer is complete
+        and one record short; PCO's spills onto a second page, so the mirror's
+        last record sits past PCO's edge. That read as "the mirror invented one"
+        and ruled out lag outright — a verdict of `divergence` on a record the
+        next sweep was going to deliver."""
+        mine = paged(person("1"), person("tail"), total=2, more=False)
+        theirs = paged(person("1"), person("new"), total=3)
+        found = cmp_mod.compare(mine, theirs)
+        store = {("Person", "new"): {"held": "absent", "watermark": None}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "staleness")
+
+    def test_neither_side_finished_paging_proves_nothing_either_way(self):
+        """Both windows are open, so page membership is no evidence in either
+        direction — and the counts still disagree. Nothing here says the sweep
+        will close it, so it stays a divergence for somebody to look at."""
+        mine = paged(person("1"), person("tail"), total=101)
+        theirs = paged(person("1"), person("new"), total=102)
+        found = cmp_mod.compare(mine, theirs)
+        store = {("Person", "new"): {"held": "absent", "watermark": None}}
+        self.assertEqual(cmp_mod.classify(found, mine, theirs, store=store), "divergence")
+
+    def test_a_sideload_the_far_side_left_out_is_not_a_page_boundary(self):
+        """The window explains a record the far side's page did not *reach*. It
+        explains nothing about a sideload missing from the page it did return —
+        and an `included` set that has lost a child is what child-delete
+        detection reads."""
+        mine, theirs = paged(person("1")), paged(person("1"))
+        theirs["included"] = [{"type": "Email", "id": "e1",
+                               "attributes": {"address": "ada@x.org"}}]
+        found = cmp_mod.compare(mine, theirs)
+        self.assertIn("$.included[Email/e1]", [d.pointer for d in found])
+        self.assertEqual(cmp_mod.classify(found, mine, theirs,
+                                          store={("Email", "e1"): {"held": "live"}}),
+                         "divergence")
+
+    def test_a_record_the_mirror_invented_on_a_last_page_is_still_a_divergence(self):
+        mine = paged(person("1"), person("tail"), more=False)
+        theirs = paged(person("1"), more=False)
+        found = cmp_mod.compare(mine, theirs)
+        self.assertEqual(cmp_mod.classify(found, mine, theirs), "divergence")
 
 
 class TestStalenessIsNotDivergence(unittest.TestCase):
@@ -325,6 +428,21 @@ class TestTheStoreTestimony(ShadowCase):
         self.assertIn("watermark", note["note"])
         # The count stays the comparison's own; the testimony rides along.
         self.assertEqual(reports[0]["difference_count"], len(differences) - 1)
+
+    def test_the_testimony_is_bounded_like_the_differences_it_follows(self):
+        """These rows had no ceiling. A hundred-record page whose membership
+        differed filed 150 of them against a documented 40, into a log whose
+        real bound is bytes — and the hundredth repetition of one sentence
+        names no cause the first did not."""
+        for i in range(60):
+            self.fake.add_person(f"9{i}", "Left", "Behind", "2024-01-31T06:37:30Z")
+        wsgi_get(self.m.wsgi, "/people/v2/people", "per_page=100")
+        self.m.divergence.run_once()
+
+        differences = json.loads(divergence.recent(self.m.db)[0]["differences"])
+        testimony = [d for d in differences if d["pointer"].startswith("$.store")]
+        self.assertLessEqual(len(testimony), cmp_mod.MAX_STORE_NOTES + 1)
+        self.assertIn("more records only one side returned", testimony[-1]["note"])
 
 
 class TestWhatGetsStored(ShadowCase):
