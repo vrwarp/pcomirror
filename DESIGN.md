@@ -1,7 +1,7 @@
 # pcomirror — Design
 
 A layer service that mirrors **Planning Center (PCO) People** data into a local
-PostgreSQL store so local applications can query it **without hitting the live
+SQLite store (PostgreSQL on the [scale-up path](#12-scaling-up-postgres--multi-org)) so local applications can query it **without hitting the live
 API**, with an explicit **pass-through** to PCO when needed. Freshness is
 maintained by **webhooks** (fast path) plus a **background reconciliation**
 refresh (safety net) that repairs anything a missed/late/lost webhook left stale.
@@ -24,7 +24,7 @@ hundred people. The confirmed choices:
 | **Writes** | **Write-through** ([§8.4](#84-writes--write-through)) | Local apps can create/update/delete; the mirror proxies to PCO, then applies the returned resource. |
 | **Auth** | **Personal Access Token** (HTTP Basic) | No OAuth refresh loop. |
 | **Rate limiter** | **In-process** token bucket | One process → correct without Redis. |
-| **Process model** | **One service** (or a few) sharing the SQLite file via WAT | Webhook receiver + fetch/reconcile workers + api-server. |
+| **Process model** | **One service** (or a few) sharing the SQLite file via WAL | Webhook receiver + fetch/reconcile workers + api-server. |
 
 **Why SQLite is the right call here.** At ~300 people the entire dataset is a few
 thousand rows across all tables; a full backfill is ~3–5 requests. The design was
@@ -38,8 +38,9 @@ semantics are **verified on SQLite 3.45** by
 **What the single-file / single-org profile lets us drop** vs. the general design
 in the sections below: Redis and the GCRA limiter (→ in-process token bucket),
 row-level security and `org_id` (→ single tenant), KMS envelope encryption (→ the
-PAT and webhook secret live in an OS keyring or a `0600` file, decrypted by the
-app), leader election (→ one process), and PL/pgSQL writer functions (→ one
+PAT comes from the environment, `PCO_APP_ID` / `PCO_SECRET`; each webhook
+`authenticity_secret` is stored in the SQLite file as-is, so protect the volume
+the way you would protect the secret), leader election (→ one process), and PL/pgSQL writer functions (→ one
 application-level writer module issuing the canonical SQL). The **sync logic is
 unchanged** — it's storage-agnostic.
 
@@ -1340,10 +1341,13 @@ anyone who opens the page — which makes a narrowly scoped key
 
 **PAT (HTTP Basic `app_id:secret`) is the chosen auth** — zero refresh machinery,
 no expiry, no consent flow. The two secrets we hold (the **PAT** and each
-subscription's webhook **`authenticity_secret`**) live encrypted at rest: an OS
-keyring, or a `0600` secrets file decrypted with a key from the environment — no
-KMS needed at this scale. (Scale-up swaps this for **OAuth 2.0 + PKCE** with a
-leader-elected single-flight refresh loop and KMS envelope encryption; see §12.)
+subscription's webhook **`authenticity_secret`**). In the shipped single-org
+profile the PAT is read from the environment (`PCO_APP_ID` / `PCO_SECRET`) and
+each `authenticity_secret` is kept in the `webhook_subscription` table of the
+SQLite file *unencrypted* — the data volume is the thing to protect. An OS
+keyring or encrypted-at-rest column is the intended hardening and is not built.
+(Scale-up swaps this for **OAuth 2.0 + PKCE** with a leader-elected single-flight
+refresh loop and KMS envelope encryption; see §12.)
 
 ### 9.2 Multi-tenancy
 
