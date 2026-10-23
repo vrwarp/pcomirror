@@ -166,6 +166,25 @@ class GuardBlocks(unittest.TestCase):
             self.guard.arm("create")
             self.refuses("POST", f"{PCO}/people", bad)
 
+    def test_a_body_whose_shape_the_checks_cannot_read_is_refused(self):
+        # `data` that is not an object, and `attributes` that is not an object
+        # (a string would iterate as characters and miss a forbidden key).
+        shapes = (
+            json.dumps({"data": []}).encode(),
+            json.dumps({"data": "Person"}).encode(),
+            json.dumps({"data": {"type": "Person", "attributes": "people_permissions"}}).encode(),
+            json.dumps({"data": {"type": "Person", "attributes": ["last_name"]}}).encode(),
+        )
+        for bad in shapes:
+            self.guard.arm("create")
+            self.refuses("POST", f"{PCO}/people", bad)
+        # The id matches, so only the attributes shape can be what refuses these.
+        for attributes in ("people_permissions", ["last_name"]):
+            self.guard.arm("patch")
+            body = json.dumps({"data": {"type": "Person", "id": CREATED,
+                                        "attributes": attributes}}).encode()
+            self.refuses("PATCH", f"{PCO}/people/{CREATED}", body)
+
 
 class GuardAllows(unittest.TestCase):
     """The narrow path that is permitted — and that it closes behind itself."""

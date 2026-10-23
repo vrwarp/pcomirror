@@ -130,7 +130,7 @@ class MutationGuard:
         data = _data(body)
         if data.get("type") != "Person":
             raise MutationRefused("refusing to create anything but a Person")
-        attrs = data.get("attributes") or {}
+        attrs = _attributes(data)
         if not str(attrs.get("last_name", "")).startswith(self.sentinel_prefix):
             raise MutationRefused("refusing to create a person without the test sentinel")
         self._check_shared(data, attrs)
@@ -162,7 +162,7 @@ class MutationGuard:
             raise MutationRefused(
                 f"{collection} takes a {CHILD_COLLECTIONS[collection]}, "
                 f"got {data.get('type')!r}")
-        self._check_shared(data, data.get("attributes") or {})
+        self._check_shared(data, _attributes(data))
 
     def _check_targeted(self, operation: str, sub: str) -> None:
         """`PATCH`/`DELETE` may only ever address the record this run created."""
@@ -186,7 +186,7 @@ class MutationGuard:
             raise MutationRefused(
                 f"body id {data.get('id')} is not the person this session created "
                 f"({self.created_id})")
-        attrs = data.get("attributes") or {}
+        attrs = _attributes(data)
         if "last_name" in attrs and not str(attrs["last_name"]).startswith(self.sentinel_prefix):
             raise MutationRefused("refusing to remove the test sentinel from the record")
         self._check_shared(data, attrs)
@@ -204,6 +204,23 @@ def _data(body) -> dict:
     if not body:
         raise MutationRefused("refusing to send a write with no body")
     try:
-        return json.loads(body)["data"]
+        data = json.loads(body)["data"]
     except (ValueError, KeyError, TypeError) as e:
         raise MutationRefused(f"unreadable JSON:API body: {e}") from None
+    if not isinstance(data, dict):
+        raise MutationRefused("unreadable JSON:API body: `data` is not a resource object")
+    return data
+
+
+def _attributes(data: dict) -> dict:
+    """A resource's attributes, refusing any shape the forbidden-key check cannot read.
+
+    `set("people_permissions")` is a set of characters, so a string would have
+    sailed past `FORBIDDEN_ATTRIBUTES & set(attrs)`.
+    """
+    attrs = data.get("attributes")
+    if attrs is None:
+        return {}
+    if not isinstance(attrs, dict):
+        raise MutationRefused("unreadable JSON:API body: `attributes` is not an object")
+    return attrs

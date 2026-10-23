@@ -543,8 +543,11 @@ class TestTheColdLaneInterleaves(unittest.TestCase):
         # rather than starting over — which is also what makes a crash free.
         self.assertIsNotNone(m.ingestor.audit_round("person"))
         started = m.ingestor.state("person")["last_audit_started_at"]
-        while not m.ingestor.delete_audit_step("person", budget=2)["done"]:
-            pass
+        for _ in range(50):
+            if m.ingestor.delete_audit_step("person", budget=2)["done"]:
+                break
+        else:
+            self.fail("the round never completed")
         self.assertEqual(m.ingestor.state("person")["last_audit_started_at"], started,
                          "resuming is not restarting")
         self.assertIsNotNone(m.db.query_one(
@@ -558,8 +561,11 @@ class TestTheColdLaneInterleaves(unittest.TestCase):
     def test_restores_resume_too(self):
         m, fake = self._org()
         m.db.execute("DELETE FROM person WHERE pco_id='9'")     # the mirror lost one
-        while not m.ingestor.delete_audit_step("person", budget=1)["done"]:
-            pass
+        for _ in range(50):
+            if m.ingestor.delete_audit_step("person", budget=1)["done"]:
+                break
+        else:
+            self.fail("the round never completed")
         self.assertIsNotNone(m.db.query_one(
             "SELECT 1 FROM person WHERE pco_id='9' AND deleted_at IS NULL"))
 

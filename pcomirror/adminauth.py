@@ -35,6 +35,17 @@ _throttle_lock = threading.Lock()
 _failures = {"count": 0, "until": 0.0}
 
 
+def _same(a: str, b: str) -> bool:
+    """Constant-time string equality that tolerates non-ASCII input.
+
+    `hmac.compare_digest` raises TypeError for a `str` pair containing non-ASCII
+    characters, which would turn an attacker-supplied password or CSRF value into
+    a 500 rather than a plain mismatch. Compare the UTF-8 bytes instead.
+    """
+    return hmac.compare_digest(a.encode("utf-8", "surrogatepass"),
+                               b.encode("utf-8", "surrogatepass"))
+
+
 def _derive(password: str, salt: bytes, iterations: int = ITERATIONS) -> bytes:
     return hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
 
@@ -91,7 +102,7 @@ def verify(db, settings, password: str) -> tuple[bool, bool]:
     row = db.query_one("SELECT * FROM admin_account WHERE id=1")
     if row is None:
         secret = (settings.pco_secret or "").strip()
-        ok = bool(secret) and hmac.compare_digest(secret, password)
+        ok = bool(secret) and _same(secret, password)
         _clear_failures() if ok else _record_failure()
         return ok, ok
     expected = bytes(row["password_hash"])
@@ -150,4 +161,4 @@ def prune_sessions(db) -> None:
 
 
 def check_csrf(session, submitted: str | None) -> bool:
-    return bool(submitted) and hmac.compare_digest(session["csrf"], submitted)
+    return bool(submitted) and _same(session["csrf"], submitted)

@@ -802,14 +802,18 @@ class TestOverARealSocket(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()
         cls.m.close()
 
     def ask(self, method, path, headers):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
-        conn.request(method, path, headers=headers)
-        r = conn.getresponse()
-        r.read()
-        return r.status, {k.lower(): v for k, v in r.getheaders()}
+        try:
+            conn.request(method, path, headers=headers)
+            r = conn.getresponse()
+            r.read()
+            return r.status, {k.lower(): v for k, v in r.getheaders()}
+        finally:
+            conn.close()
 
     def preflight(self, asked_headers, path="/people/v2/people"):
         return self.ask("OPTIONS", path, {

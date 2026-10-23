@@ -72,13 +72,15 @@ OVERRIDE_KEY = "subscriptions_managed_here"
 def verify(secret: str, raw: bytes, signature: str | None) -> bool:
     if not signature:
         return False
-    expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    if hmac.compare_digest(expected, signature.strip()):
+    import base64
+    # Compare bytes: compare_digest raises TypeError on a non-ASCII str, and the
+    # header is attacker-controlled.
+    supplied = signature.strip().encode("utf-8", "surrogatepass")
+    digest = hmac.new(secret.encode(), raw, hashlib.sha256)
+    if hmac.compare_digest(digest.hexdigest().encode(), supplied):
         return True
     # some senders use base64; accept it too, constant-time
-    import base64
-    expected_b64 = base64.b64encode(hmac.new(secret.encode(), raw, hashlib.sha256).digest()).decode()
-    return hmac.compare_digest(expected_b64, signature.strip())
+    return hmac.compare_digest(base64.b64encode(digest.digest()), supplied)
 
 
 def token_bits(token: str) -> float:

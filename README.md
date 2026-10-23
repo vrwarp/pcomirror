@@ -890,7 +890,7 @@ a `docker run` unit file):
 ```sh
 docker volume create pcomirror-data
 
-docker run -d --name pcomirror --restart unless-stopped \
+docker run -d --name pcomirror --restart unless-stopped --init \
   -p 8080:8080 \
   -v pcomirror-data:/data \
   -e PCO_APP_ID=your_pat_app_id \
@@ -906,7 +906,9 @@ That covers `init-db` + `add-subscription` + `backfill` + `serve` in one shot:
 the schema is created on every start (`CREATE TABLE IF NOT EXISTS`, so it's a
 no-op after the first), `PCOMIRROR_BACKFILL_ON_START=1` only loads resources that
 have never completed a backfill (safe to leave set — restarts won't re-load), and
-the scheduler starts with `serve`, the image's default CMD.
+the scheduler starts with `serve`, the image's default CMD. `--init` (already set in `docker-compose.yml`) lets
+`docker stop` reach the app while it is still backfilling, before `serve` has
+installed its `SIGTERM` handler.
 
 **`PCOMIRROR_SUBSCRIPTIONS`** is a comma-separated list of
 `<subscription_id>:<event>:<url_token>:<authenticity_secret>`. It's re-applied on
@@ -1057,7 +1059,8 @@ and exits, rather than surfacing a SQLite traceback:
   `PCOMIRROR_CORS_*` knobs), `PCO_CA_BUNDLE` (if PCO egress goes via a proxy),
   `PCOMIRROR_DIAGNOSTIC_KEEP`, `PCOMIRROR_SHADOW_PER_MINUTE` /
   `PCOMIRROR_SHADOW_KEEP`, `PCOMIRROR_WEBHOOK_RECORD_KEEP`,
-  `PCOMIRROR_AUDIT_INTERVAL_HOURS`,
+  `PCOMIRROR_AUDIT_INTERVAL_HOURS`, `PCOMIRROR_RATE_TARGET_RPS` (the limiter's starting
+  rate, default 4 req/s; it adapts from PCO's response headers),
   `PCO_WEBHOOKS_BASE_URL`, and the container-friendly defaults
   `PCOMIRROR_DB` / `PCOMIRROR_HOST` / `PCOMIRROR_PORT`. Four of these are
   defaults the admin page can override and persist —
@@ -1090,7 +1093,7 @@ and exits, rather than surfacing a SQLite traceback:
 ### Test it
 
 ```sh
-python3 run_tests.py     # 615 end-to-end tests + 11 writer-semantics assertions
+python3 run_tests.py     # the end-to-end suite + 11 writer-semantics assertions
 ```
 
 `tests/test_mutation_guard.py` covers the refusal logic behind the live write
