@@ -890,7 +890,7 @@ a `docker run` unit file):
 ```sh
 docker volume create pcomirror-data
 
-docker run -d --name pcomirror --restart unless-stopped \
+docker run -d --name pcomirror --restart unless-stopped --init \
   -p 8080:8080 \
   -v pcomirror-data:/data \
   -e PCO_APP_ID=your_pat_app_id \
@@ -906,7 +906,9 @@ That covers `init-db` + `add-subscription` + `backfill` + `serve` in one shot:
 the schema is created on every start (`CREATE TABLE IF NOT EXISTS`, so it's a
 no-op after the first), `PCOMIRROR_BACKFILL_ON_START=1` only loads resources that
 have never completed a backfill (safe to leave set — restarts won't re-load), and
-the scheduler starts with `serve`, the image's default CMD.
+the scheduler starts with `serve`, the image's default CMD. `--init` (already set in `docker-compose.yml`) lets
+`docker stop` reach the app while it is still backfilling, before `serve` has
+installed its `SIGTERM` handler.
 
 **`PCOMIRROR_SUBSCRIPTIONS`** is a comma-separated list of
 `<subscription_id>:<event>:<url_token>:<authenticity_secret>`. It's re-applied on
