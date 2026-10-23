@@ -95,7 +95,9 @@ class Settings:
     # both together instead of leaving one aimed at production.
     pco_webhooks_base_url: str = ""
     pco_app_id: str = ""
-    pco_secret: str = ""
+    # repr=False: the PAT must not surface if a Settings is ever logged or shown
+    # in a traceback.
+    pco_secret: str = field(default="", repr=False)
     api_version: str = "2026-06-04"
     user_agent: str = "pcomirror/0.1 (+admin@example.org)"
     # rate limiter: initial target (req/s). Adapts from response headers at runtime.

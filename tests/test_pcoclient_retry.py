@@ -51,5 +51,11 @@ class TestRetryBudget(unittest.TestCase):
         self.assertIsNotNone(resp.duration_ms)
 
 
+class TestSettingsRepr(unittest.TestCase):
+    def test_repr_does_not_leak_the_pat(self):
+        self.assertNotIn("hunter2-pat", repr(Settings(pco_secret="hunter2-pat")))
+        self.assertEqual(Settings(pco_secret="x").pco_secret, "x")
+
+
 if __name__ == "__main__":
     unittest.main()
