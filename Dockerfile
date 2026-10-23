@@ -14,8 +14,8 @@ RUN useradd --system --create-home --uid 10001 appuser \
  && mkdir -p /data && chown appuser:appuser /data
 
 WORKDIR /app
-COPY pcomirror ./pcomirror
 COPY docker-entrypoint.py /usr/local/bin/docker-entrypoint.py
+COPY pcomirror ./pcomirror
 
 # Starts as root *only* to chown the data directory to PUID:PGID; the entrypoint
 # then permanently drops to that user before exec'ing the app, so the service

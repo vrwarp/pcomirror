@@ -4,6 +4,12 @@ services:
     image: pcomirror:latest
     container_name: pcomirror
     restart: unless-stopped
+    # The app is otherwise PID 1, and the kernel ignores a signal that PID 1 has
+    # no handler for. `serve` installs one for SIGTERM, but one-shot commands and
+    # a backfill-on-start (which runs before `serve` installs it) do not, so
+    # `docker stop` would wait out the grace period and SIGKILL. A tiny init
+    # forwards the signal and reaps children.
+    init: true
     ports:
       - "8080:8080"                 # JSON:API + webhook receiver
     env_file:
