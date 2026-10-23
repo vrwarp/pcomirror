@@ -66,6 +66,14 @@ class UrllibTransport:
             return Response(e.code, dict(e.headers or {}), e.read())
 
 
+def _retry_after_seconds(raw: str | None) -> float | None:
+    """Parse a numeric `Retry-After`; an HTTP-date or junk value means "unknown"."""
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
+
+
 class PcoClient:
     def __init__(self, settings, limiter, transport: Transport, recorder=None):
         self.s = settings
@@ -157,7 +165,7 @@ class PcoClient:
                 # anything that could apply it, so the record cannot already
                 # exist and a replay cannot make a second one.
                 ra = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
-                self.limiter.on_429(float(ra) if ra else None)
+                self.limiter.on_429(_retry_after_seconds(ra))
                 self.recorder.upstream_attempt(
                     method, target, status=429, attempt=attempt, duration_ms=elapsed,
                     headers=resp.headers, will_retry=attempt < max_attempts - 1)
@@ -188,7 +196,9 @@ class PcoClient:
                     method, target, status=resp.status, attempt=attempt,
                     duration_ms=elapsed, headers=resp.headers)
             return self._settle(resp, elapsed, attempt)
-        return resp  # last response (still an error) after retries
+        # Last response (still an error) after retries. Settled like any other, so
+        # the caller's log line reports how many sends it really took.
+        return self._settle(resp, elapsed, max_attempts - 1)
 
     @staticmethod
     def _settle(resp: Response, elapsed: int, attempt: int) -> Response:
