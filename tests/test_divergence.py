@@ -16,7 +16,7 @@ from unittest import mock
 from base import build, wsgi_get
 from pcomirror import divergence
 from pcomirror.divergence import rules as cmp_mod
-from pcomirror.ratelimit import RateLimiter, RateLimitBusy
+from pcomirror.ratelimit import DEFERRABLE, RateLimiter, RateLimitBusy
 
 
 def collection(*people, total=None):
@@ -959,7 +959,10 @@ class TestItYieldsToTheForeground(unittest.TestCase):
         self.limiter.acquire("divergence", max_wait=0.05)     # no exception
 
     def test_every_background_caller_is_covered_not_just_this_one(self):
-        for priority in ("reconcile", "backfill", "webhook_hydrate", "divergence"):
+        background = ("reconcile", "backfill", "webhook_hydrate", "divergence")
+        self.assertEqual(set(background), set(DEFERRABLE),
+                         "a new background priority needs to be covered here too")
+        for priority in background:
             self.limiter.tokens = 1.0
             with self.assertRaises(RateLimitBusy, msg=priority):
                 self.limiter.acquire(priority, max_wait=0.05)
@@ -967,8 +970,13 @@ class TestItYieldsToTheForeground(unittest.TestCase):
     def test_a_write_is_never_deferrable(self):
         """A caller is blocked on it, and it is the one request that cannot
         simply be tried again later."""
+        self.assertNotIn("passthrough", DEFERRABLE)
         self.limiter.tokens = 1.0
-        self.limiter.acquire("passthrough")
+        # The very state that turns a background caller away lets the write through.
+        with self.assertRaises(RateLimitBusy):
+            self.limiter.acquire("divergence", max_wait=0.05)
+        self.limiter.tokens = 1.0
+        self.limiter.acquire("passthrough", max_wait=0.05)
 
     def test_an_unbounded_wait_is_still_the_default(self):
         """The sweeps have always waited; this must not quietly change them."""
