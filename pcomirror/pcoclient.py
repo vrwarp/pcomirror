@@ -8,6 +8,7 @@ fake PCO in-process with zero network.
 from __future__ import annotations
 
 import json
+import math
 import ssl
 import time
 import urllib.error
@@ -67,11 +68,16 @@ class UrllibTransport:
 
 
 def _retry_after_seconds(raw: str | None) -> float | None:
-    """Parse a numeric `Retry-After`; an HTTP-date or junk value means "unknown"."""
+    """Parse a numeric `Retry-After`; an HTTP-date or junk value means "unknown".
+
+    `float()` also accepts "inf", "nan" and negatives, which would stall or
+    confuse the limiter, so anything not finite and non-negative is unknown too.
+    """
     try:
-        return float(raw) if raw else None
+        value = float(raw) if raw else None
     except ValueError:
         return None
+    return value if value is not None and math.isfinite(value) and value >= 0 else None
 
 
 class PcoClient:

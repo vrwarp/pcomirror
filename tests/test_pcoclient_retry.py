@@ -36,6 +36,9 @@ class TestRetryBudget(unittest.TestCase):
         self.assertEqual(pcoclient._retry_after_seconds("3"), 3.0)
         self.assertIsNone(pcoclient._retry_after_seconds(None))
         self.assertIsNone(pcoclient._retry_after_seconds("Wed, 21 Oct 2026 07:28:00 GMT"))
+        for junk in ("inf", "-inf", "nan", "-1"):
+            self.assertIsNone(pcoclient._retry_after_seconds(junk), junk)
+        self.assertEqual(pcoclient._retry_after_seconds("0"), 0.0)
 
     def test_http_date_retry_after_does_not_crash_and_outcome_is_settled(self):
         transport = _Always429("Wed, 21 Oct 2026 07:28:00 GMT")
